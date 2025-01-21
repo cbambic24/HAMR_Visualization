@@ -1,6 +1,6 @@
 # H-AMR Analysis
 
-This is a beta version of the analysis pipeline for _H-AMR_, a new GPU-accelerated general relativistic magnetohydrodynamics (GRMHD) code optimized to leverage exascale GPU-computing architectures ([Liska et al. 2022](https://ui.adsabs.harvard.edu/abs/2022ApJS..263...26L/abstract)).
+This is a beta version of the analysis pipeline for _H-AMR_ ([Liska et al. 2022](https://ui.adsabs.harvard.edu/abs/2022ApJS..263...26L/abstract)), a new GPU-accelerated general relativistic magnetohydrodynamics (GRMHD) code optimized to leverage exascale GPU-computing architectures.
 
 _H-AMR_'s 3D adaptive mesh refinement (AMR) and adaptive time-stepping capabilities enable the code to perform state-of-the-art computations of accretion onto black holes at some of the highest resolutions achieved to date (e.g. [Liska et al. 2018](https://ui.adsabs.harvard.edu/abs/2018MNRAS.474L..81L/abstract), [Ripperda et al. 2022](https://ui.adsabs.harvard.edu/abs/2022ApJ...924L..32R/abstract)). However, the enormous data sets produced by _H-AMR_ require a unique read-in pipeline that can interpret the custom binary formats used for optimal memory storage on modern supercomputers.
 
@@ -9,90 +9,86 @@ This pipeline, written in Python and interfaced with C++ through a Cython-based 
 ## Getting Started 
 
 To use this pipeline, clone the repository with 
+```
+git clone https://github.com/cbambic24/HAMR_Analysis.git
+```
+The pipeline assumes that you have a main directory (e.g. __RUN__) where your analysis scripts are stored. While sample analysis and plotting routines are provided in _analysis.py_ and _figs.py_, the user is strongly encouraged to develop their own scripts. Within the __RUN__ directory, the pipeline assumes that the scripts _hamr_read.cpp_, _hamr_read.h_, _hamr_read_c.pyx_, _hamr_read.py_, and _setup.py_ are all stored in __RUN/HAMR_Visualization/Read_HAMR_Data__. Changing this directory structure is straightforward so long as  _hamr_read.cpp_, _hamr_read.h_, _hamr_read_c.pyx_, and _hamr_read.py_ are in the same directory as _setup.py_.
+
+To compile the code, either execute the following command in the command line from the __RUN__ directory,
+```
+python HAMR_Visualization/Read_HAMR_Data/setup.py build_ext --inplace
+```
+or if executing the code from a Jupyter notebook situated in the __RUN__ directory, use the command
+```
+%run -i HAMR_Visualization/Read_HAMR_Data/setup.py build_ext --inplace
+```
 
 ### Prerequisites
 
-What things you need to install the software and how to install them
-
+The pipeline has primarily been tested in a Windows environment, so you may run into issues if you're using a Linux or Mac OS. For a Linux OS, the main modifications are to the _setup.py_ script. A known combination that works in the _setup.py_ script is
 ```
-Give examples
+setup(
+    cmdclass={'build_ext': build_ext},
+    ext_modules=[Extension("hamr_readc",
+                           sources=[read_dir + '/' + 'hamr_read_c.pyx',
+                                    read_dir + '/' + 'hamr_read.cpp'],
+                           language="c++",
+                           include_dirs=[np.get_include()],
+                           extra_compile_args=["-fopenmp", "-std=c++17",
+                                               "-Wno-unused-result",
+                                               "-Wno-deprecated-declarations"],
+                           extra_link_args=["-fopenmp"])
 ```
+However, you may run into issues with OpenMP (used to parallelize the read-in of large data files), particularly for the Mac OS. I am working on fixing this.
 
-### Installing
-
-A step by step series of examples that tell you how to get a development env running
-
-Say what the step will be
-
+Another potential issue is that you could arrive at a segmentation fault while running the code because of using an older C++ compiler (e.g. older versions of g++ or MSVC) that is not fully compliant with C++17. Here, the problem originated with the std::file_system library, which was only introduced in recent versions of C++. You can circumvent this issue by using the more basic C command for checking if a file exists,
 ```
-Give the example
+if(access(filename, 0) != -1)
 ```
+where filename is an appropriately defined string for the file you're looking for. This can serve as a temporary work-around if you are in an environment where you cannot upgrade your g++ compiler to comply with modern C++ standards. 
 
-And repeat
+### Reading in a Data Set
 
+Suppose you were interested in loading in a state-of-the-art two-temperature radiation GRMHD simulation stored in __RUN/DATA/Exciting_Simulation__. To read in output 100 (or in _H-AMR_ parlance, dump 100) with your Jupyter notebook or Python script situated in __RUN__, you would execute
 ```
-until finished
+import sys
+import os
+import numpy as np
+sys.path.insert(0, 'PATH_TO_RUN/RUN/HAMR_Visualization/Read_HAMR_Data')
+import hamr_read as hr
+
+H = hr.Read('DATA/Exciting_Simulation')
+H.read_grid(100, direct=True)
+H.read_prims(100, skip_read_params=True)
 ```
+The flags "direct=True" and "skip_read_params=True" are unnecessary if you have properly written grid dump (gdumps) files in __RUN/DATA/Exciting_Simulation/gdumps__. Otherwise, the "direct=True" flag implies that you would like to analytically compute the Kerr metric for a spinning black hole in spherical Kerr-Schild coordinates without the additional step of waiting for the grid to be read in. The "skip_read_params=True" flag is a convenience that prevents read_prims from doing double-work and re-reading in the parameters file when read_grid has already read-in and stored the parameters. 
 
-End with an example of getting some data out of the system or using it for a little demo
+Additional flags/options available to the Read class can be found in the init() function in _hamr_read.py_. The user is encouraged to explore these settings and consult the Wiki on this repository for further instructions. Finally, for immediate assistance, please consult the parameter glossary included at the bottom of _hamr_read.py_. 
 
-## Running the tests
+### Using the data
 
-Explain how to run the automated tests for this system
+The user should only need access to the following dictionaries, where we assume that hamr_read was imported as "hr" and the Read class was assigned to "H" during the instantiation: hr.CONSTANTS, hr.params, H.grid, and H.data. List the keys in these dictionaries to determine what they contain, and consult the parameter glossary at the bottom of _hamr_read.py_ for assistance. 
 
-### Break down into end to end tests
+As an example, suppose we wanted to read in our __Exciting_Simulation__ of a black hole of 10 solar masses, output in spherical Kerr-Schild coordinates ($r, \theta, \varphi$). If we wanted to read in the data and grid variables with CGS units, and only read in the data within a radial range of 1.2 to 300 gravitational radii ($R_g$), downsampled by a factor of 4 in the radial ($r$) coordinate, 4 in the poloidal ($\theta$) coordinate, and 16 in the toroidal ($\varphi$) coordinate, then the following commands would provide everything needed to plot the density ($\rho$ or "rho"):
+ ```
+H = hr.Read('DATA/Exciting_Simulation', cgs_data = True, cgs_grid = True, MBH = 10.0,
+            do_box = 1, 
+            r_min = 1.2, r_max = 300.0,
+            lowres1 = 4, lowres2 = 4, lowres3 = 16)
+H.read_grid(100, direct=True)
+H.read_prims(100, skip_read_params=True)
 
-Explain what these tests test and why
+MBH  = 10.0 # black hole mass in solar masses
+Msun = hr.CONSTANTS['Msun']
+c    = hr.CONSTANTS['c']
+G    = hr.CONSTANTS['G']
+Rg   = G*MBH*Msun/(c*c)
 
+r, th, phi = H.grid['r']/Rg, H.grid['theta'], H.grid['phi']
+rho = H.data['rho']
 ```
-Give an example
-```
+The coordinate variables (r, th, phi) and scalar variables like density (rho) are all 4D arrays with slots that correspond to (block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index). For vectors like the 4-velocity $u^{\mu}$ (H.data['uu'] in the code) or the 3-magnetic field __B__ (H.data['B'] in the code), the arrays are 5D with slots (direction, block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index), where direction $\in (0, 1, 2, 3)$ corresponds to the basis vectors in internal coordinates $(x_0, x_1, x_2, x_3)$. Similarly, for rank-2 tensors like the covariant metric tensor $g_{\mu \nu}$ (H.grid['gcov'] in the code), there are 6 slots: (direction, direction, block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index). The block number is always 0 unless the by_block flag is used in hr.Read. In that case, the arrays are stored such that the coordinate indices correspond to a given block rather than the global array upscaled to the highest refinement level. Thus, the by_block option decreases the memory occupied by each of the arrays stored in the H.grid and H.data dictionaries. 
 
-### And coding style tests
+## Credits
 
-Explain what these tests test and why
-
-```
-Give an example
-```
-
-## Deployment
-
-Add additional notes about how to deploy this on a live system
-
-## Built With
-
-* [Dropwizard](http://www.dropwizard.io/1.0.2/docs/) - The web framework used
-* [Maven](https://maven.apache.org/) - Dependency Management
-* [ROME](https://rometools.github.io/rome/) - Used to generate RSS Feeds
-
-## Contributing
-
-Please read [CONTRIBUTING.md](https://gist.github.com/PurpleBooth/b24679402957c63ec426) for details on our code of conduct, and the process for submitting pull requests to us.
-
-## Versioning
-
-We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/your/project/tags). 
-
-## Authors
-
-* **Billie Thompson** - *Initial work* - [PurpleBooth](https://github.com/PurpleBooth)
-
-See also the list of [contributors](https://github.com/your/project/contributors) who participated in this project.
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details
-
-## Acknowledgments
-
-* Hat tip to anyone whose code was used
-* Inspiration
-* etc
-
-
-Title
-Description
-How to install and run
-How to use
-Credits
+_H-AMR_ as well as the original analysis pipeline was developed by Dr. Matthew Liska. The new pipeline contained in this repository was written by Dr. Christopher Bambic. Dr. Bambic is particularly grateful to Nicholas Kaaz for useful discussions and assistance. 
