@@ -391,12 +391,6 @@ class Read():
             hamr_readc.det_4x4(gcov, gdet, 1, nx, ny, 1)
             gdet = np.sqrt(-1.0*gdet)
 
-            # Calculate determinant of metric
-            #for i in range(0, nx):
-            #    for j in range(0, ny):
-            #        gdet[0, i, j, 0] = np.sqrt(
-            #            -np.linalg.det(gcov[:, :, 0, i, j, 0]))
-
         else:
             hamr_readc.read_grid(self.dir, self.axisym, self.by_block,
                                  self.export_raytracing_RAZIEH,
@@ -757,13 +751,3 @@ Rout: outer radius in Rg
 R0: meaningless (removed from parameter dictionary)
 density scale: rho0 in CGS units
 """
-
-            #gtest = np.zeros([4, 4, dim, nx, ny, nz], dtype=np.float32)
-            #for i1 in range(0, 4):
-            #   for j1 in range(0, 4):
-            #        # do this with einsum
-            #        for k in range(0, 4):
-            #            for l in range(0, 4):
-            #                gtest[i1, j1] = gtest[i1, j1] + gcov_kerr[k, l] * dxdxp[k, i1] * dxdxp[l, j1]
-
-            #print(np.sum(np.square(gcov - gtest)))
