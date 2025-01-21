@@ -65,7 +65,7 @@ The flags "direct=True" and "skip_read_params=True" are unnecessary if you have 
 
 Additional flags/options available to the Read class can be found in the init() function in _hamr_read.py_. The user is encouraged to explore these settings and consult the Wiki on this repository for further instructions. Finally, for immediate assistance, please consult the parameter glossary included at the bottom of _hamr_read.py_. 
 
-### Using the data
+### Using the Data
 
 The user should only need access to the following dictionaries, where we assume that hamr_read was imported as "hr" and the Read class was assigned to "H" during the instantiation: hr.CONSTANTS, hr.params, H.grid, and H.data. List the keys in these dictionaries to determine what they contain, and consult the parameter glossary at the bottom of _hamr_read.py_ for assistance. 
 
