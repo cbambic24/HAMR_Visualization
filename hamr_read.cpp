@@ -110,7 +110,7 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
       fin      = fopen(filename.c_str(), "rb");
 
       // 16 components to the metric variables + 1 for gdet (scalar)
-	    if (filesize >=
+      if (filesize >=
           (nvar * bs1 * bs2 * bs3 + (bs1 * bs2 * (nmtc * 16 + 1)) * (axisym) +
           (bs1 * bs2 * bs3 * (nmtc * 16 + 1)) * (!axisym)) * dbl_size) {
 
@@ -118,9 +118,9 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
         read_data = 0;
 
         // either 2^n or 1 (not used if by_block == 1)
-		    upscalex1 = pow(2, p1); 
-		    upscalex2 = pow(2, p2);
-		    upscalex3 = pow(2, p3);
+	upscalex1 = pow(2, p1); 
+	upscalex2 = pow(2, p2);
+	upscalex3 = pow(2, p3);
 
         // allow data to be read into 4D arrays (organized by block) 
         // or as a 3D unigrid array
@@ -213,7 +213,7 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
                   jLoc = (jGlob - (coordx2 * upscalex2 * bs2)) / upscalex2;            
                   kLoc = (kGlob - (coordx3 * upscalex3 * bs3)) / upscalex3;
 
-				          // convert to 1D index to read in binary data
+                  // convert to 1D index to read in binary data
                   index_3D = (((iGlob / low_resx1) - i_min) * isize +
                               ((jGlob / low_resx2) - j_min) * jsize +
                               ((kGlob / low_resx3) - k_min));
@@ -342,8 +342,8 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
 
                   if (!by_block) {
                     level_array[index_2D] = MAX(amr_levelx1[n_ord[n]], 
-						                                MAX(amr_levelx2[n_ord[n]], 
-                                                amr_levelx3[n_ord[n]]));
+				            MAX(amr_levelx2[n_ord[n]], 
+						amr_levelx3[n_ord[n]]));
                   }
                   read_data = 0;
                 } // read_data
@@ -425,7 +425,7 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
                       kLoc = (
                         (kGlob - (coordx3 * upscalex3 * bs3)) / upscalex3);
 
-				              // convert to 1D index to read in binary data
+                      // convert to 1D index to read in binary data
                       index_3D = (((iGlob / low_resx1) - i_min) * isize +
                                   ((jGlob / low_resx2) - j_min) * jsize +
                                   ((kGlob / low_resx3) - k_min));
@@ -625,9 +625,9 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
         coordx3 = amr_coordx3[n_ord[n]];
 
         // either 2^n or 1 (not used if by_block == 1)
-		    upscalex1 = pow(2, p1); 
-		    upscalex2 = pow(2, p2);
-		    upscalex3 = pow(2, p3);
+	upscalex1 = pow(2, p1); 
+	upscalex2 = pow(2, p2);
+	upscalex3 = pow(2, p3);
 
         // allow data to be read into 4D arrays (organized by block) 
         // or as a 3D unigrid array
@@ -716,7 +716,7 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
                   jLoc = (jGlob - (coordx2 * upscalex2 * bs2)) / upscalex2;            
                   kLoc = (kGlob - (coordx3 * upscalex3 * bs3)) / upscalex3;
 
-				          // convert to 1D index to read in binary data
+                  // convert to 1D index to read in binary data
                   index_3D = (((iGlob / low_resx1) - i_min) * isize +
                               ((jGlob / low_resx2) - j_min) * jsize +
                               ((kGlob / low_resx3) - k_min));
@@ -909,76 +909,77 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
 }
  
 void invert_4x4_cpp(std::vector<double> a, std::vector<double> b) {
-	/*
-	Description: 
-	 
-	Input 4x4 flattened matrix a; then, analytically do the inversion.
-	Output b, the flattened + inverted 4x4 matrix.
-	This assumes the matrix is invertile (det(a) != 0).
+/*
+    Description: 
 
-	Method is 'Laplace Expansion Theorem', 
-  i.e. https://www.geometrictools.com/Documentation/LaplaceExpansionTheorem.pdf
+    Input 4x4 flattened matrix a; then, analytically do the inversion.
+    Output b, the flattened + inverted 4x4 matrix.
+    This assumes the matrix is invertile (det(a) != 0).
 
-	*/
+    Method is 'Laplace Expansion Theorem', 
+    i.e. https://www.geometrictools.com/Documentation/LaplaceExpansionTheorem.pdf
 
-	double s0, s1, s2, s3, s4, s5;
-	double c0, c1, c2, c3, c4, c5;
-	double det_a;
+*/
 
-	// Calculate determinants of submatrices
-	s0 = a[0] * a[5] - a[4] * a[1];
-	s1 = a[0] * a[6] - a[4] * a[2];
-	s2 = a[0] * a[7] - a[4] * a[3];
-	s3 = a[1] * a[6] - a[5] * a[2];
-	s4 = a[1] * a[7] - a[5] * a[3];
-	s5 = a[2] * a[7] - a[6] * a[3];
+  double s0, s1, s2, s3, s4, s5;
+  double c0, c1, c2, c3, c4, c5;
+  double det_a;
 
-	c5 = a[10]*a[15] - a[14]*a[11];
-	c4 = a[9]*a[15] - a[13]*a[11];
-	c3 = a[9]*a[14] - a[13]*a[10];
-	c2 = a[8]*a[15] - a[12]*a[11];
-	c1 = a[8]*a[14] - a[12]*a[10];
-	c0 = a[8]*a[13] - a[12]*a[9];
+  // Calculate determinants of submatrices
+  s0 = a[0] * a[5] - a[4] * a[1];
+  s1 = a[0] * a[6] - a[4] * a[2];
+  s2 = a[0] * a[7] - a[4] * a[3];
+  s3 = a[1] * a[6] - a[5] * a[2];
+  s4 = a[1] * a[7] - a[5] * a[3];
+  s5 = a[2] * a[7] - a[6] * a[3];
 
-	// Calculate determinant of matrix a from determinants of its submatrices
-	// Should include error check if det_a = 0
-	det_a = s0*c5 - s1*c4 + s2*c3 + s3*c2 - s4*c1 + s5*c0;
+  c5 = a[10]*a[15] - a[14]*a[11];
+  c4 = a[9]*a[15] - a[13]*a[11];
+  c3 = a[9]*a[14] - a[13]*a[10];
+  c2 = a[8]*a[15] - a[12]*a[11];
+  c1 = a[8]*a[14] - a[12]*a[10];
+  c0 = a[8]*a[13] - a[12]*a[9];
 
-	// If det(a) != 0, then a^{-1} = adj(a)/det(a)
-	// Calculate b = inv(a) = adj(a)/det(a)
-	b[0] = ( a[5] * c5 - a[6] * c4 + a[7] * c3 ) / det_a;
-	b[1] = (-a[1] * c5 + a[2] * c4 - a[3] * c3 ) / det_a;
-	b[2] = (a[13] * s5 - a[14]* s4 + a[15]* s3 ) / det_a;
-	b[3] = (-a[9] * s5 + a[10]* s4 - a[11]* s3 ) / det_a;
-	b[4] = (-a[4] * c5 + a[6] * c2 - a[7] * c1 ) / det_a;
-	b[5] = ( a[0] * c5 - a[2] * c2 + a[3] * c1 ) / det_a;
-	b[6] = (-a[12]* s5 + a[14]* s2 - a[15]* s1 ) / det_a;
-	b[7] = ( a[8] * s5 - a[10]* s2 + a[11]* s1 ) / det_a;
-	b[8] = ( a[4] * c4 - a[5] * c2 + a[7] * c0 ) / det_a;
-	b[9] = (-a[0] * c4 + a[1] * c2 - a[3] * c0 ) / det_a;
-	b[10] = (a[12]* s4 - a[13]* s2 + a[15]* s0 ) / det_a;
-	b[11] = (-a[8]* s4 + a[9] * s2 - a[11]* s0 ) / det_a;
-	b[12] = (-a[4]* c3 + a[5] * c1 - a[6] * c0 ) / det_a;
-	b[13] = ( a[0]* c3 - a[1] * c1 + a[2] * c0 ) / det_a;
-	b[14] = (-a[12]*s3 + a[13]* s1 - a[14]* s0 ) / det_a;
-	b[15] = (a[8] * s3 - a[9] * s1 + a[10]* s0 ) / det_a;
+  // Calculate determinant of matrix a from determinants of its submatrices
+  // Should include error check if det_a = 0
+  det_a = s0*c5 - s1*c4 + s2*c3 + s3*c2 - s4*c1 + s5*c0;
+
+  // If det(a) != 0, then a^{-1} = adj(a)/det(a)
+  // Calculate b = inv(a) = adj(a)/det(a)
+  b[0] = ( a[5] * c5 - a[6] * c4 + a[7] * c3 ) / det_a;
+  b[1] = (-a[1] * c5 + a[2] * c4 - a[3] * c3 ) / det_a;
+  b[2] = (a[13] * s5 - a[14]* s4 + a[15]* s3 ) / det_a;
+  b[3] = (-a[9] * s5 + a[10]* s4 - a[11]* s3 ) / det_a;
+  b[4] = (-a[4] * c5 + a[6] * c2 - a[7] * c1 ) / det_a;
+  b[5] = ( a[0] * c5 - a[2] * c2 + a[3] * c1 ) / det_a;
+  b[6] = (-a[12]* s5 + a[14]* s2 - a[15]* s1 ) / det_a;
+  b[7] = ( a[8] * s5 - a[10]* s2 + a[11]* s1 ) / det_a;
+  b[8] = ( a[4] * c4 - a[5] * c2 + a[7] * c0 ) / det_a;
+  b[9] = (-a[0] * c4 + a[1] * c2 - a[3] * c0 ) / det_a;
+  b[10] = (a[12]* s4 - a[13]* s2 + a[15]* s0 ) / det_a;
+  b[11] = (-a[8]* s4 + a[9] * s2 - a[11]* s0 ) / det_a;
+  b[12] = (-a[4]* c3 + a[5] * c1 - a[6] * c0 ) / det_a;
+  b[13] = ( a[0]* c3 - a[1] * c1 + a[2] * c0 ) / det_a;
+  b[14] = (-a[12]*s3 + a[13]* s1 - a[14]* s0 ) / det_a;
+  b[15] = (a[8] * s3 - a[9] * s1 + a[10]* s0 ) / det_a;
 
 } // end invert_4x4()
 
 void kernel_invert_4x4(float* A, float* B, int nb, int nx1, int nx2, int nx3) {
-	/*
-	Description:
+/*
+    Description:
+    
+    Accepts array A that holds nb*bs1*bs2*bs3 4x4 matrices. Then, loops
+    through each nb*bs1*bs2*bs3 index, gets 4x4 matrix at this coordinate,
+    inverts it, and fills it into the array B
 
-	Accepts array A that holds nb*bs1*bs2*bs3 4x4 matrices. Then, loops
-	through each nb*bs1*bs2*bs3 index, gets 4x4 matrix at this coordinate,
-	inverts it, and fills it into the array B
-
-	*/
-	int n, i, j, k;
-	int index_3D, gridsize_3D;
-	int i1, j1;
+*/
   
-	// Loop over each of nb * nx1 * nx2 * nx3 cells
+  int n, i, j, k;
+  int index_3D, gridsize_3D;
+  int i1, j1;
+  
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   for (n = 0; n < nb; n++) {
     #pragma omp parallel for private(i, j, k, index_3D, i1, j1)
@@ -1010,38 +1011,38 @@ void kernel_invert_4x4(float* A, float* B, int nb, int nx1, int nx2, int nx3) {
 } // end kernel_invert_4x4()
 
 double det_4x4_cpp(const std::vector<double> a) {
-	double s0, s1, s2, s3, s4, s5;
-	double c0, c1, c2, c3, c4, c5;
-	double det_a;
+  double s0, s1, s2, s3, s4, s5;
+  double c0, c1, c2, c3, c4, c5;
+  double det_a;
 
-	// Calculate determinants of submatrices
-	s0 = a[0] * a[5] - a[4] * a[1];
-	s1 = a[0] * a[6] - a[4] * a[2];
-	s2 = a[0] * a[7] - a[4] * a[3];
-	s3 = a[1] * a[6] - a[5] * a[2];
-	s4 = a[1] * a[7] - a[5] * a[3];
-	s5 = a[2] * a[7] - a[6] * a[3];
+  // Calculate determinants of submatrices
+  s0 = a[0] * a[5] - a[4] * a[1];
+  s1 = a[0] * a[6] - a[4] * a[2];
+  s2 = a[0] * a[7] - a[4] * a[3];
+  s3 = a[1] * a[6] - a[5] * a[2];
+  s4 = a[1] * a[7] - a[5] * a[3];
+  s5 = a[2] * a[7] - a[6] * a[3];
 
-	c5 = a[10]*a[15] - a[14]*a[11];
-	c4 = a[9]*a[15] - a[13]*a[11];
-	c3 = a[9]*a[14] - a[13]*a[10];
-	c2 = a[8]*a[15] - a[12]*a[11];
-	c1 = a[8]*a[14] - a[12]*a[10];
-	c0 = a[8]*a[13] - a[12]*a[9];
+  c5 = a[10]*a[15] - a[14]*a[11];
+  c4 = a[9]*a[15] - a[13]*a[11];
+  c3 = a[9]*a[14] - a[13]*a[10];
+  c2 = a[8]*a[15] - a[12]*a[11];
+  c1 = a[8]*a[14] - a[12]*a[10];
+  c0 = a[8]*a[13] - a[12]*a[9];
 
-	// Calculate determinant of matrix a from determinants of its submatrices
-	// Should include error check if det_a = 0
-	det_a = s0*c5 - s1*c4 + s2*c3 + s3*c2 - s4*c1 + s5*c0;
+  // Calculate determinant of matrix a from determinants of its submatrices
+  // Should include error check if det_a = 0
+  det_a = s0*c5 - s1*c4 + s2*c3 + s3*c2 - s4*c1 + s5*c0;
 
   return det_a;
 }
 
 void kernel_det_4x4(float* A, float* B, int nb, int nx1, int nx2, int nx3) {
-	int n, i, j, k;
-	int index_3D, gridsize_3D;
-	int i1, j1;
+  int n, i, j, k;
+  int index_3D, gridsize_3D;
+  int i1, j1;
   
-	// Loop over each of nb * nx1 * nx2 * nx3 cells
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   for (n = 0; n < nb; n++) {
     #pragma omp parallel for private(i, j, k, index_3D, i1, j1)
