@@ -8,9 +8,9 @@ This pipeline, written in Python and interfaced with C++ through a Cython-based 
 
 ## Getting Started 
 
-To use this pipeline, clone the repository with 
+To use this pipeline, set up an SSH key on your GitHub account, then clone the repository with 
 ```
-git clone https://github.com/cbambic24/HAMR_Analysis.git
+git clone git@github.com:cbambic24/HAMR_Analysis.git
 ```
 The pipeline assumes that you have a main directory (e.g. __RUN__) where your analysis scripts are stored. While sample analysis and plotting routines are provided in _analysis.py_ and _figs.py_, the user is strongly encouraged to develop their own scripts. Within the __RUN__ directory, the pipeline assumes that the scripts _hamr_read.cpp_, _hamr_read.h_, _hamr_read_c.pyx_, _hamr_read.py_, and _setup.py_ are all stored in __RUN/HAMR_Visualization/Read_HAMR_Data__. Changing this directory structure is straightforward so long as  _hamr_read.cpp_, _hamr_read.h_, _hamr_read_c.pyx_, and _hamr_read.py_ are in the same directory as _setup.py_.
 
