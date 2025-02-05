@@ -5,7 +5,6 @@ from setuptools import setup
 from Cython.Build import cythonize
 from distutils.extension import Extension
 from Cython.Distutils import build_ext
-
 read_dir = os.path.dirname(os.path.abspath(__file__))
 
 ##############################################################################
@@ -17,8 +16,10 @@ setup(
                                     read_dir + '/' + 'hamr_read.cpp'],
                            language="c++", 
                            include_dirs=[np.get_include()],
-                           extra_compile_args=["/openmp", "/std:c++latest",
-                                               "/wd4244", "/wd4996"])
+                           extra_compile_args=["-fopenmp", "-std=c++17",
+                                               "-Wno-unused-result",
+                                               "-Wno-deprecated-declarations"],
+                           extra_link_args=["-fopenmp"])
     ]
 )
 # "/openmp", 
