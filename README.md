@@ -38,6 +38,8 @@ setup(
                                                "-Wno-unused-result",
                                                "-Wno-deprecated-declarations"],
                            extra_link_args=["-fopenmp"])
+]
+)
 ```
 Three setup.py files are provided: setup.py, setup_OLCF.py, and setup_Windows.py. The first two are identical and use the above commands to work in a Linux environment. The setup_Windows.py file has been tested in a Windows environment.
 
