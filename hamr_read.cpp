@@ -508,7 +508,7 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
   int nTr = 2;
 
   int upscalex1, upscalex2, upscalex3;
-  int gridsize_3D, index_3D;
+  long int gridsize_3D, index_3D;
   int iGlob, jGlob, kGlob; // global indices
   int n, nStrt, nEnd, fileCount, iFile; 
   // start/end global indices and step in x1,x2,x3 directions
@@ -516,6 +516,7 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
   int iLoc,  jLoc,  kLoc, ii; // local indices on given block
   int bs1LR, bs2LR, bs3LR; // bs1,2,3 / low_resx1,2,3
   bool iInRange, jInRange, kInRange;
+  bool iNotInBlock, jNotInBlock, kNotInBlock;
   std::vector<int> blocksInFile;
   FILE* fin;
   std::string filename;
@@ -543,7 +544,7 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
   int j_max = int(block_info.at("j_max"));
   int k_min = int(block_info.at("k_min"));
   int k_max = int(block_info.at("k_max"));
-
+  
   // number of total active blocks
   int nb    = int(params.at("n_active_total"));
   // block size
@@ -597,6 +598,7 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
   offsetx1, offsetx2, offsetx3, bs1LR, bs2LR, bs3LR, \
   iStrt, jStrt, kStrt, iEnd, jEnd, kEnd, iStp, jStp, kStp, \
   iInRange, jInRange, kInRange, ii, \
+  iNotInBlock, jNotInBlock, kNotInBlock, \
   index_3D, gridsize_3D)
   for (iFile = 0; iFile < fileCount; iFile++) {
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
@@ -625,10 +627,10 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
         coordx3 = amr_coordx3[n_ord[n]];
 
         // either 2^n or 1 (not used if by_block == 1)
-	upscalex1 = pow(2, p1); 
-	upscalex2 = pow(2, p2);
-	upscalex3 = pow(2, p3);
-
+        upscalex1 = pow(2, p1); 
+        upscalex2 = pow(2, p2);
+        upscalex3 = pow(2, p3);
+        
         // allow data to be read into 4D arrays (organized by block) 
         // or as a 3D unigrid array
         if (by_block) {
@@ -668,6 +670,14 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
           jStp  = 1 * export_raytracing + low_resx2 * (1 - export_raytracing);
           kStp  = 1 * export_raytracing + low_resx3 * (1 - export_raytracing);
         }
+
+        iNotInBlock = iStrt / low_resx1 > i_max || iEnd / low_resx1 <= i_min;
+        jNotInBlock = jStrt / low_resx2 > j_max || jEnd / low_resx2 <= j_min;
+        kNotInBlock = kStrt / low_resx3 > k_max || kEnd / low_resx3 <= k_min;
+		
+	if (iNotInBlock || jNotInBlock || kNotInBlock) {
+          continue;
+        } 
         
         for (iGlob = iStrt; iGlob < iEnd; iGlob += iStp) {
           for (jGlob = jStrt; jGlob < jEnd; jGlob += jStp) {

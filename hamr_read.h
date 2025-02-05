@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <cmath>
+#include <vector>
 #include <unordered_map>
 #include <filesystem>
 #include <cstdio> // fread and fseek

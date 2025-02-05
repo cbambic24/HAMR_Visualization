@@ -1,4 +1,5 @@
 import numpy as np
+import tracemalloc
 
 class Accretion():
     def __init__(self, grid, data, pars, CONSTANTS, **kwargs):
@@ -8,31 +9,44 @@ class Accretion():
         self.gcov, self.gcon         = grid['gcov'], grid['gcon']
         self.rho, self.uu, self.ugas = data['rho'], data['uu'], data['u_gas']
         self.B                       = data['B']
-        if (kwargs.get('cgs')):
-            self.c = CONSTANTS['c']
+        self.cgs                     = kwargs.get('cgs', False)
+        if (self.cgs):
+            self.rho0 = pars['density_scale'] # g/cm^3 
+            self.c    = CONSTANTS['c']        # cm/s
+            self.B0   = np.sqrt(4 * np.pi * self.rho0) * self.c
         else:
-            self.c = 1.0
+            self.rho0 = 1.0
+            self.c    = 1.0
+            self.B0   = 1.0
         self.pars      = pars
         self.CONSTANTS = CONSTANTS
         self.kwargs    = kwargs
 
     # Calculate disk mass
-    def calc_Mtot(self):
+    def calc_Mtot(self, **kwargs):
         return np.sum((self.rho * self.uu[0]) * (
-                      self.gdet * self.dx1 * self.dx2 * self.dx3))
+                        self.sigma_cut(**kwargs) * (
+                        self.gdet * self.dx1 * self.dx2 * self.dx3)))
     
     # Calculate inward mass accretion rate as function of radius
-    def calc_Mdot(self):
+    def calc_Mdot(self, **kwargs):
         return (-self.rho * self.uu[1] * (
-            self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+            self.sigma_cut(**kwargs) * (
+            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
     
     # Calculate energy accretion rate as a function of radius
-    def calc_Edot(self):
+    def calc_Edot(self, **kwargs):
         # WHY isn't this negative? It's an energy flux, right???
-        stress_energy_MHD = self.calc_TMHD()
-        return (stress_energy_MHD[1, 0] * (
+        stress_energy_MHD = self.calc_TMHD(index = [1, 0], **kwargs)
+        return (stress_energy_MHD * (
+            self.sigma_cut(**kwargs) * (
+            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+
+    # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
+    def calc_PhiBH(self, **kwargs):
+        return (0.5 * np.abs(self.B[1]) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
-    
+
     # Calculate Eddington luminosity for black hole of mass MBH (solar masses)
     def calc_LEdd(self, MBH):
         return 1.26e38*MBH # erg/s
@@ -43,15 +57,34 @@ class Accretion():
         return self.calc_LEdd(MBH) / (eta * self.c * self.c)
     
     # Calculate full MHD stress-energy tensor
-    def calc_TMHD(self):
+    def calc_TMHD(self, **kwargs):
         Flu = Fluid(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
         Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
+        if 'pgas' in kwargs:
+            pgas = kwargs.get('pgas')
+        else:
+            gamma_adi = 5./3.
+            pgas = (gamma_adi - 1.) * self.ugas
         stress_energy_HD = Flu.calc_THD(self.rho, self.uu, 
-                                        self.ugas, self.ugas, self.gcon,
-                                        EOS=self.kwargs.get('EOS'))
-        stress_energy_EM = Fld.calc_TEM(self.uu, self.B, self.gcov, self.gcon)
+                                        self.ugas, pgas, self.gcon,
+                                        EOS=self.kwargs.get('EOS'), **kwargs)
+        stress_energy_EM = Fld.calc_TEM(self.uu, self.B, self.gcov, self.gcon,
+                                        **kwargs)
         return stress_energy_HD + stress_energy_EM
     
+    def sigma_cut(self, **kwargs):
+        if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
+            B02 = self.B0 * self.B0
+            Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
+            b2  = Fld.calc_b2(self.B, self.B, self.gcov, 
+                    from_B=True, uu=self.uu) / B02
+            sigma = (b2 * B02 / (8. * np.pi)) / (self.rho * self.c * self.c)
+        elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
+            sigma = kwargs.get('sigma')
+            return (sigma < kwargs.get('sigma_cut'))
+        else:
+            return 1.0
+
 class Coordinates():
     def __init__(self, r, theta, phi):
         self.r  = r
@@ -61,7 +94,7 @@ class Coordinates():
     def sph_to_cart_vec(self, vec):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        drdx = np.zeros(shape)
+        drdx = np.zeros(shape, dtype=np.float32)
 
         # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
         drdx[0, 0] = 1.0
@@ -79,7 +112,7 @@ class Coordinates():
     def int_to_sph_vec(self, vec):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxdxp = np.zeros(shape)
+        dxdxp = np.zeros(shape, dtype=np.float32)
 
         # Transformation to Spherical Kerr Schild from internal coordinates
         dxdxp[0, 0] = 1.0
@@ -131,13 +164,36 @@ class Field():
         return Tools.dot(b, b, gcov)
     
     # Compute the electromagnetic stress-energy tensor
-    def calc_TEM(self, uu_in, B_in, gcov, gcon):
-        uu, B = uu_in.copy(), B_in.copy()
-        uu_tnsr = np.einsum('i...,j...->ij...', uu / self.c, uu / self.c)
-        b       = self.calc_b(B, uu, gcov) / self.B0
-        bb_tnsr =  np.einsum('i...,j...->ij...', b, b)
-        b2      = self.calc_b2(b, b, gcov)
-        return (b2*uu_tnsr + 0.5*b2*gcon - bb_tnsr) * (self.B0 * self.B0)
+    def calc_TEM(self, uu_in, B_in, gcov, gcon, **kwargs):
+        uu = uu_in.copy() 
+        if 'index' in kwargs:
+            [i, j] = kwargs.get('index')
+            uu_tnsr = (uu[i] / self.c) * (uu[j] / self.c)
+        else:
+            uu_tnsr = np.einsum('i...,j...->ij...', uu / self.c, uu / self.c)
+
+        if 'b' in kwargs:
+            b = kwargs.get('b')
+        else:
+            B   = B_in.copy()
+            b   = self.calc_b(B, uu, gcov) / self.B0
+        
+        if 'index' in kwargs:
+            bb_tnsr = b[i] * b[j]
+        else:
+            bb_tnsr = np.einsum('i...,j...->ij...', b, b)
+        
+        if 'b2' in kwargs:
+            b2 = kwargs.get('b2')
+        else:
+            b2 = self.calc_b2(b, b, gcov)
+        
+        B02 = self.B0 * self.B0
+        if 'index' not in kwargs:
+            return (b2*uu_tnsr + 0.5*b2*gcon - bb_tnsr) * B02
+        else:
+            return (b2*uu_tnsr + 0.5*b2*gcon[i, j] - bb_tnsr) * B02
+
     
 class Fluid():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -148,6 +204,8 @@ class Fluid():
         else:
             self.rho0 = 1.0
             self.c    = 1.0
+
+        self.CONSTANTS = CONSTANTS
 
     # Compute the hydrodynamic stress-energy tensor
     def calc_THD(self, rho_in, uu_in, ugas_in, pgas_in, gcon, **kwargs):
@@ -164,12 +222,34 @@ class Fluid():
         ugas *= 1. / rho0c2
         pgas *= 1. / rho0c2
 
-        uu_tnsr = np.einsum('i...,j...->ij...', uu / self.c, uu / self.c)
-        return ((rho + ugas + pgas) * uu_tnsr + pgas * gcon) * rho0c2
+        if 'index' not in kwargs:
+            uu_tnsr = np.einsum('i...,j...->ij...', uu / self.c, uu / self.c)
+            return ((rho + ugas + pgas) * uu_tnsr + pgas * gcon) * rho0c2
+        else:
+            [i, j] = kwargs.get('index')
+            uu_tnsr = (uu[i] / self.c) * (uu[j] / self.c)
+            return ((rho + ugas + pgas) * uu_tnsr + pgas * gcon[i, j]) * rho0c2
 
     # Compute pgas from ugas using gamma law EOS
     def calc_pgas(self, ugas_in, Te_in, Ti_in):
-        return Ti_in * Te_in
+        ugas, Te, Ti = ugas_in.copy(), Te_in.copy(), Ti_in.copy()
+        MU_I  = 4.0 / (4.0 * self.CONSTANTS['X_AB'] + self.CONSTANTS['Y_AB'])
+        MU_E  = 2.0 / (1.0 + self.CONSTANTS['X_AB'])
+        MI_ME = self.CONSTANTS['mi'] / self.CONSTANTS['me']
+
+        # Calculate gamma (ratio of specific heats)
+        Theta_e = Te * (MU_E * MI_ME)
+        Theta_i = Ti * MU_I
+
+        gam_e = (10.0 + 20.0 * Theta_e) / (6.0 + 15.0 * Theta_e)
+        gam_i = (10.0 + 20.0 * Theta_i) / (6.0 + 15.0 * Theta_i)
+        
+        gam_g = 1. + ((
+                (gam_e - 1.) * (gam_i - 1.) * (
+                (MU_I / (MU_E * MI_ME)) + (Theta_i / Theta_e)) ) / (
+                (Theta_i / Theta_e) * (gam_e - 1.) + 
+                (MU_I / (MU_E * MI_ME)) * (gam_i - 1.) ))
+        return (gam_g - 1.) * ugas
 
 class Tools():
     def dot(a, b, gcov):
