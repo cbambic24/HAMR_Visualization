@@ -39,7 +39,35 @@ setup(
                                                "-Wno-deprecated-declarations"],
                            extra_link_args=["-fopenmp"])
 ```
-However, you may run into issues with OpenMP (used to parallelize the read-in of large data files), particularly for the Mac OS. I am working on fixing this.
+Three setup.py files are provided: setup.py, setup_OLCF.py, and setup_Windows.py. The first two are identical and use the above commands to work in a Linux environment. The setup_Windows.py file has been tested in a Windows environment.
+
+On Macs, we managed to get the following combination to work:
+```
+import os
+import numpy as np
+# Cython specific functions
+from setuptools import setup
+from Cython.Build import cythonize
+from distutils.extension import Extension
+from Cython.Distutils import build_ext
+os.environ["CXX"] = "/opt/homebrew/bin/g++-14"
+read_dir = os.path.dirname(os.path.abspath(__file__))
+
+##############################################################################
+
+setup(
+    cmdclass={'build_ext': build_ext},
+    ext_modules=[Extension("hamr_readc",
+                           sources=[read_dir + '/' + 'hamr_read_c.pyx',
+                                    read_dir + '/' + 'hamr_read.cpp'],
+                           language="c++",
+                           include_dirs=[np.get_include()],
+                           extra_compile_args=["-std=c++20",
+                           "-fopenmp"])
+]
+)
+```
+Note that we had to use the Homebrew version of g++ (be careful not to use the Apple g++ as it is just Clang++ aliased) and set the CXX environment variable. If you try to use Clang/Clang++ with OpenMP (used to parallelize the read-in of large data files), you may run into problems.
 
 Another potential issue is that you could arrive at a segmentation fault while running the code because of using an older C++ compiler (e.g. older versions of g++ or MSVC) that is not fully compliant with C++17. Here, the problem originated with the std::file_system library, which was only introduced in recent versions of C++. You can circumvent this issue by using the more basic C command for checking if a file exists,
 ```
