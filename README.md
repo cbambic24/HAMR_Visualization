@@ -41,7 +41,7 @@ setup(
 ]
 )
 ```
-Three setup.py files are provided: setup.py, setup_OLCF.py, and setup_Windows.py. The first two are identical and use the above commands to work in a Linux environment. The setup_Windows.py file has been tested in a Windows environment.
+Three _setup.py_ files are provided: _setup.py_, _setup_OLCF.py_, and _setup_Windows.py_. The first two are identical and use the above commands to work in a Linux environment. The _setup_Windows.py_ file has been tested in a Windows environment.
 
 On Macs, we managed to get the following combination to work:
 ```
