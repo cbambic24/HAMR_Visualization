@@ -47,15 +47,6 @@ class Accretion():
         return (0.5 * np.abs(self.B[1]) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
 
-    # Calculate Eddington luminosity for black hole of mass MBH (solar masses)
-    def calc_LEdd(self, MBH):
-        return 1.26e38*MBH # erg/s
-    
-    # Calculate Eddington accretion rate for black hole of mass MBH
-    def calc_Mdot_Edd(self, MBH, **kwargs):
-        eta = kwargs.get('eta', 0.1)
-        return self.calc_LEdd(MBH) / (eta * self.c * self.c)
-    
     # Calculate full MHD stress-energy tensor
     def calc_TMHD(self, **kwargs):
         Flu = Fluid(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
@@ -84,6 +75,23 @@ class Accretion():
             return (sigma < kwargs.get('sigma_cut'))
         else:
             return 1.0
+
+class Analytic():
+    def __init__(self, CONSTANTS, **kwargs):
+        self.cgs = kwargs.get('cgs', False)
+        if (self.cgs):
+            self.c    = CONSTANTS['c']        # cm/s
+        else:
+            self.c    = 1.0
+        
+    # Calculate Eddington luminosity for black hole of mass MBH (solar masses)
+    def calc_LEdd(self, MBH):
+        return 1.26e38*MBH # erg/s
+    
+    # Calculate Eddington accretion rate for black hole of mass MBH
+    def calc_Mdot_Edd(self, MBH, **kwargs):
+        eta = kwargs.get('eta', 0.1)
+        return self.calc_LEdd(MBH) / (eta * self.c * self.c)
 
 class Coordinates():
     def __init__(self, r, theta, phi):
