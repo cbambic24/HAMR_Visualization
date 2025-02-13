@@ -9,7 +9,7 @@ import hamr_readc
 
 CONSTANTS = {
     'aRAD'    :  7.5657e-15,    # Radiation constant (erg/cm^3/K^4)
-    'mi'      :  1.673534e-24,  # Proton (ion) mass (g)
+    'mp'      :  1.673534e-24,  # Proton (ion) mass (g)
     'me'      :  9.1094e-28,    # Electron mass (g)
     'MMW'     :  1.69,          # Mean molecular weight (unitless)
     'Z_AB'    :  0.02,          # Solar abundance of "metals" (unitless)
@@ -91,19 +91,16 @@ class Read():
         self.dir         = dir
         self.by_block    = kwargs.get('by_block', 0)
         self.check_files = kwargs.get('check_files', 0)
-        self.cgs_data   = kwargs.get('cgs_data', 0)
-        self.cgs_grid   = kwargs.get('cgs_grid', 0)
-        self.MBH        = kwargs.get('MBH', 0.0)
-        self.lowres1 = kwargs.get('lowres1', 1)
-        self.lowres2 = kwargs.get('lowres2', 1)
-        self.lowres3 = kwargs.get('lowres3', 1)
-        self.export_raytracing_RAZIEH = kwargs.get(
-            'export_raytracing_RAZIEH', 0)
-        self.export_raytracing_GRTRANS = kwargs.get(
-            'export_raytracing_GRTRANS', 0)
-        self.interpolate_var = kwargs.get('interpolate_var', 0)
-        self.axisym = kwargs.get('axisym', 1)
-        self.do_box = kwargs.get('do_box', 0)
+        self.cgs_data    = kwargs.get('cgs_data', 0)
+        self.cgs_grid    = kwargs.get('cgs_grid', 0)
+        self.MBH         = kwargs.get('MBH', 0.0)
+        self.lowres1     = kwargs.get('lowres1', 1)
+        self.lowres2     = kwargs.get('lowres2', 1)
+        self.lowres3     = kwargs.get('lowres3', 1)
+        self.export_raytracing = kwargs.get('export_raytracing', 0)
+        self.interpolate_var   = kwargs.get('interpolate_var', 0)
+        self.axisym      = kwargs.get('axisym', 1)
+        self.do_box      = kwargs.get('do_box', 0)
 
         if (self.do_box):
             self.r_min     = kwargs.get('r_min', None)
@@ -393,7 +390,7 @@ class Read():
 
         else:
             hamr_readc.read_grid(self.dir, self.axisym, self.by_block,
-                                 self.export_raytracing_RAZIEH,
+                                 self.export_raytracing,
                                  amr, self.amr_info, self.block_info, 
                                  params, self.options,
                                  x1, x2, x3, r, theta, phi,
@@ -522,7 +519,7 @@ class Read():
         }
 
         hamr_readc.read_prims(self.dir, fnum, self.by_block,
-                             self.export_raytracing_RAZIEH,
+                             self.export_raytracing,
                              amr, self.amr_info, self.block_info, 
                              params, physics, self.options,
                              rho, u_gas, uu, B, E, u_rad, uu_rad,
@@ -594,14 +591,14 @@ class Read():
 
         if (physics['TWO_T']):
             kB   = CONSTANTS['kB']
-            mi   = CONSTANTS['mi']
+            mp   = CONSTANTS['mp']
             X_ab = CONSTANTS['X_AB']
             Y_ab = CONSTANTS['Y_AB']
             mu_i = 4.0 / (4.0 * X_ab + Y_ab)
             mu_e = 2.0 / (1.0 + X_ab)
 
-            self.data['Ti'] *= mu_i * mi * c * c / kB 
-            self.data['Te'] *= mu_e * mi * c * c / kB 
+            self.data['Ti'] *= mu_i * mp * c * c / kB 
+            self.data['Te'] *= mu_e * mp * c * c / kB 
 
     def restore_units_grid(self):
         # Output grid variables in CGS units
@@ -678,7 +675,7 @@ class Read():
 
     ### Check settings ###
     def check_raytracing_settings(self):
-        raytrace = self.export_raytracing_RAZIEH == 1
+        raytrace = (self.export_raytracing == 1)
         bad_lwrs = (params['bs1'] % self.lowres1 != 0 or
                     params['bs2'] % self.lowres2 != 0 or
                     params['bs3'] % self.lowres3 != 0)
