@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.special import kn
 import tracemalloc
 
 class Accretion():
@@ -10,41 +11,48 @@ class Accretion():
         self.rho, self.uu, self.ugas = data['rho'], data['uu'], data['u_gas']
         self.B                       = data['B']
         self.cgs                     = kwargs.get('cgs', False)
+        self.MBH                     = kwargs.get('MBH', 1.0)
         if (self.cgs):
             self.rho0 = pars['density_scale'] # g/cm^3 
             self.c    = CONSTANTS['c']        # cm/s
-            self.B0   = np.sqrt(4 * np.pi * self.rho0) * self.c
+            self.G    = CONSTANTS['G']        # cm^3/g s^2
+            self.Msun = CONSTANTS['Msun']     # g
+            self.B0   = np.sqrt(4 * np.pi * self.rho0) * self.c # G
         else:
             self.rho0 = 1.0
             self.c    = 1.0
+            self.G    = 1.0
+            self.Msun = 1.0
             self.B0   = 1.0
+        self.Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c) 
         self.pars      = pars
         self.CONSTANTS = CONSTANTS
         self.kwargs    = kwargs
 
     # Calculate disk mass
     def calc_Mtot(self, **kwargs):
-        return np.sum((self.rho * self.uu[0]) * (
+        Rg = self.Rg
+        return np.sum((self.rho * self.uu[0]) * (Rg * Rg * Rg) * (
                         self.sigma_cut(**kwargs) * (
                         self.gdet * self.dx1 * self.dx2 * self.dx3)))
     
     # Calculate inward mass accretion rate as function of radius
     def calc_Mdot(self, **kwargs):
-        return (-self.rho * self.uu[1] * (
+        return (-self.rho * self.uu[1] * (self.Rg * self.Rg) * (
             self.sigma_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
     
     # Calculate energy accretion rate as a function of radius
     def calc_Edot(self, **kwargs):
-        # WHY isn't this negative? It's an energy flux, right???
-        stress_energy_MHD = self.calc_TMHD(index = [1, 0], **kwargs)
-        return (stress_energy_MHD * (
+        stress_energy_MHD = self.calc_TMHD(upper_lower=True, 
+                                           index = [1, 0], **kwargs)
+        return (stress_energy_MHD * (self.Rg * self.Rg * self.c) * (
             self.sigma_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
 
     # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
     def calc_PhiBH(self, **kwargs):
-        return (0.5 * np.abs(self.B[1]) * (
+        return (0.5 * np.abs(self.B[1]) * (self.Rg * self.Rg) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
 
     # Calculate full MHD stress-energy tensor
@@ -57,7 +65,7 @@ class Accretion():
             gamma_adi = 5./3.
             pgas = (gamma_adi - 1.) * self.ugas
         stress_energy_HD = Flu.calc_THD(self.rho, self.uu, 
-                                        self.ugas, pgas, self.gcon,
+                                        self.ugas, pgas, self.gcov, self.gcon,
                                         EOS=self.kwargs.get('EOS'), **kwargs)
         stress_energy_EM = Fld.calc_TEM(self.uu, self.B, self.gcov, self.gcon,
                                         **kwargs)
@@ -83,11 +91,11 @@ class Analytic():
             self.c    = CONSTANTS['c']        # cm/s
         else:
             self.c    = 1.0
-        
+
     # Calculate Eddington luminosity for black hole of mass MBH (solar masses)
     def calc_LEdd(self, MBH):
         return 1.26e38*MBH # erg/s
-    
+
     # Calculate Eddington accretion rate for black hole of mass MBH
     def calc_Mdot_Edd(self, MBH, **kwargs):
         eta = kwargs.get('eta', 0.1)
@@ -172,36 +180,34 @@ class Field():
         return Tools.dot(b, b, gcov)
     
     # Compute the electromagnetic stress-energy tensor
+    # Default TEM^{mu, nu}
+    # "upper_lower": TEM^{mu}_{nu} 
+    # "lower_lower": TEM_{mu, nu}
     def calc_TEM(self, uu_in, B_in, gcov, gcon, **kwargs):
         uu = uu_in.copy() 
-        if 'index' in kwargs:
-            [i, j] = kwargs.get('index')
-            uu_tnsr = (uu[i] / self.c) * (uu[j] / self.c)
-        else:
-            uu_tnsr = np.einsum('i...,j...->ij...', uu / self.c, uu / self.c)
-
-        if 'b' in kwargs:
-            b = kwargs.get('b')
+        uu_tnsr = Tools.construct_dyadic(uu / self.c, gcov, **kwargs)
+        if 'b' and 'b2' in kwargs:
+            bb_tnsr = Tools.construct_dyadic(
+                    kwargs.get('b') / self.B0, gcov, **kwargs)
+            b2 = kwargs.get('b2') / (self.B0 * self.B0)
+        elif 'b' in kwargs and 'b2' not in kwargs:
+            bb_tnsr = Tools.construct_dyadic(
+                    kwargs.get('b') / self.B0, gcov, **kwargs)
+            b2 = self.calc_b2(kwargs.get('b'), 
+                    kwargs.get('b'), gcov) / (self.B0 * self.B0)
+        elif 'b' not in kwargs and 'b2' in kwargs:
+            B   = B_in.copy()
+            b   = self.calc_b(B, uu, gcov) / self.B0
+            b2  = kwargs.get('b2') / (self.B0 * self.B0)
         else:
             B   = B_in.copy()
             b   = self.calc_b(B, uu, gcov) / self.B0
-        
-        if 'index' in kwargs:
-            bb_tnsr = b[i] * b[j]
-        else:
-            bb_tnsr = np.einsum('i...,j...->ij...', b, b)
-        
-        if 'b2' in kwargs:
-            b2 = kwargs.get('b2')
-        else:
+            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
             b2 = self.calc_b2(b, b, gcov)
         
-        B02 = self.B0 * self.B0
-        if 'index' not in kwargs:
-            return (b2*uu_tnsr + 0.5*b2*gcon - bb_tnsr) * B02
-        else:
-            return (b2*uu_tnsr + 0.5*b2*gcon[i, j] - bb_tnsr) * B02
-
+        B02    = self.B0 * self.B0
+        g_tnsr = Tools.g_metric(gcov, gcon, **kwargs)
+        return (b2*uu_tnsr + 0.5*b2*g_tnsr - bb_tnsr) * B02
     
 class Fluid():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -209,14 +215,35 @@ class Fluid():
         if (self.cgs):
             self.rho0 = pars['density_scale'] # g/cm^3 
             self.c    = CONSTANTS['c']        # cm/s
+            self.kB   = self.CONSTANTS['kB']  # erg/K
+            self.mu_i = 4.0 / (
+                    4.0 * self.CONSTANTS['X_AB'] + self.CONSTANTS['Y_AB'])
+            self.mu_e = 2.0 / (1.0 + self.CONSTANTS['X_AB'])
+            self.mp   = self.CONSTANTS['mp']  # g
+            self.mi   = ((self.CONSTANTS['X_AB'] + 
+                          self.CONSTANTS['Y_AB']) * self.CONSTANTS['mp']) # g 
+            self.me   = self.CONSTANTS['me']  # g
+            self.sigT = self.CONSTANTS['sigmaT'] # cm^2
         else:
             self.rho0 = 1.0
             self.c    = 1.0
+            self.kB   = 1.0
+            self.mu_i = 1.0
+            self.mu_e = 1.0
+            self.mp   = 1.0
+            self.mi   = 1.0
+            self.me   = 1.0
+            self.sigT = 1.0
 
+        self.kwargs    = kwargs
         self.CONSTANTS = CONSTANTS
+        self.params    = pars
 
     # Compute the hydrodynamic stress-energy tensor
-    def calc_THD(self, rho_in, uu_in, ugas_in, pgas_in, gcon, **kwargs):
+    # Default THD^{mu, nu} 
+    # "upper_lower": THD^{mu}_{nu} 
+    # "lower_lower": THD_{mu, nu}
+    def calc_THD(self, rho_in, uu_in, ugas_in, pgas_in, gcov, gcon, **kwargs):
         rho, uu, ugas = rho_in.copy(), uu_in.copy(), ugas_in.copy()
         if (kwargs.get('EOS')):
             Te_in  = kwargs.get('Te')
@@ -230,34 +257,72 @@ class Fluid():
         ugas *= 1. / rho0c2
         pgas *= 1. / rho0c2
 
-        if 'index' not in kwargs:
-            uu_tnsr = np.einsum('i...,j...->ij...', uu / self.c, uu / self.c)
-            return ((rho + ugas + pgas) * uu_tnsr + pgas * gcon) * rho0c2
-        else:
-            [i, j] = kwargs.get('index')
-            uu_tnsr = (uu[i] / self.c) * (uu[j] / self.c)
-            return ((rho + ugas + pgas) * uu_tnsr + pgas * gcon[i, j]) * rho0c2
+        uu_tnsr = Tools.construct_dyadic(uu / self.c, gcov, **kwargs)
+        g_tnsr  = Tools.g_metric(gcov, gcon, **kwargs)
+        return ((rho + ugas + pgas) * uu_tnsr + pgas * g_tnsr) * rho0c2
 
     # Compute pgas from ugas using gamma law EOS
-    def calc_pgas(self, ugas_in, Te_in, Ti_in):
-        ugas, Te, Ti = ugas_in.copy(), Te_in.copy(), Ti_in.copy()
-        MU_I  = 4.0 / (4.0 * self.CONSTANTS['X_AB'] + self.CONSTANTS['Y_AB'])
-        MU_E  = 2.0 / (1.0 + self.CONSTANTS['X_AB'])
-        MI_ME = self.CONSTANTS['mi'] / self.CONSTANTS['me']
+    # Equation 23 in Sadowski+ (2017)
+    def calc_pgas(self, ugas, Te, Ti):
+        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
+        Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
 
         # Calculate gamma (ratio of specific heats)
-        Theta_e = Te * (MU_E * MI_ME)
-        Theta_i = Ti * MU_I
-
-        gam_e = (10.0 + 20.0 * Theta_e) / (6.0 + 15.0 * Theta_e)
-        gam_i = (10.0 + 20.0 * Theta_i) / (6.0 + 15.0 * Theta_i)
+        # Equation 28 in Sadowski+ (2017)
+        gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
+        gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
         
         gam_g = 1. + ((
                 (gam_e - 1.) * (gam_i - 1.) * (
-                (MU_I / (MU_E * MI_ME)) + (Theta_i / Theta_e)) ) / (
-                (Theta_i / Theta_e) * (gam_e - 1.) + 
-                (MU_I / (MU_E * MI_ME)) * (gam_i - 1.) ))
-        return (gam_g - 1.) * ugas
+                (self.mu_i / self.mu_e) + (Ti / Te)) ) / (
+                (Ti / Te) * (gam_e - 1.) + 
+                (self.mu_i / self.mu_e) * (gam_i - 1.) ))
+        return (gam_g - 1.) * ugas # erg/cm^3
+
+    # Compute ion-electron equilibration timescale teq
+    # Assumes rho in g/cm^3, Te and Ti in K, ugas in erg/cm^3
+    # Set teq to 0 wherever teq < dt
+    def calc_teq(self, rho, ugas, Te, Ti):
+        qie = self.qie(rho, Te, Ti)
+        teq = ugas / qie
+        teq[teq < self.params['dt']] = 0.0
+        return teq # s
+
+    # Compute cooling rate due to ion-electron collisions
+    # Assumes rho in g/cm^3, Te and Ti in K
+    # Equation 20 in Sadowski+ (2017)
+    # see also Stepney & Guilbert (1983) Equation 15
+    def calc_qie(self, rho, Te, Ti):
+        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
+        Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
+        ne      = rho / (self.mu_e * self.mp)
+        X_ab, Y_ab = self.CONSTANTS['X_AB'], self.CONSTANTS['Y_AB'] 
+        n_avg   = ((X_ab + Y_ab) * self.rho) / self.mp
+        cksigmaT= self.c * self.kB * self.sigT
+        me_mi   = self.me / self.mi
+        qie     = (
+            (3./2.) * me_mi * cksigmaT * (ne * n_avg) * (Ti - Te) * ( 
+            self.Coulomb_log(ne, Te) * self.k2k2_qie(Theta_e, Theta_i) * (
+            self.k1_qie(Theta_e, Theta_i) + self.k0_qie(Theta_e, Theta_i)))
+        )
+        return qie # erg/cm^3
+
+    def k2k2_qie(self, Theta_e, Theta_i):
+        return 1. / (kn(2, (1. / Theta_i)) * kn(2, (1. / Theta_e)))
+
+    def k1_qie(self, Theta_e, Theta_i):
+        Theta_m = 1. / ((1. / Theta_e) + (1. / Theta_i))
+        return (
+                ((2. * np.square(Theta_e + Theta_i) + 1.) / 
+                (Theta_e + Theta_i)) * kn(1, (1. / Theta_m))
+        )
+
+    def k0_qie(self, Theta_e, Theta_i):
+        Theta_m = 1. / ((1. / Theta_e) + (1. / Theta_i))
+        return 2. * kn(0, (1. / Theta_m))
+
+    def Coulomb_log(self, ne, Te):
+        return 35.4 + np.log((Te / 1.e7) * np.sqrt(1.0e-3 / ne))
 
 class Tools():
     def dot(a, b, gcov):
@@ -265,8 +330,50 @@ class Tools():
         a_cov = np.einsum('ij...,j...->i...', gcov, a)
         return np.einsum('i...,i...->...', a_cov, b)
 
+    def construct_dyadic(uu, gcov, **kwargs):
+        if 'index' in kwargs:
+            [mu, nu] = kwargs.get('index')
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                uu_tnsr = uu[mu] * uu[nu]
+            elif ('upper_lower' in kwargs):
+                uu_tnsr = uu[mu] * np.einsum('ij...,j...->i...', gcov, uu)[nu]
+            elif ('lower_lower' in kwargs):
+                uu_tnsr = ( 
+                    np.einsum('ij...,j...->i...', gcov, uu)[mu] * (
+                    np.einsum('ij...,j...->i...', gcov, uu)[nu]))
+        else:
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                uu_tnsr = np.einsum('i...,j...->ij...', uu, uu)
+            elif ('upper_lower' in kwargs):
+                uu_tnsr = np.einsum('i...,j...->ij...', uu, 
+                            np.einsum('ij...,j...->i...', gcov, uu))
+            elif ('lower_lower' in kwargs):
+                uu_tnsr = np.einsum('i...,j...->ij...', 
+                        np.einsum('ij...,j...->i...', gcov, uu), 
+                        np.einsum('ij...,j...->i...', gcov, uu))
+        return uu_tnsr
+            
+    def g_metric(gcov, gcon, **kwargs):
+        if 'index' in kwargs:
+            [mu, nu] = kwargs.get('index')
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                g_tnsr = gcon[mu, nu]
+            elif ('upper_lower' in kwargs):
+                g_tnsr = 1.0 * (mu == nu)
+            elif ('lower_lower' in kwargs):
+                g_tnsr = gcov[mu, nu]
+        else:
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                g_tnsr = gcon
+            elif ('upper_lower' in kwargs):
+                g_tnsr = np.identity(4)
+            elif ('lower_lower' in kwargs):
+                g_tnsr = gcov
+        return g_tnsr
+
 if __name__ == "__main__":
     print("Executing analysis.")
+
 
 '''
 # calculate disk mass
