@@ -8,20 +8,21 @@ import numpy as np
 import hamr_readc
 
 CONSTANTS = {
-    'aRAD'    :  7.5657e-15,    # Radiation constant (erg/cm^3/K^4)
-    'mp'      :  1.673534e-24,  # Proton (ion) mass (g)
-    'me'      :  9.1094e-28,    # Electron mass (g)
-    'MMW'     :  1.69,          # Mean molecular weight (unitless)
-    'Z_AB'    :  0.02,          # Solar abundance of "metals" (unitless)
-    'Y_AB'    :  0.28,          # Solar abundance of He (unitless)
-    'X_AB'    :  0.70,          # Solar abundance of H (unitless)
-    'kB'      :  1.3806504e-16, # Boltzmann constant (erg/K)
-    'sigmaT'  :  6.652e-25,     # Thomson cross section (cm^2)
-    'h'       :  6.6260755e-27, # Planck's constant (erg s)
-    'sigSB'   :  5.67051e-5,    # Stefan-Boltzmann constant (erg/cm^2/s/K^4)
-    'c'       :  2.99792458e10, # Speed of light (cm/s)
-    'G'       :  6.67259e-8,    # Newton's gravitational constant (cm^3/g/s^2)
-    'Msun'    :  1.998e33,      # Mass of the Sun (g) 
+    'aRAD'    :  7.5657e-15,     # Radiation constant (erg/cm^3/K^4)
+    'mp'      :  1.673534e-24,   # Proton (ion) mass (g)
+    'me'      :  9.1094e-28,     # Electron mass (g)
+    'MMW'     :  1.69,           # Mean molecular weight (unitless)
+    'Z_AB'    :  0.02,           # Solar abundance of "metals" (unitless)
+    'Y_AB'    :  0.28,           # Solar abundance of He (unitless)
+    'X_AB'    :  0.70,           # Solar abundance of H (unitless)
+    'kB'      :  1.3806504e-16,  # Boltzmann constant (erg/K)
+    'sigmaT'  :  6.652e-25,      # Thomson cross section (cm^2)
+    'e'       :  4.80320427e-10, # Elementary charge (statcoulomb)
+    'h'       :  6.6260755e-27,  # Planck's constant (erg s)
+    'sigSB'   :  5.67051e-5,     # Stefan-Boltzmann constant (erg/cm^2/s/K^4)
+    'c'       :  2.99792458e10,  # Speed of light (cm/s)
+    'G'       :  6.67259e-8,     # Newton's gravitational constant (cm^3/g/s^2)
+    'Msun'    :  1.998e33,       # Mass of the Sun (g) 
 }
 
 amr, physics, params = {}, {}, {}
@@ -100,15 +101,20 @@ class Read():
         self.export_raytracing = kwargs.get('export_raytracing', 0)
         self.interpolate_var   = kwargs.get('interpolate_var', 0)
         self.axisym      = kwargs.get('axisym', 1)
-        self.do_box      = kwargs.get('do_box', 0)
+        self.coords1D    = kwargs.get('coords1D', 0)
 
-        if (self.do_box):
+        if ('r_min'     in kwargs or 'r_max'     in kwargs or 
+            'theta_min' in kwargs or 'theta_max' in kwargs or
+            'phi_min'   in kwargs or 'phi_max'   in kwargs):
+            self.do_box    = 1
             self.r_min     = kwargs.get('r_min', None)
             self.r_max     = kwargs.get('r_max', None)
             self.theta_min = kwargs.get('theta_min', 0.0)
             self.theta_max = kwargs.get('theta_max', np.pi)
             self.phi_min   = kwargs.get('phi_min', 0.0)
             self.phi_max   = kwargs.get('phi_max', 2.0*np.pi)
+        else:
+            self.do_box    = 0
 
         self.BYTES_PER_VAR = 4
 
@@ -325,7 +331,14 @@ class Read():
             self.check_griddump_exists()
 
         # Allocate memory
-        x1, x2, x3, r, theta, phi = Tools.zeroNd([dim, nx, ny, nz], 6)
+        if not self.coords1D:
+            x1, x2, x3, r, theta, phi = Tools.zeroNd([dim, nx, ny, nz], 6)
+        elif self.coords1D and direct:
+            x1, r     = Tools.zeroNd([nx], 2)
+            x2, theta = Tools.zeroNd([ny], 2)
+            x3, phi   = Tools.zeroNd([nz], 2)
+        elif self.coords1D and not direct:
+            raise ValueError("Must use direct=True with coords1D.")
 
         if (self.axisym):
             gcov, gcon, dxdxp = Tools.zeroNd([4, 4, dim, nx, ny, 1], 3)
@@ -344,38 +357,52 @@ class Read():
         }
 
         if (direct):
+            if not self.do_box:
+                startx1 = params['startx1']
+                startx2 = params['startx2']
+                startx3 = params['startx3']
+            else:
+                startx1 = np.log(self.r_min)
+                startx2 = ((2.0/np.pi) * self.theta_min) - 1.0
+                startx3 = self.phi_min
+            
             for i in range(0, nx):
-                if not self.do_box:
-                    x1[:, i, :, :] = (params['startx1'] + 
-                                      (i + 0.5) * params['dx1'])
+                if not self.coords1D:
+                    x1[:, i, :, :] = startx1 + (i + 0.5) * params['dx1']
                 else:
-                    x1[:, i, :, :] = (np.log(self.r_min) + 
-                                      (i + 0.5) * params['dx1'])
+                    x1[i]          = startx1 + (i + 0.5) * params['dx1']
             for j in range(0, ny):
-                if not self.do_box:
-                    x2[:, :, j, :] = (params['startx2'] + 
-                                      (j + 0.5) * params['dx2'])
+                if not self.coords1D:
+                    x2[:, :, j, :] = startx2 + (j + 0.5) * params['dx2']
                 else:
-                    x2[:, :, j, :] = ((((2.0/np.pi) * self.theta_min) - 1.0) + 
-                                      (j + 0.5) * params['dx2'])
+                    x2[j]          = startx2 + (j + 0.5) * params['dx2']
             for k in range(0, nz):
-                if not self.do_box:
-                    x3[:, :, :, k] = (params['startx3'] + 
-                                      (k + 0.5) * params['dx3'])
+                if not self.coords1D:
+                    x3[:, :, :, k] = startx3 + (k + 0.5) * params['dx3']
                 else:
-                    x3[:, :, :, k] = (self.phi_min + 
-                                      (k + 0.5) * params['dx3'])
-                
+                    x3[k]          = startx3 + (k + 0.5) * params['dx3']
+ 
             r     = np.exp(x1)
             theta = (x2 + 1.0) * (np.pi/2.0)
             phi   = x3
 
-            gcov_kerr = self.get_gcov_KS(r, theta, phi, nx, ny)
-
-            dxdxp[0, 0] = 1.0
-            dxdxp[1, 1, 0, :, :, 0] = r[0, :, :, 0]
-            dxdxp[2, 2] = np.pi / 2.0
-            dxdxp[3, 3] = 1.0
+            if not self.coords1D:
+                gcov_kerr = self.get_gcov_KS(r, theta, phi, nx, ny)
+            else:
+                gcov_kerr = self.get_gcov_KS(r[None, :, None, None], 
+                                             theta[None, None, :, None], 
+                                             phi[None, None, None, :], nx, ny)
+            
+            if not self.coords1D:
+                dxdxp[0, 0] = 1.0
+                dxdxp[1, 1, 0, :, :, 0] = r[0, :, :, 0]
+                dxdxp[2, 2] = np.pi / 2.0
+                dxdxp[3, 3] = 1.0
+            else:
+                dxdxp[0, 0] = 1.0
+                dxdxp[1, 1, 0, :, :, 0] = r[:, None]
+                dxdxp[2, 2] = np.pi / 2.0
+                dxdxp[3, 3] = 1.0
 
             # Set covariant metric in internal coordinates
             gcov = np.einsum('kl...,ki...,lj...->ij...', 
@@ -396,18 +423,32 @@ class Read():
                                  x1, x2, x3, r, theta, phi,
                                  gcov, gcon, gdet, dxdxp)
         
-        self.grid = {
-            'x1'    : x1,
-            'x2'    : x2, 
-            'x3'    : x3,
-            'r'     : r,
-            'theta' : theta,
-            'phi'   : phi,
-            'gcov'  : gcov,
-            'gcon'  : gcon,
-            'gdet'  : gdet,
-            'dxdxp' : dxdxp
-        }
+        if not self.coords1D:
+            self.grid = {
+                'x1'    : x1,
+                'x2'    : x2, 
+                'x3'    : x3,
+                'r'     : r,
+                'theta' : theta,
+                'phi'   : phi,
+                'gcov'  : gcov,
+                'gcon'  : gcon,
+                'gdet'  : gdet,
+                'dxdxp' : dxdxp
+            }
+        else:
+            self.grid = {
+                'x1'    : x1[None, :, None, None],
+                'x2'    : x2[None, None, :, None], 
+                'x3'    : x3[None, None, None, :],
+                'r'     : r[None, :, None, None],
+                'theta' : theta[None, None, :, None],
+                'phi'   : phi[None, None, None, :],
+                'gcov'  : gcov,
+                'gcon'  : gcon,
+                'gdet'  : gdet,
+                'dxdxp' : dxdxp
+            }
 
         if (self.cgs_grid):
             self.restore_units_grid()
