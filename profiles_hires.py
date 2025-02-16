@@ -6,6 +6,7 @@ sys.path.insert(0, '/lustre/orion/ast178/proj-shared/' +
         'cbambic/HAMR_Visualization/Read_HAMR_Data')
 import hamr_read as hr
 import analysis as ana
+import radiation as rad
 import tracemalloc
 
 def main(**kwargs):
@@ -46,12 +47,11 @@ def main(**kwargs):
         first_call = False
 
     for i in range(iphi_start, len(phi_1D), iphi_stp):
-        plasma = {}
         profiles['saved'] = False
         tracemalloc.start()
         H = hr.Read(main_dir + 'DATA/Thin_RAD_MAD_HiRes', 
 	        cgs_data = True, cgs_grid = True, MBH = 10.0,
-                do_box = 1,
+                coords1D = True,
                 phi_min = phi_1D[i] - dphi, 
                 phi_max = phi_1D[i + iphi_stp - 1])
         
@@ -71,13 +71,16 @@ def main(**kwargs):
         print("Analyzing k range %d to %d" %(k_min, k_max))
         
         # Initialize Accretion class
-        Acc = ana.Accretion(H.grid, H.data, hr.params, hr.CONSTANTS, cgs=True)
+        Acc = ana.Accretion(H.grid, H.data, hr.params, hr.CONSTANTS, 
+                cgs=True, MBH=10.0, radiation=True)
         # Initialize Coordinates class
         Coords = ana.Coordinates(H.grid['r'], H.grid['theta'], H.grid['phi'])
         # Initialize Fluid class
         Fluid = ana.Fluid(hr.params, hr.CONSTANTS, cgs=True)
         # Initialize Field class
         Field = ana.Field(hr.params, hr.CONSTANTS, cgs=True)
+        # Initialize Radiation class
+        Radi  = rad.Radiation(hr.params, hr.CONSTANTS, cgs=True)
 
         # Calculate sigma (3D)
         b     = Field.calc_b(H.data['B'], H.data['uu'], H.grid['gcov'])
@@ -88,47 +91,76 @@ def main(**kwargs):
 
         # Put spherical radius in dictionary 
         profiles['r']   = H.grid['r'][0, :, 0, 0] / Rg
-        plasma['r']     = H.grid['r'][0, :, 0, 0]
-        plasma['theta'] = H.grid['theta'][0, 0, :, 0]
-
-        keys   = ['rho', 'Ti', 'Te', 'Pmag', 'Pthm', 'Prad', 'Vol']
-        quants = [H.data['rho'], H.data['Ti'], H.data['Te'], 
-                  b2/(8. * np.pi), pgas, (1./3.) * H.data['u_rad'], 1.0
+        
+        # Quantities (quants) for profile averaging
+        keys   = ['rho',  'Ti',   'Te', 
+                  'Pmag', 'Pthm', 'Prad', 
+                  'vr',   'vth',  'vphi', 
+                  'br',   'bth',  'bphi', 
+                  'teq',  'tIC', 'trad_abs', 'trad_emi', 'Vol'
         ]
+        quants = [H.data['rho'], H.data['Ti'], H.data['Te'], 
+                  b2/(8. * np.pi), pgas, (1./3.) * H.data['u_rad'], 
+                  H.data['uu'][1] / H.data['uu'][0], 
+                  H.data['uu'][2] / H.data['uu'][0], 
+                  H.data['uu'][3] / H.data['uu'][0], 
+                  b[1], b[2], b[3], 
+                  Fluid.calc_teq(H.data['rho'], H.data['Te'], 
+                                 H.data['Ti'], cooling=True),
+                  Radi.calc_tIC(H.data['rho'], H.data['Te'], 
+                                 H.data['u_rad'], cooling=True),
+                  Radi.calc_trad_abs(H.data['rho'], H.data['Te'], 
+                                     H.data['u_rad'], b2=b2, XRB=True),
+                  Radi.calc_trad_emi(H.data['rho'], H.data['Te'], 
+                                     H.data['u_rad'], b2=b2, XRB=True), 1.0
+        ]
+        timescales = [False, False, False, False, False, False, 
+                      False, False, False, False, False, False,
+                      True, True, True, True, False
+        ]
+
         if first_call:
-            profiles['Mdot']   = Acc.calc_Mdot(sigma_cut = 3.0, 
-                                               sigma = sigma)[0]
-            profiles['Edot']   = Acc.calc_Edot(sigma_cut = 3.0, 
-                                               sigma = sigma, 
-                                               b2 = b2, b = b)[0]
-            profiles['Phi_BH'] = Acc.calc_PhiBH()[0]
-            for (key, quant) in zip(keys, quants):
-                profiles['%s' %key] = thph_sum(quant, 
-                        H.grid, H.data, hr.params, hr.CONSTANTS, 
-                        weight=H.data['rho'], sigma_cut=3.0, sigma=sigma)[0]
+            profiles['Mdot']       = np.zeros(len(profiles['r']))
+            profiles['Edot']       = np.zeros(len(profiles['r']))
+            profiles['Mdot_sigma'] = np.zeros(len(profiles['r']))
+            profiles['Edot_sigma'] = np.zeros(len(profiles['r']))
+            profiles['Phi_BH']     = np.zeros(len(profiles['r']))
+            for (key, quant, timescale) in zip(keys, quants, timescales):
+                profiles['%s' %key]= np.zeros(len(profiles['r']))
+                if (timescale):
+                    profiles['Vol_%s' %key] = np.zeros(len(profiles['r']))
             first_call = False
         else:
-            profiles['Mdot'] += Acc.calc_Mdot(sigma_cut = 3.0, 
-                                              sigma = sigma)[0]
-            profiles['Edot'] += Acc.calc_Edot(sigma_cut = 3.0, 
-                                              sigma = sigma, 
-                                              b2 = b2, b = b)[0]
-            profiles['Phi_BH'] += Acc.calc_PhiBH()[0]
-            for (key, quant) in zip(keys, quants):
-                profiles['%s' %key]+= thph_sum(quant, 
-                        H.grid, H.data, hr.params, hr.CONSTANTS, 
-                        weight=H.data['rho'], sigma_cut=3.0, sigma=sigma)[0]
+            profiles['Mdot']      += Acc.calc_Mdot()[0]
+            profiles['Edot']      += Acc.calc_Edot(radiation=True)[0]
+            profiles['Mdot_sigma']+= Acc.calc_Mdot(sigma_cut = 3.0, 
+                                               sigma = sigma)[0]
+            profiles['Edot_sigma']+= Acc.calc_Edot(radiation=True,
+                                               sigma_cut = 3.0, 
+                                               sigma = sigma, 
+                                               b2 = b2, b = b)[0]
+            profiles['Phi_BH']    += Acc.calc_PhiBH()[0]
+            
+            for (key, quant, timescale) in zip(keys, quants, timescales):
+                if (timescale):
+                    time = quant
+                    profiles['%s' %key] += thph_sum(quant, 
+                            H.grid, H.data, hr.params, hr.CONSTANTS, 
+                            weight=H.data['rho'], 
+                            sigma_cut=3.0, sigma=sigma)[0]
+                    profiles['Vol_%s' %key] += thph_sum(
+                            np.ones(H.data['rho'].shape), 
+                            H.grid, H.data, hr.params, hr.CONSTANTS,
+                            weight=H.data['rho'],
+                            sigma_cut=3.0, sigma=sigma, time=time)[0]
+                else:
+                    profiles['%s' %key] += thph_sum(quant, 
+                            H.grid, H.data, hr.params, hr.CONSTANTS, 
+                            weight=H.data['rho'], 
+                            sigma_cut=3.0, sigma=sigma)[0]
+            
             profiles['k_max'] = k_max
         
-        plasma['Ti']    = H.data['Ti'][0, :, :, 0]
-        plasma['Te']    = H.data['Te'][0, :, :, 0]
-        plasma['BetaI'] = ((b2 / (8. * np.pi)) / pgas)[0, :, :, 0]
-        plasma['sigma'] = sigma[0, :, :, 0]
-        
-        # Calculate magnetic field in Cartesian coordinates
-        B_cart = Coords.int_to_cart_vec(H.data['B'])
-        plasma['B'] = B_cart[:, 0, :, :, 0]
-
         print(tracemalloc.get_traced_memory())
         tracemalloc.stop()
 
@@ -139,14 +171,15 @@ def main(**kwargs):
         profiles['saved'] = True
         np.save(main_dir + 'Averages/' + sim + 
                 '/Profiles_%d' %fnum, profiles)
-        np.save(main_dir + 'Averages/' + sim + 
-                '/Plasma_%d_%d' %(fnum, k_min), plasma)
         print("Done saving profiles.")
 
     print("Profiles done.")
 
 def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
     w    = kwargs.get('weight')
+    if 'time' in kwargs:
+        time = kwargs.get('time')
+        q[time <= 0.0] = 0.0
     Acc2 = ana.Accretion(grid, data, params, CONSTANTS, cgs=True)
     return (q * w * Acc2.sigma_cut(**kwargs) * (
         grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
@@ -172,4 +205,17 @@ if __name__ == '__main__':
                         integration should continue from last k_max""")
     args = parser.parse_args()
     main(**vars(args))
-
+'''
+        #plasma['r']     = H.grid['r'][0, :, 0, 0]
+        #plasma['theta'] = H.grid['theta'][0, 0, :, 0]
+        #plasma['Ti']    = H.data['Ti'][0, :, :, 0]
+        #plasma['Te']    = H.data['Te'][0, :, :, 0]
+        #plasma['BetaI'] = ((b2 / (8. * np.pi)) / pgas)[0, :, :, 0]
+        #plasma['sigma'] = sigma[0, :, :, 0]
+        
+        # Calculate magnetic field in Cartesian coordinates
+        #B_cart = Coords.int_to_cart_vec(H.data['B'])
+        #plasma['B'] = B_cart[:, 0, :, :, 0]
+        #np.save(main_dir + 'Averages/' + sim + 
+        #        '/Plasma_%d_%d' %(fnum, k_min), plasma)
+'''
