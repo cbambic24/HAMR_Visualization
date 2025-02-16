@@ -10,6 +10,9 @@ class Accretion():
         self.gcov, self.gcon         = grid['gcov'], grid['gcon']
         self.rho, self.uu, self.ugas = data['rho'], data['uu'], data['u_gas']
         self.B                       = data['B']
+        if kwargs.get('radiation'):
+            self.urad                = data['u_rad']
+            self.uu_rad              = data['uu_rad']
         self.cgs                     = kwargs.get('cgs', False)
         self.MBH                     = kwargs.get('MBH', 1.0)
         if (self.cgs):
@@ -55,10 +58,18 @@ class Accretion():
         return (0.5 * np.abs(self.B[1]) * (self.Rg * self.Rg) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
 
-    # Calculate full MHD stress-energy tensor
+    # Calculate full MHD (+ Radiation) stress-energy tensor
     def calc_TMHD(self, **kwargs):
         Flu = Fluid(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
         Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
+        if kwargs.get('radiation') and self.kwargs.get('radiation'):
+            import radiation
+            Rad = radiation.Radiation(self.pars, self.CONSTANTS, 
+                                      cgs=self.kwargs.get('cgs'))
+        elif kwargs.get('radiation') and not self.kwargs.get('radiation'):
+            raise ValueError("""Cannot use radiation in calculation of 
+                              stress-energy tensor without initializing
+                              Accretion class with radiation=True.""")
         if 'pgas' in kwargs:
             pgas = kwargs.get('pgas')
         else:
@@ -69,7 +80,12 @@ class Accretion():
                                         EOS=self.kwargs.get('EOS'), **kwargs)
         stress_energy_EM = Fld.calc_TEM(self.uu, self.B, self.gcov, self.gcon,
                                         **kwargs)
-        return stress_energy_HD + stress_energy_EM
+        if kwargs.get('radiation'):
+            stress_energy_RAD = Rad.calc_TRAD(self.urad, self.uu_rad, 
+                                              self.gcov, self.gcon, **kwargs) 
+            return stress_energy_HD + stress_energy_EM + stress_energy_RAD
+        else:
+            return stress_energy_HD + stress_energy_EM
     
     def sigma_cut(self, **kwargs):
         if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
@@ -183,8 +199,7 @@ class Field():
     # Default TEM^{mu, nu}
     # "upper_lower": TEM^{mu}_{nu} 
     # "lower_lower": TEM_{mu, nu}
-    def calc_TEM(self, uu_in, B_in, gcov, gcon, **kwargs):
-        uu = uu_in.copy() 
+    def calc_TEM(self, uu, B, gcov, gcon, **kwargs):
         uu_tnsr = Tools.construct_dyadic(uu / self.c, gcov, **kwargs)
         if 'b' and 'b2' in kwargs:
             bb_tnsr = Tools.construct_dyadic(
@@ -196,11 +211,9 @@ class Field():
             b2 = self.calc_b2(kwargs.get('b'), 
                     kwargs.get('b'), gcov) / (self.B0 * self.B0)
         elif 'b' not in kwargs and 'b2' in kwargs:
-            B   = B_in.copy()
             b   = self.calc_b(B, uu, gcov) / self.B0
             b2  = kwargs.get('b2') / (self.B0 * self.B0)
         else:
-            B   = B_in.copy()
             b   = self.calc_b(B, uu, gcov) / self.B0
             bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
             b2 = self.calc_b2(b, b, gcov)
@@ -215,15 +228,17 @@ class Fluid():
         if (self.cgs):
             self.rho0 = pars['density_scale'] # g/cm^3 
             self.c    = CONSTANTS['c']        # cm/s
-            self.kB   = self.CONSTANTS['kB']  # erg/K
+            self.kB   = CONSTANTS['kB']       # erg/K
+            # Equation 11 in Sadowski+ (2017)
             self.mu_i = 4.0 / (
-                    4.0 * self.CONSTANTS['X_AB'] + self.CONSTANTS['Y_AB'])
-            self.mu_e = 2.0 / (1.0 + self.CONSTANTS['X_AB'])
-            self.mp   = self.CONSTANTS['mp']  # g
-            self.mi   = ((self.CONSTANTS['X_AB'] + 
-                          self.CONSTANTS['Y_AB']) * self.CONSTANTS['mp']) # g 
-            self.me   = self.CONSTANTS['me']  # g
-            self.sigT = self.CONSTANTS['sigmaT'] # cm^2
+                    4.0 * CONSTANTS['X_AB'] + CONSTANTS['Y_AB'])
+            # Equation 10 in Sadowski+ (2017)
+            self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB'])
+            self.mp   = CONSTANTS['mp']     # g
+            self.mi   = ((CONSTANTS['X_AB'] + 
+                          CONSTANTS['Y_AB']) * CONSTANTS['mp']) # g 
+            self.me   = CONSTANTS['me']     # g
+            self.sigT = CONSTANTS['sigmaT'] # cm^2
         else:
             self.rho0 = 1.0
             self.c    = 1.0
@@ -243,13 +258,12 @@ class Fluid():
     # Default THD^{mu, nu} 
     # "upper_lower": THD^{mu}_{nu} 
     # "lower_lower": THD_{mu, nu}
-    def calc_THD(self, rho_in, uu_in, ugas_in, pgas_in, gcov, gcon, **kwargs):
-        rho, uu, ugas = rho_in.copy(), uu_in.copy(), ugas_in.copy()
+    def calc_THD(self, rho_in, uu, ugas_in, pgas_in, gcov, gcon, **kwargs):
+        rho, ugas = rho_in.copy(), ugas_in.copy()
         if (kwargs.get('EOS')):
-            Te_in  = kwargs.get('Te')
-            Ti_in  = kwargs.get('Ti')
-            Te, Ti = Te_in.copy(), Ti_in.copy()
-            pgas   = self.calc_pgas(ugas, Te, Ti)
+            Te   = kwargs.get('Te')
+            Ti   = kwargs.get('Ti')
+            pgas = self.calc_pgas(ugas, Te, Ti)
         else:
             pgas = pgas_in.copy()
         rho0c2 = self.rho0 * self.c * self.c
@@ -282,13 +296,29 @@ class Fluid():
     # Compute ion-electron equilibration timescale teq
     # Assumes rho in g/cm^3, Te and Ti in K, ugas in erg/cm^3
     # Set teq to 0 wherever teq < dt
-    def calc_teq(self, rho, ugas, Te, Ti):
-        qie = self.qie(rho, Te, Ti)
-        teq = ugas / qie
-        teq[teq < self.params['dt']] = 0.0
-        return teq # s
+    def calc_teq(self, rho, Te, Ti, **kwargs):
+        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
+        Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
 
-    # Compute cooling rate due to ion-electron collisions
+        # Calculate gamma (ratio of specific heats)
+        # Equation 28 in Sadowski+ (2017)
+        gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
+        gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
+
+        u_i = (1./(gam_i-1.)) * (rho / (self.mu_i * self.mi)) * self.kB * Ti
+        u_e = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
+
+        teq = (u_i - u_e) / self.calc_qie(rho, Te, Ti)
+        if 'cooling' in kwargs:
+            teq[Ti < Te] = 0.0
+            return teq # s
+        elif 'heating' in kwargs:
+            teq[Ti > Te] = 0.0
+            return np.abs(teq) # s
+        else:
+            return teq # s
+
+    # Compute cooling/heating rate due to ion-electron collisions
     # Assumes rho in g/cm^3, Te and Ti in K
     # Equation 20 in Sadowski+ (2017)
     # see also Stepney & Guilbert (1983) Equation 15
@@ -297,7 +327,7 @@ class Fluid():
         Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
         ne      = rho / (self.mu_e * self.mp)
         X_ab, Y_ab = self.CONSTANTS['X_AB'], self.CONSTANTS['Y_AB'] 
-        n_avg   = ((X_ab + Y_ab) * self.rho) / self.mp
+        n_avg   = ((X_ab + Y_ab) * rho) / self.mp
         cksigmaT= self.c * self.kB * self.sigT
         me_mi   = self.me / self.mi
         qie     = (
@@ -305,7 +335,7 @@ class Fluid():
             self.Coulomb_log(ne, Te) * self.k2k2_qie(Theta_e, Theta_i) * (
             self.k1_qie(Theta_e, Theta_i) + self.k0_qie(Theta_e, Theta_i)))
         )
-        return qie # erg/cm^3
+        return qie # erg/cm^3 s
 
     def k2k2_qie(self, Theta_e, Theta_i):
         return 1. / (kn(2, (1. / Theta_i)) * kn(2, (1. / Theta_e)))
