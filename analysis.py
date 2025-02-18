@@ -47,8 +47,11 @@ class Accretion():
     
     # Calculate energy accretion rate as a function of radius
     def calc_Edot(self, **kwargs):
-        stress_energy_MHD = self.calc_TMHD(upper_lower=True, 
-                                           index = [1, 0], **kwargs)
+        if 'TMHD' not in kwargs:
+            stress_energy_MHD = self.calc_TMHD(upper_lower=True, 
+                    index = [1, 0], **kwargs)
+        else:
+            stress_energy_MHD = kwargs.get('TMHD')
         return (stress_energy_MHD * (self.Rg * self.Rg * self.c) * (
             self.sigma_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
@@ -93,7 +96,7 @@ class Accretion():
             Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
             b2  = Fld.calc_b2(self.B, self.B, self.gcov, 
                     from_B=True, uu=self.uu) / B02
-            sigma = (b2 * B02 / (8. * np.pi)) / (self.rho * self.c * self.c)
+            sigma = (b2 * B02 / (4. * np.pi)) / (self.rho * self.c * self.c)
         elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
             sigma = kwargs.get('sigma')
             return (sigma < kwargs.get('sigma_cut'))
@@ -201,7 +204,7 @@ class Field():
     # "lower_lower": TEM_{mu, nu}
     def calc_TEM(self, uu, B, gcov, gcon, **kwargs):
         uu_tnsr = Tools.construct_dyadic(uu / self.c, gcov, **kwargs)
-        if 'b' and 'b2' in kwargs:
+        if 'b' in kwargs and 'b2' in kwargs:
             bb_tnsr = Tools.construct_dyadic(
                     kwargs.get('b') / self.B0, gcov, **kwargs)
             b2 = kwargs.get('b2') / (self.B0 * self.B0)
@@ -211,12 +214,13 @@ class Field():
             b2 = self.calc_b2(kwargs.get('b'), 
                     kwargs.get('b'), gcov) / (self.B0 * self.B0)
         elif 'b' not in kwargs and 'b2' in kwargs:
-            b   = self.calc_b(B, uu, gcov) / self.B0
-            b2  = kwargs.get('b2') / (self.B0 * self.B0)
-        else:
-            b   = self.calc_b(B, uu, gcov) / self.B0
+            b       = self.calc_b(B, uu, gcov) / self.B0
             bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
-            b2 = self.calc_b2(b, b, gcov)
+            b2      = kwargs.get('b2') / (self.B0 * self.B0)
+        else:
+            b       = self.calc_b(B, uu, gcov) / self.B0
+            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
+            b2      = self.calc_b2(b, b, gcov)
         
         B02    = self.B0 * self.B0
         g_tnsr = Tools.g_metric(gcov, gcon, **kwargs)
@@ -250,6 +254,7 @@ class Fluid():
             self.me   = 1.0
             self.sigT = 1.0
 
+        self.Theta_min = 1.e-2
         self.kwargs    = kwargs
         self.CONSTANTS = CONSTANTS
         self.params    = pars
@@ -295,7 +300,6 @@ class Fluid():
 
     # Compute ion-electron equilibration timescale teq
     # Assumes rho in g/cm^3, Te and Ti in K, ugas in erg/cm^3
-    # Set teq to 0 wherever teq < dt
     def calc_teq(self, rho, Te, Ti, **kwargs):
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
@@ -308,7 +312,7 @@ class Fluid():
         u_i = (1./(gam_i-1.)) * (rho / (self.mu_i * self.mi)) * self.kB * Ti
         u_e = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
 
-        teq = (u_i - u_e) / self.calc_qie(rho, Te, Ti)
+        teq = (u_i - u_e) / self.calc_qie(rho, Te, Ti, **kwargs)
         if 'cooling' in kwargs:
             teq[Ti < Te] = 0.0
             return teq # s
@@ -322,7 +326,7 @@ class Fluid():
     # Assumes rho in g/cm^3, Te and Ti in K
     # Equation 20 in Sadowski+ (2017)
     # see also Stepney & Guilbert (1983) Equation 15
-    def calc_qie(self, rho, Te, Ti):
+    def calc_qie(self, rho, Te, Ti, **kwargs):
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
         ne      = rho / (self.mu_e * self.mp)
@@ -330,12 +334,61 @@ class Fluid():
         n_avg   = ((X_ab + Y_ab) * rho) / self.mp
         cksigmaT= self.c * self.kB * self.sigT
         me_mi   = self.me / self.mi
-        qie     = (
+        qie = (
             (3./2.) * me_mi * cksigmaT * (ne * n_avg) * (Ti - Te) * ( 
-            self.Coulomb_log(ne, Te) * self.k2k2_qie(Theta_e, Theta_i) * (
-            self.k1_qie(Theta_e, Theta_i) + self.k0_qie(Theta_e, Theta_i)))
+            self.Coulomb_log(ne, Te) * (
+            self.Bessel_terms(Theta_e, Theta_i, **kwargs)))
         )
         return qie # erg/cm^3 s
+
+    # H-AMR uses approximations for the Bessel functions when the
+    # electrons (E) or ions (I) are cold (Theta < Theta_min)
+    # In this analysis, we use the approximations when
+    # both species are cold. Otherwise, the real formula is used.
+    def Bessel_terms(self, Theta_e, Theta_i, **kwargs):
+        coldE = (Theta_e <  self.Theta_min)
+        coldI = (Theta_i <  self.Theta_min)
+        coldE_coldI = coldE * coldI
+        if 'HAMR' not in kwargs:
+            return np.where(coldE_coldI, 
+                    self.coldE_coldI(Theta_e, Theta_i), 
+                    self.hotE_hotI(  Theta_e, Theta_i))
+        elif 'HAMR' in kwargs:
+            hotE  = (Theta_e >= self.Theta_min)
+            hotI  = (Theta_i >= self.Theta_min)
+        
+            hotE_coldI  = hotE  * coldI
+            coldE_hotI  = coldE * hotI
+            hotE_hotI   = hotE  * hotI
+        
+            return (
+                np.where(coldE_coldI, self.coldE_coldI(Theta_e, Theta_i), 0.) +
+                np.where(hotE_coldI,  self.hotE_coldI( Theta_e, Theta_i), 0.) +
+                np.where(coldE_hotI,  self.coldE_hotI( Theta_e, Theta_i), 0.) +
+                np.where(hotE_hotI,   self.hotE_hotI(  Theta_e, Theta_i), 0.))
+
+    def coldE_coldI(self, Theta_e, Theta_i):
+        Theta_sum = Theta_e + Theta_i
+        return ((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) / (
+            np.sqrt(0.5 * np.pi * (Theta_sum ** 3))))
+
+    def hotE_coldI(self, Theta_e, Theta_i):
+        Theta_sum = Theta_e + Theta_i 
+        k2e       = kn(2, (1. / Theta_e))
+        return (((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) * (
+            np.sqrt(Theta_e))) / ( k2e * np.exp(1. / Theta_e) * (
+            np.sqrt(Theta_sum ** 3))))
+
+    def coldE_hotI(self, Theta_e, Theta_i):
+        Theta_sum = Theta_e + Theta_i 
+        k2i       = kn(2, (1. / Theta_i))
+        return (((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) * (
+            np.sqrt(Theta_i))) / ( k2i * np.exp(1. / Theta_i) * (
+            np.sqrt(Theta_sum ** 3))))
+
+    def hotE_hotI(self, Theta_e, Theta_i):
+        return (self.k2k2_qie(Theta_e, Theta_i) * (
+            self.k1_qie(Theta_e, Theta_i) + self.k0_qie(Theta_e, Theta_i)))
 
     def k2k2_qie(self, Theta_e, Theta_i):
         return 1. / (kn(2, (1. / Theta_i)) * kn(2, (1. / Theta_e)))
@@ -406,26 +459,9 @@ if __name__ == "__main__":
 
 
 '''
-# calculate disk mass
-def calc_Mtot(grid, data, params):
-    gdet          = grid['gdet']
-    rho, uu       = data['rho'], data['uu']
-    dx1, dx2, dx3 = params['dx1'], params['dx2'], params
-    ['dx3'] 
-    return np.sum((rho * uu[0]) * gdet * dx1 * dx2 * dx3)
-
-# Calculate inward mass accretion rate as function of radius
-def calc_Mdot(grid, data, params):
-    gdet     = grid['gdet']
-    rho, uu  = data['rho'], data['uu']
-    dx2, dx3 = params['dx2'], params['dx3'] 
-    return (-rho * uu[1] * gdet * dx2 * dx3).sum(-1).sum(-1)
-'''
-
-'''
 # Calculate precession period
 def calc_PrecPeriod(angle_tilt):
-    global gam,a,precperiod
+    gam,a,precperiod
     uu_proj = project_vector(uu)
     L = rho * r * uu_proj[3]
     tilt=np.zeros((nb,bs1new,1,1),dtype=np.float32)
@@ -533,35 +569,11 @@ def calc_profiles_M1(scaleheight, cutoff=1.0e-5):
     tau_es2 = (kappa_es * rho * density_scale * R_G_CGS * _dx2 * np.sqrt(gcov[2, 2])).cumsum(axis=2)
     tau_es[tau_es > tau_es2] = tau_es2[tau_es > tau_es2]
 
-    # Calculate density averaged emmission rate
-    # cool_emmit=(fact1*kappa_emmit*rho*R_G_CGS*density_scale*2.2714380625235033e+21*(TE**4)*gdet*_dx1*_dx2*_dx3).sum(-1).sum(-1)[0]/norm1
-    # cool_emmit=(fact1*(kappa_emmit*rho*R_G_CGS*density_scale*2.2714380625235033e+21*(TE**4)-kappa_abs*rho*R_G_CGS*density_scale*Ehat/ENERGY_DENSITY_SCALE)*gdet*_dx1*_dx2*_dx3).sum(-1).sum(-1)[0]/norm1
-    # cool_abs=(fact1*kappa_abs*rho*R_G_CGS*density_scale*Ehat/ENERGY_DENSITY_SCALE*gdet*_dx1*_dx2*_dx3).sum(-1).sum(-1)[0]/norm1
-
-    # Calculate relevant timescales for emmission, diffusion and absorption in disk
-    # Theta_r = Tr * 1.6863687454173171e-10
-    # tau_scaleheight=tau_es_avg/(2.0*scaleheight*r[0,:,0,0])
-    # vdiff=np.sqrt(16.0/(9.0*tau_scaleheight*tau_scaleheight))
-    # vdiff[vdiff>1.0]=1.0
-    # t_diff=scaleheight*r[0,:,0,0]/vdiff
-    # t_emmit_disk=(pe_tot/(gam-1.0)/(cool_emmit))
-    # t_abs_disk=(pe_tot/(gam-1.0)/(cool_abs))
-    # t_compton_disk=((pe_tot/(gam-1.0)*ENERGY_DENSITY_SCALE)/((kappa_es *rho*R_G_CGS*density_scale* Ehat * 4.0 * (Theta_e + Theta_r)*gdet*_dx1*_dx2*_dx3)*(Theta_e>Theta_r)).sum(-1).sum(-1)[0])
-
-    # Calculate relevant timescales for emmission, diffusion and absorption in disk
-    # filter1=(bsq/rho<1.0)
-    # norm2=(gdet * filter1*rho/rho *_dx1*_dx2*_dx3).sum(-1).sum(-1)[0]
-    # cool_emmit_corona=kappa_emmit*rho*R_G_CGS*density_scale*2.2714380625235033e+21*(TE**4)
-    # t_emmit_corona=(TE*rho*filter1/(gam-1.0)/cool_emmit_corona).sum(-1).sum(-1)[0]/bs2new/bs3new
 
 def calc_lum():
     global lum
     p = (gam - 1.0) * ug
     lum = np.sum((rho ** 3.0 * p ** (-2.0) * np.exp(-0.2 * (rho ** 2.0 / (np.sqrt(bsq) * p ** 2.0)) ** (1.0 / 3.0)) * (h > np.pi / 3.0) * (h < 2.0 / 3.0 * np.pi) * (r < 50.) * gdet * _dx1 * _dx2 * _dx3))
-
-def calc_rad_avg():
-    global rad_avg
-    rad_avg = (r * rho * gdet * _dx1 * _dx2 * _dx3).sum(-1).sum(-1).sum(-1) / ((rho * gdet * _dx1 * _dx2 * _dx3).sum(-1).sum(-1).sum(-1))
 
 # Calculate energy accretion rate as function of radius
 def calc_Edot():
@@ -575,42 +587,6 @@ def calc_Edot():
 def calc_Ldot():
     global Ldot
     Ldot = (Tcalcud_new(1, 3)* gdet * _dx2 * _dx3).sum(-1).sum(-1)
-
-# Calculate magnetic flux phibh as function of radius
-def calc_phibh():
-    global phibh
-    phibh = 0.5 * (np.abs(gdet * B[1]) * _dx2 * _dx3).sum(-1).sum(-1)
-
-def calc_rad_dump():
-    global cool_time_emmit, cool_time_abs, cool_time_compt, cool_time_coul, tau_vertical_emmit, tau_vertical_abs, tau_vertical_es
-    global Tr, Te, TE, TI, rho, MU_E, MH_CGS, kappa_emmit, kappa_abs, kappa_es
-
-    # Some variables
-    Theta_r = Tr * 1.6863687454173171e-10
-    Theta_e = Te * 1.6863687454173171e-10
-    ne_cgs = rho * density_scale / (MU_E * MH_CGS)
-    n_cgs = rho * density_scale / (MH_CGS)
-
-    # Cooling rates
-    lambda_emmit = np.abs((kappa_emmit) * rho * R_G_CGS * density_scale * np.float64(ARAD * (np.float64(Te) ** 4)) / ENERGY_DENSITY_SCALE)
-    lambda_abs = (kappa_abs) * rho * R_G_CGS * density_scale * Ehat / ENERGY_DENSITY_SCALE
-    lambda_scatter = np.abs(kappa_es * rho * R_G_CGS * density_scale * Ehat / ENERGY_DENSITY_SCALE * 4.0 * (np.float64(Theta_e)))
-    lambda_coul = np.float64(1.5 * ME_CGS / MH_CGS * coulog * C_CGS * BOLTZ_CGS * THOMSON_CGS)
-    lambda_coul *= np.float64(ne_cgs) * np.float64(n_cgs) * (np.float64(Ti) - np.float64(Te))
-    lambda_coul *= R_G_CGS / (C_CGS * ENERGY_DENSITY_SCALE)
-
-    # Cooling timescales
-    ue = TE*rho/(game-1.0)
-    ui = TI * rho / (gami - 1.0)
-    cool_time_emmit = ((gdet * ue*((bsq/rho)<1.0)).sum(-1).sum(-1) / (gdet * lambda_emmit*((bsq/rho)<1.0)).sum(-1).sum(-1))[0]
-    cool_time_abs = ((gdet * ue*((bsq/rho)<1.0)).sum(-1).sum(-1) / (gdet * lambda_abs*((bsq/rho)<1.0)).sum(-1).sum(-1))[0]
-    cool_time_compt = ((gdet * ue*((bsq/rho)<1.0)).sum(-1).sum(-1) / (gdet * lambda_scatter*((bsq/rho)<1.0)).sum(-1).sum(-1))[0]
-    cool_time_coul = ((gdet * (ui + ue)*((bsq/rho)<1.0)).sum(-1).sum(-1) / (gdet * lambda_coul*((bsq/rho)<1.0)).sum(-1).sum(-1))[0]
-
-    # Vertical optical depth
-    tau_vertical_emmit = 0.5*((np.sqrt(gcov[2, 2]) * _dx2 * kappa_emmit * R_G_CGS * rho * density_scale*((bsq/rho)<1.0)).sum(-1).sum(-1) / bs3new)[0]
-    tau_vertical_abs = 0.5*((np.sqrt(gcov[2, 2]) * _dx2 * kappa_abs * R_G_CGS * rho * density_scale*((bsq/rho)<1.0)).sum(-1).sum(-1) / bs3new)[0]
-    tau_vertical_es = 0.5*((np.sqrt(gcov[2, 2]) * _dx2 * kappa_es * R_G_CGS * rho * density_scale*((bsq/rho)<1.0)).sum(-1).sum(-1) / bs3new)[0]
 
 # Calculate the Q resolution paramters and their average Q_avg in the disk
 def calc_Q():
