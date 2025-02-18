@@ -1,5 +1,6 @@
 import numpy as np
 from analysis import Tools
+import time as get_time
 
 class Radiation():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -65,7 +66,7 @@ class Radiation():
                             self.params, self.CONSTANTS)
         kappa_es  = Opac.opacities['electron_scattering']
         Theta_e   = (self.kB * Te) / (self.me * self.c * self.c)
-        Trad      = np.power(urad / self.aRAD, 1./4.)
+        Trad      = (urad / self.aRAD) ** (1./4.)
         mc2       = self.me * self.c * self.c
         return (self.c * kappa_es * rho * urad * (
                 4. * self.kB * (Te - Trad) / mc2) * (
@@ -146,7 +147,7 @@ class Opacity():
 
         self.rho  = rho
         self.Te   = Te
-        self.Tr   = np.power(urad / self.aRAD, 1./4.)
+        self.Tr   = (urad / self.aRAD) ** (1./4.)
 
         self.opacities = opacities
 
@@ -165,6 +166,7 @@ class Opacity():
             self.calc_opacities('both', **kwargs)
 
     def calc_opacities(self, process, **kwargs):
+        t0 = get_time.time()
         if 'bound_free' in self.opacities:
             self.bound_free_opacity(process)
         if 'CHIANTI' in self.opacities:
@@ -192,6 +194,9 @@ class Opacity():
                 self.calc_kappa('absorption')
             if process is 'emission' or process is 'both':
                 self.calc_kappa('emission')
+        ttot = get_time.time()
+
+        print("Opacity calculations took %.4e s" %(ttot - t0), flush=True)
 
     # Bound-free opacity
     # Replace (1+X)(1-Z) in the free-free opacity with
@@ -201,13 +206,12 @@ class Opacity():
         if process is 'absorption' or process is 'both':
             self.opacities['bound_free_abs'] = (9.0e26 * (
                     self.Z_ab * (1. + self.X_ab + 0.75 * self.Y_ab) * (
-                    self.rho * np.power(self.Te, -0.5) * (
-                    np.power(self.Tr, -3.0) * (
-                    np.log(1. + 1.6 * (self.Tr / self.Te)))))))
+                    self.rho * (self.Te ** -0.5) * (self.Tr ** -3) * (
+                    np.log(1. + 1.6 * (self.Tr / self.Te))))))
         if process is 'emission' or process is 'both':
             self.opacities['bound_free_emi'] = (9.0e26 * (
                     self.Z_ab * (1. + self.X_ab + 0.75 * self.Y_ab) * (
-                    self.rho * np.power(self.Te, -3.5) * np.log(1. + 1.6))))
+                    self.rho * (self.Te ** -3.5) * np.log(1. + 1.6))))
         return None
 
     # Opacities based on calculations from the CHIANTI atomic database
@@ -216,11 +220,10 @@ class Opacity():
         if process is 'absorption' or process is 'both':
             self.opacities['CHIANTI_abs'] = (3.0e34 * self.rho * (
                     (0.1 + (self.Z_ab / 0.02)) * (
-                    np.power(self.Te, -1.7) * np.power(self.Tr, -3.0))))
+                    (self.Te ** -1.7) * (self.Tr ** -3.0))))
         if process is 'emission' or process is 'both':
             self.opacities['CHIANTI_emi'] = (3.0e34 * self.rho * (
-                    (0.1 + (self.Z_ab / 0.02)) * (
-                    np.power(self.Te, -4.7))))
+                    (0.1 + (self.Z_ab / 0.02)) * (self.Te ** -4.7)))
         return None
 
     # Free-free opacity
@@ -231,13 +234,13 @@ class Opacity():
         if process is 'absorption' or process is 'both':
             self.opacities['free_free_abs'] = (1.2e24 * (
                     (1. + self.X_ab) * (1. - self.Z_ab) * self.rho * (
-                    np.power(self.Te, -0.5) * np.power(self.Tr, -3.0) * (
+                    (self.Te ** -0.5) * (self.Tr ** -3) * (
                     np.log(1.0 + 1.6 * (self.Tr / self.Te)) * (
                     (1. + 4.4e-10 * self.Te))))))
         if process is 'emission' or process is 'both':
             self.opacities['free_free_emi'] = (1.2e24 * (
                     (1. + self.X_ab) * (1. - self.Z_ab) * self.rho * (
-                    np.power(self.Te, -3.5) * np.log(1.0 + 1.6) * (
+                    (self.Te ** -3.5) * np.log(1.0 + 1.6) * (
                     (1. + 4.4e-10 * self.Te)))))
         return None
     
@@ -247,11 +250,11 @@ class Opacity():
         if process is 'absorption' or process is 'both':
             self.opacities['hydrogen_abs'] = (33. * 1.e-25 * (
                     np.sqrt(self.Z_ab) * np.sqrt(self.rho) * ( 
-                    np.power(self.Te, 7.7))))  
+                    (self.Te ** 7.7))))  
         if process is 'emission' or process is 'both':
             self.opacities['hydrogen_emi'] = (33. * 1.e-25 * (
                     np.sqrt(self.Z_ab) * np.sqrt(self.rho) * ( 
-                    np.power(self.Te, 7.7))))  
+                    (self.Te ** 7.7))))  
         return None
 
     # Iron-line opacity
@@ -259,10 +262,10 @@ class Opacity():
     def iron_line_opacity(self, process):
         if process is 'absorption' or process is 'both':
             self.opacities['iron_line_abs'] = (0.3 * (self.Z_ab / 0.02) * (
-                    np.exp(-6.0 * np.power(-12.0 + np.log(self.Te), 2.0)))) 
+                    np.exp(-6.0 * ((-12.0 + np.log(self.Te)) ** 2)))) 
         if process is 'emission' or process is 'both':
             self.opacities['iron_line_emi'] = (0.3 * (self.Z_ab / 0.02) * (
-                    np.exp(-6.0 * np.power(-12.0 + np.log(self.Te), 2.0))))
+                    np.exp(-6.0 * ((-12.0 + np.log(self.Te)) ** 2))))
         return None
 
     # Molecular opacity
@@ -281,21 +284,19 @@ class Opacity():
         Theta_e  = (self.kB * self.Te) / (self.me * self.c * self.c)
         e_2pimc  = self.e / (2. * np.pi * self.me * self.c)
         # McKinney+ (2017) Equation D2
-        nu_mu    = (3./2.) * e_2pimc * np.sqrt(self.b2) * np.square(Theta_e)
+        nu_mu    = (3./2.) * e_2pimc * np.sqrt(self.b2) * (Theta_e ** 2)
         if process is 'absorption' or process is 'both':
             # McKinney+ (2017) Equation D5
             phi = self.kB * self.Tr / (self.h * nu_mu)
             # McKinney+ (2017) Equation D6
-            g   = (5.85374e-14 * ne * phi * np.power(Theta_e, -3.) * (
-                   np.power(self.Tr, -1.)))
+            g   = 5.85374e-14 * ne * phi * (Theta_e ** -3) * (1. / self.Tr)
             self.opacities['synchrotron_abs'] = self.calc_kappa_sync(
                                                             g, phi, **kwargs)
         if process is 'emission' or process is 'both':
             # McKinney+ (2017) Equation D5
             phi = self.kB * self.Te / (self.h * nu_mu)
             # McKinney+ (2017) Equation D6
-            g   = (5.85374e-14 * ne * phi * np.power(Theta_e, -3.) * (
-                   np.power(self.Te, -1.)))
+            g   = 5.85374e-14 * ne * phi * (Theta_e ** -3) * (1. / self.Te)
             self.opacities['synchrotron_emi'] = self.calc_kappa_sync(
                                                             g, phi, **kwargs)
         return None
@@ -303,8 +304,8 @@ class Opacity():
     # Calculate synchrotron kappa from McKinney+ (2017) Equation D7
     def calc_kappa_sync(self, g, phi, **kwargs):
         a, b, c, d , e = self.get_abcde_synchrotron(**kwargs)
-        kap_g_inv = (1. / (a * np.power(phi, -b) * np.log(1. + c * phi)) + (
-                     1. / (d * np.power(phi, -e))))
+        kap_g_inv = (1. / (a * (phi ** -b) * np.log(1. + c * phi)) + (
+                     1. / (d * (phi ** -e))))
         # remember that kappa = kappa_McKinney / rho
         return (g * (1.0 / kap_g_inv)) / self.rho 
 
