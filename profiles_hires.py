@@ -8,6 +8,7 @@ import hamr_read as hr
 import analysis as ana
 import radiation as rad
 import tracemalloc
+import time as get_time
 
 def main(**kwargs):
     fnum    = int(kwargs.get('fnum'))
@@ -49,6 +50,7 @@ def main(**kwargs):
     for i in range(iphi_start, len(phi_1D), iphi_stp):
         profiles['saved'] = False
         tracemalloc.start()
+        t0 = get_time.time()
         H = hr.Read(main_dir + 'DATA/Thin_RAD_MAD_HiRes', 
 	        cgs_data = True, cgs_grid = True, MBH = 10.0,
                 coords1D = True,
@@ -64,11 +66,11 @@ def main(**kwargs):
        
         # Read grid and data
         H.read_grid(fnum, direct=True)
-        print("Grid successfully read in", flush=True)
         H.read_prims(fnum, skip_read_params=True)
-        print("Data successfully read in.", flush=True)
         k_min, k_max = H.block_info['k_min'], H.block_info['k_max']
         print("Analyzing k range %d to %d" %(k_min, k_max))
+        t1 = get_time.time()
+        print("Reading in data took %.4e s" %(t1 - t0), flush=True)
         
         # Initialize Accretion class
         Acc = ana.Accretion(H.grid, H.data, hr.params, hr.CONSTANTS, 
@@ -81,85 +83,119 @@ def main(**kwargs):
         Field = ana.Field(hr.params, hr.CONSTANTS, cgs=True)
         # Initialize Radiation class
         Radi  = rad.Radiation(hr.params, hr.CONSTANTS, cgs=True)
-
+        
         # Calculate sigma (3D)
         b     = Field.calc_b(H.data['B'], H.data['uu'], H.grid['gcov'])
         b2    = Field.calc_b2(b, H.data['B'], H.grid['gcov'])
-        sigma = (b2 / (8. * np.pi)) / (H.data['rho'] * c * c)
+        sigma = (b2 / (4. * np.pi)) / (H.data['rho'] * c * c)
         # Calculate gas pressure
         pgas  = Fluid.calc_pgas(H.data['u_gas'], H.data['Te'], H.data['Ti'])
-
+        
         # Put spherical radius in dictionary 
         profiles['r']   = H.grid['r'][0, :, 0, 0] / Rg
         
         # Quantities (quants) for profile averaging
-        keys   = ['rho',  'Ti',   'Te', 
-                  'Pmag', 'Pthm', 'Prad', 
-                  'vr',   'vth',  'vphi', 
-                  'br',   'bth',  'bphi', 
-                  'teq',  'tIC', 'trad_abs', 'trad_emi', 'Vol'
+        keys   = [
+            'rho',  'Ti',   'Te', 
+            'Pmag', 'Pthm', 'Prad', 
+            'vr',   'vth',  'vphi', 
+            'br',   'bth',  'bphi', 'Vol' 
         ]
-        quants = [H.data['rho'], H.data['Ti'], H.data['Te'], 
-                  b2/(8. * np.pi), pgas, (1./3.) * H.data['u_rad'], 
-                  H.data['uu'][1] / H.data['uu'][0], 
-                  H.data['uu'][2] / H.data['uu'][0], 
-                  H.data['uu'][3] / H.data['uu'][0], 
-                  b[1], b[2], b[3], 
-                  Fluid.calc_teq(H.data['rho'], H.data['Te'], 
-                                 H.data['Ti'], cooling=True),
-                  Radi.calc_tIC(H.data['rho'], H.data['Te'], 
-                                 H.data['u_rad'], cooling=True),
-                  Radi.calc_trad_abs(H.data['rho'], H.data['Te'], 
-                                     H.data['u_rad'], b2=b2, XRB=True),
-                  Radi.calc_trad_emi(H.data['rho'], H.data['Te'], 
-                                     H.data['u_rad'], b2=b2, XRB=True), 1.0
-        ]
-        timescales = [False, False, False, False, False, False, 
-                      False, False, False, False, False, False,
-                      True, True, True, True, False
-        ]
-
+        # Timescales for profile averaging
+        tkeys   = ['teq', 'tIC', 'trad_abs', 'trad_emi']
+         
         if first_call:
             profiles['Mdot']       = np.zeros(len(profiles['r']))
             profiles['Edot']       = np.zeros(len(profiles['r']))
             profiles['Mdot_sigma'] = np.zeros(len(profiles['r']))
             profiles['Edot_sigma'] = np.zeros(len(profiles['r']))
             profiles['Phi_BH']     = np.zeros(len(profiles['r']))
-            for (key, quant, timescale) in zip(keys, quants, timescales):
+            for key in keys:
                 profiles['%s' %key]= np.zeros(len(profiles['r']))
-                if (timescale):
-                    profiles['Vol_%s' %key] = np.zeros(len(profiles['r']))
+            for tkey in tkeys:
+                profiles['%s' %tkey]     = np.zeros(len(profiles['r']))
+                profiles['Vol_%s' %tkey] = np.zeros(len(profiles['r'])) 
             first_call = False
-        else:
-            profiles['Mdot']      += Acc.calc_Mdot()[0]
-            profiles['Edot']      += Acc.calc_Edot(radiation=True)[0]
-            profiles['Mdot_sigma']+= Acc.calc_Mdot(sigma_cut = 3.0, 
-                                               sigma = sigma)[0]
-            profiles['Edot_sigma']+= Acc.calc_Edot(radiation=True,
-                                               sigma_cut = 3.0, 
-                                               sigma = sigma, 
-                                               b2 = b2, b = b)[0]
-            profiles['Phi_BH']    += Acc.calc_PhiBH()[0]
-            
-            for (key, quant, timescale) in zip(keys, quants, timescales):
-                if (timescale):
-                    time = quant
-                    profiles['%s' %key] += thph_sum(quant, 
-                            H.grid, H.data, hr.params, hr.CONSTANTS, 
-                            weight=H.data['rho'], 
-                            sigma_cut=3.0, sigma=sigma)[0]
-                    profiles['Vol_%s' %key] += thph_sum(
-                            np.ones(H.data['rho'].shape), 
-                            H.grid, H.data, hr.params, hr.CONSTANTS,
-                            weight=H.data['rho'],
-                            sigma_cut=3.0, sigma=sigma, time=time)[0]
-                else:
-                    profiles['%s' %key] += thph_sum(quant, 
-                            H.grid, H.data, hr.params, hr.CONSTANTS, 
-                            weight=H.data['rho'], 
-                            sigma_cut=3.0, sigma=sigma)[0]
-            
-            profiles['k_max'] = k_max
+
+        t0 = get_time.time()
+        
+        # Mass and energy accretion rates. Radial magnetic flux (Phi_BH).
+        stress_energy_MHD = Acc.calc_TMHD(upper_lower=True, index = [1, 0], 
+                radiation=True, b2 = b2, b = b) #bb_tnsr = bb_tnsr, uu_tnsr = uu_tnsr)
+        profiles['Mdot']      += Acc.calc_Mdot()[0]
+        profiles['Edot']      += Acc.calc_Edot(TMHD = stress_energy_MHD)[0]
+        profiles['Mdot_sigma']+= Acc.calc_Mdot(sigma_cut = 3.0, 
+                sigma = sigma)[0]
+        profiles['Edot_sigma']+= Acc.calc_Edot(TMHD = stress_energy_MHD,
+                sigma_cut = 3.0, sigma = sigma)[0]
+        profiles['Phi_BH']    += Acc.calc_PhiBH()[0] 
+        del stress_energy_MHD        
+        
+        t1 = get_time.time()
+        print("Calculating Mdot, Edot, Phi_BH took %.4e s" %(t1 - t0), 
+                flush=True)
+        
+        t0 = get_time.time()
+        
+        # Profiles of primitive variables and pressures
+        quants = [
+            H.data['rho'], H.data['Ti'], H.data['Te'], 
+            b2/(8. * np.pi), pgas, (1./3.) * H.data['u_rad'], 
+            H.data['uu'][1] / H.data['uu'][0], 
+            H.data['uu'][2] / H.data['uu'][0], 
+            H.data['uu'][3] / H.data['uu'][0], 
+            b[1], b[2], b[3], 1.0 
+        ]
+        
+        for (key, quant) in zip(keys, quants):
+            profiles['%s' %key] += thph_sum(quant, 
+                    H.grid, H.data, hr.params, hr.CONSTANTS, 
+                    weight=H.data['rho'], 
+                    sigma_cut=3.0, sigma=sigma)[0]
+        
+        # Save on memory before computing cooling timescales
+        del quants
+        del pgas
+        del b
+        del_keys = ['uu', 'B', 'uu_rad']
+        for key in del_keys:
+            H.data['%s' %key] = H.data['rho']
+        H.grid['gcov'] = H.grid['gdet']
+        H.grid['gcon'] = H.grid['gdet']
+        
+        t1 = get_time.time()
+        print("Calculating profile averages took %.4e s" %(t1 - t0), 
+                flush=True)
+        
+        t0 = get_time.time()
+        
+        # Profiles of cooling timescales in plasma
+        timescales = [
+            Fluid.calc_teq(H.data['rho'], H.data['Te'], H.data['Ti'], 
+                cooling=True), 
+            Radi.calc_tIC(H.data['rho'], H.data['Te'], H.data['u_rad'], 
+                cooling=True),
+            Radi.calc_trad_abs(H.data['rho'], H.data['Te'], 
+                H.data['u_rad'], b2=b2, XRB=True),
+            Radi.calc_trad_emi(H.data['rho'], H.data['Te'], 
+                H.data['u_rad'], b2=b2, XRB=True)
+        ]
+        
+        ones = np.ones(H.data['rho'].shape)
+
+        for (tkey, timescale) in zip(tkeys, timescales):
+            profiles['%s' %tkey] += thph_sum(timescale, 
+                    H.grid, H.data, hr.params, hr.CONSTANTS, 
+                    weight=H.data['rho'], 
+                    sigma_cut=3.0, sigma=sigma)[0]
+            profiles['Vol_%s' %tkey] += thph_sum(ones, H.grid, H.data, 
+                    hr.params, hr.CONSTANTS, weight=H.data['rho'], 
+                    sigma_cut=3.0, sigma=sigma, time=timescale)[0]
+
+        t1 = get_time.time()
+        print("Timescales took %.4e s" %(t1 - t0), flush=True)
+        
+        profiles['k_max'] = k_max
         
         print(tracemalloc.get_traced_memory())
         tracemalloc.stop()
@@ -205,6 +241,8 @@ if __name__ == '__main__':
                         integration should continue from last k_max""")
     args = parser.parse_args()
     main(**vars(args))
+
+
 '''
         #plasma['r']     = H.grid['r'][0, :, 0, 0]
         #plasma['theta'] = H.grid['theta'][0, 0, :, 0]
