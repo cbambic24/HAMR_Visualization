@@ -468,6 +468,10 @@ class Read():
             nz  = bs3_new
             nb  = params['n_active_total']
             dim = nb
+                
+            i_min, i_max = 0, nx
+            j_min, j_max = 0, ny
+            k_min, k_max = 0, nz
         else:
             self.gridsizex1 = int(
                 params['nb1']*params['bs1']*self.upscalex1 / self.lowres1)
@@ -735,9 +739,9 @@ class Read():
                 
     def check_lowres_settings(self):
         if (self.by_block):
-            ndivisble_x1 = params['bs1'] % self.lowres1 != 0
-            ndivisble_x2 = params['bs2'] % self.lowres2 != 0
-            ndivisble_x3 = params['bs3'] % self.lowres3 != 0
+            ndivisible_x1 = params['bs1'] % self.lowres1 != 0
+            ndivisible_x2 = params['bs2'] % self.lowres2 != 0
+            ndivisible_x3 = params['bs3'] % self.lowres3 != 0
         else:
             ndivisible_x1 = int(params['nb1'] * params['bs1'] *
                 self.upscalex1) % self.lowres1 != 0
