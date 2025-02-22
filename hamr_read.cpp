@@ -342,8 +342,8 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
 
                   if (!by_block) {
                     level_array[index_2D] = MAX(amr_levelx1[n_ord[n]], 
-				            MAX(amr_levelx2[n_ord[n]], 
-						amr_levelx3[n_ord[n]]));
+                                            MAX(amr_levelx2[n_ord[n]], 
+                                                amr_levelx3[n_ord[n]]));
                   }
                   read_data = 0;
                 } // read_data
@@ -582,8 +582,8 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
   while (std::filesystem::exists(filename)) {
     filesize = std::filesystem::file_size(filename);
     if ((filesize % (nvar * bs1 * bs2 * bs3 * float_size)) != 0) {
-	    std::cout << "Error: Possible data size error in file " <<
-	    filename << std::endl;
+      std::cout << "Error: Possible data size error in file " << 
+      filename << std::endl;
     }
     blocksInFile.push_back(filesize / (nvar * bs1 * bs2 * bs3 * float_size));
     fileCount += 1;
@@ -671,11 +671,15 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
           kStp  = 1 * export_raytracing + low_resx3 * (1 - export_raytracing);
         }
 
+        // do not loop through block if block not in data set
+        // still loop through if low_res > bs
         iNotInBlock = iStrt / low_resx1 > i_max || iEnd / low_resx1 <= i_min;
         jNotInBlock = jStrt / low_resx2 > j_max || jEnd / low_resx2 <= j_min;
         kNotInBlock = kStrt / low_resx3 > k_max || kEnd / low_resx3 <= k_min;
-		
-	if (iNotInBlock || jNotInBlock || kNotInBlock) {
+       
+        if ((iNotInBlock && low_resx1 < bs1) || 
+            (jNotInBlock && low_resx2 < bs2) || 
+            (kNotInBlock && low_resx3 < bs3)) {
           continue;
         } 
         
