@@ -30,6 +30,36 @@ class Cartesian():
         cax = self.get_cax(fig, ax, im, FS, **kwargs)
         return im, cax
     
+    def plot_xz_mirror(self, fig, ax, X, Z, Dl, Dr, cmaps, FS, **kwargs):
+        im   = {}
+        vmin_l, vmax_l = self.get_vmin_vmax(Dl, 
+            lim=kwargs.get('lim_left', False), 
+            sym=kwargs.get('sym_left', False))
+        norm_l         = self.get_norm(vmin_l, vmax_l,
+            log=kwargs.get('log_left', False), 
+            sym=kwargs.get('sym_left', False),
+            linthresh=kwargs.get('linthresh_left', False))
+        
+        vmin_r, vmax_r = self.get_vmin_vmax(Dr,
+            lim=kwargs.get('lim_right', False), 
+            sym=kwargs.get('sym_right', False))
+        norm_r         = self.get_norm(vmin_r, vmax_r,
+            log=kwargs.get('log_right', False), 
+            sym=kwargs.get('sym_right', False),
+            linthresh=kwargs.get('linthresh_right', False))
+
+        im['l'] = ax.pcolormesh(X['l'], Z['l'], Dl['l'],
+                                norm = norm_l, cmap = cmaps[0], 
+                                shading = 'gouraud')
+        im['r'] = ax.pcolormesh(X['r'], Z['r'], Dr['r'],
+                                norm = norm_r, cmap = cmaps[1], 
+                                shading = 'gouraud')
+        
+        cax_l = self.get_cax(fig, ax, im, FS, cbar_loc='left', **kwargs)
+        cax_r = self.get_cax(fig, ax, im, FS, **kwargs)
+        
+        return im, cax_l, cax_r
+    
     def plot_xy_vec(self, fig, ax, X, Y, 
                     X_uni, Y_uni, VX, VY, **kwargs):
         xlim  = 1.1 * np.amax(np.abs(X_uni))
@@ -92,8 +122,15 @@ class Cartesian():
         
     def standard_cbar(self, fig, ax, images, FS, **kwargs):
         divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="4%", pad=0.2)
-        cbar = fig.colorbar(images, cax=cax, orientation="vertical")
+        if (kwargs.get('cbar_loc') == 'left'):
+            cax = divider.append_axes("top", size="4%", pad=0.2)
+            cax.xaxis.set_ticks_position("top")
+            cbar = fig.colorbar(images, cax=cax, location="top")
+        else:
+            cax = divider.append_axes("right", size="4%", pad=0.2)
+            cbar = fig.colorbar(images, cax=cax, location="right")
+        if (kwargs.get('cbar_loc') == 'left'):
+            cbar.ax.yaxis.set_ticks_position('left')
         if(kwargs.get('title')):
             title = kwargs.get('title')
             cbar.ax.set_xlabel(title, labelpad=20, fontsize=FS)
@@ -102,6 +139,8 @@ class Cartesian():
     def get_vmin_vmax(self, D, **kwargs):
         if ('l' in D and 'r' in D):
             DD = np.concatenate((D['l'], D['r']))
+        elif ('l' in D and 'r' not in D): 
+            DD = D['l']
         else: 
             DD = D['r']
         if (kwargs.get('lim')):
