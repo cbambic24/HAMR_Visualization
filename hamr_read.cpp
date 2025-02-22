@@ -118,9 +118,9 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
         read_data = 0;
 
         // either 2^n or 1 (not used if by_block == 1)
-	upscalex1 = pow(2, p1); 
-	upscalex2 = pow(2, p2);
-	upscalex3 = pow(2, p3);
+        upscalex1 = pow(2, p1); 
+        upscalex2 = pow(2, p2);
+        upscalex3 = pow(2, p3);
 
         // allow data to be read into 4D arrays (organized by block) 
         // or as a 3D unigrid array
