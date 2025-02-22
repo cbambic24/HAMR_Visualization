@@ -291,9 +291,9 @@ class Read():
             nb  = params['n_active_total']
             dim = nb
 
-            i_min, i_max = 0, self.gridsizex1
-            j_min, j_max = 0, self.gridsizex2
-            k_min, k_max = 0, self.gridsizex3
+            i_min, i_max = 0, nx
+            j_min, j_max = 0, ny
+            k_min, k_max = 0, nz
 
         else:
             self.gridsizex1 = int(
