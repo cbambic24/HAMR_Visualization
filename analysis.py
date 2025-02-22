@@ -107,7 +107,7 @@ class Analytic():
     def __init__(self, CONSTANTS, **kwargs):
         self.cgs = kwargs.get('cgs', False)
         if (self.cgs):
-            self.c    = CONSTANTS['c']        # cm/s
+            self.c    = CONSTANTS['c'] # cm/s
         else:
             self.c    = 1.0
 
@@ -173,18 +173,14 @@ class Field():
             self.B0   = 1.0
 
     # Compute b from B
-    def calc_b(self, B_in, uu_in, gcov):
-        B, uu = B_in.copy(), uu_in.copy()
-        # de-dimensionalized 4-vector uu and 3-vector B^i
-        B     *= (1.0 / self.B0)
-        uu    *= (1.0 / self.c)
-        uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
+    def calc_b(self, B, uu, gcov):
+        c, B0  = self.c, self.B0
         b      = np.zeros(B.shape)
         # compute b^t
-        b[0]   = B[1]*uu_cov[1] + B[2]*uu_cov[2] + B[3]*uu_cov[3]
+        b[0]   = Tools.dot((uu / c), (B / B0), gcov)
         # compute b^i
         for i in range(1, 4):
-            b[i] = (B[i] + uu[i]*b[0]) / uu[0]
+            b[i] = ((B[i] / B0) + (uu[i] / c) * b[0]) / (uu[0] / c)
         # re-dimensionalize 4-vector
         return b * self.B0
     
@@ -254,7 +250,7 @@ class Fluid():
             self.me   = 1.0
             self.sigT = 1.0
 
-        self.Theta_min = 1.e-2
+        self.Theta_min = 2.e-2
         self.kwargs    = kwargs
         self.CONSTANTS = CONSTANTS
         self.params    = pars
@@ -263,22 +259,20 @@ class Fluid():
     # Default THD^{mu, nu} 
     # "upper_lower": THD^{mu}_{nu} 
     # "lower_lower": THD_{mu, nu}
-    def calc_THD(self, rho_in, uu, ugas_in, pgas_in, gcov, gcon, **kwargs):
-        rho, ugas = rho_in.copy(), ugas_in.copy()
+    def calc_THD(self, rho, uu, ugas, pgas, gcov, gcon, **kwargs):
         if (kwargs.get('EOS')):
             Te   = kwargs.get('Te')
             Ti   = kwargs.get('Ti')
             pgas = self.calc_pgas(ugas, Te, Ti)
-        else:
-            pgas = pgas_in.copy()
+        rho0   = self.rho0
         rho0c2 = self.rho0 * self.c * self.c
-        rho  *= 1. / self.rho0
-        ugas *= 1. / rho0c2
-        pgas *= 1. / rho0c2
 
         uu_tnsr = Tools.construct_dyadic(uu / self.c, gcov, **kwargs)
         g_tnsr  = Tools.g_metric(gcov, gcon, **kwargs)
-        return ((rho + ugas + pgas) * uu_tnsr + pgas * g_tnsr) * rho0c2
+        return (
+            (((rho / rho0) + (ugas / rho0c2) + (pgas / rho0c2)) * uu_tnsr + 
+            (pgas / rho0c2) * g_tnsr) * rho0c2
+        )
 
     # Compute pgas from ugas using gamma law EOS
     # Equation 23 in Sadowski+ (2017)
@@ -309,16 +303,28 @@ class Fluid():
         gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
         gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
 
-        u_i = (1./(gam_i-1.)) * (rho / (self.mu_i * self.mi)) * self.kB * Ti
-        u_e = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
+        u_i = (1./(gam_i-1.)) * (rho / (self.mu_i * self.mp)) * self.kB * Ti
+        u_e = (1./(gam_e-1.)) * (rho / (self.mu_e * self.mp)) * self.kB * Te
 
-        teq = (u_i - u_e) / self.calc_qie(rho, Te, Ti, **kwargs)
+        # u_i > u_e whenever Ti > Te for narrow range of 
+        # Te and Ti around Te < Ti < 2 Te and Te \approx 1e9 K, i.e., when
+        # electrons are relativistic and ions are non-relativistic.
+        # In that case, use ion gamma and mu for energy difference.
+        delta_energy = u_i - u_e
+        delta_energy[(delta_energy < 0) & (Ti > Te)] = ((1./(gam_i-1.)) * (
+            rho / (self.mu_i * self.mp)) * self.kB * (Ti- Te))[
+            (delta_energy < 0) & (Ti > Te)]
+
+        teq = delta_energy / self.calc_qie(rho, Te, Ti, **kwargs)
+        
+        # If temperature difference < 2% of Te, then assume negligible teq
+        teq[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
         if 'cooling' in kwargs:
             teq[Ti < Te] = 0.0
             return teq # s
         elif 'heating' in kwargs:
             teq[Ti > Te] = 0.0
-            return np.abs(teq) # s
+            return teq # s
         else:
             return teq # s
 
@@ -334,10 +340,11 @@ class Fluid():
         n_avg   = ((X_ab + Y_ab) * rho) / self.mp
         cksigmaT= self.c * self.kB * self.sigT
         me_mi   = self.me / self.mi
+        # Note that ne * n_avg will cause overflow errors in the disk
         qie = (
-            (3./2.) * me_mi * cksigmaT * (ne * n_avg) * (Ti - Te) * ( 
+            (3./2.) * me_mi * cksigmaT * ne * (Ti - Te) * n_avg * ( 
             self.Coulomb_log(ne, Te) * (
-            self.Bessel_terms(Theta_e, Theta_i, **kwargs)))
+            self.Bessel_terms(Theta_e, Theta_i)))
         )
         return qie # erg/cm^3 s
 
@@ -345,28 +352,24 @@ class Fluid():
     # electrons (E) or ions (I) are cold (Theta < Theta_min)
     # In this analysis, we use the approximations when
     # both species are cold. Otherwise, the real formula is used.
-    def Bessel_terms(self, Theta_e, Theta_i, **kwargs):
+    def Bessel_terms(self, Theta_e, Theta_i):
         coldE = (Theta_e <  self.Theta_min)
         coldI = (Theta_i <  self.Theta_min)
+        hotE  = (Theta_e >= self.Theta_min)
+        hotI  = (Theta_i >= self.Theta_min)
+    
         coldE_coldI = coldE * coldI
-        if 'HAMR' not in kwargs:
-            return np.where(coldE_coldI, 
-                    self.coldE_coldI(Theta_e, Theta_i), 
-                    self.hotE_hotI(  Theta_e, Theta_i))
-        elif 'HAMR' in kwargs:
-            hotE  = (Theta_e >= self.Theta_min)
-            hotI  = (Theta_i >= self.Theta_min)
-        
-            hotE_coldI  = hotE  * coldI
-            coldE_hotI  = coldE * hotI
-            hotE_hotI   = hotE  * hotI
-        
-            return (
-                np.where(coldE_coldI, self.coldE_coldI(Theta_e, Theta_i), 0.) +
-                np.where(hotE_coldI,  self.hotE_coldI( Theta_e, Theta_i), 0.) +
-                np.where(coldE_hotI,  self.coldE_hotI( Theta_e, Theta_i), 0.) +
-                np.where(hotE_hotI,   self.hotE_hotI(  Theta_e, Theta_i), 0.))
-
+        hotE_coldI  = hotE  * coldI
+        coldE_hotI  = coldE * hotI
+        hotE_hotI   = hotE  * hotI
+            
+        return (
+            np.where(coldE_coldI, self.coldE_coldI(Theta_e, Theta_i), 0.) +
+            np.where(hotE_coldI,  self.hotE_coldI( Theta_e, Theta_i), 0.) +
+            np.where(coldE_hotI,  self.coldE_hotI( Theta_e, Theta_i), 0.) +
+            np.where(hotE_hotI,   self.hotE_hotI(  Theta_e, Theta_i), 0.)
+        )
+            
     def coldE_coldI(self, Theta_e, Theta_i):
         Theta_sum = Theta_e + Theta_i
         return ((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) / (
@@ -406,6 +409,9 @@ class Fluid():
 
     def Coulomb_log(self, ne, Te):
         return 35.4 + np.log((Te / 1.e7) * np.sqrt(1.0e-3 / ne))
+
+    def heating_Qi_Qe(self, rho, ugas, **kwargs):
+        print("Implement the electron-to-ion heating ratio from Rowan+2017.")
 
 class Tools():
     def dot(a, b, gcov):
