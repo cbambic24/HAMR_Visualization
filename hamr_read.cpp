@@ -142,7 +142,7 @@ void kernel_read_grid(std::string dir, int axisym, int by_block,
                         low_resx1 );
           offsetx2 = ( (low_resx2 - (coordx2 * upscalex2 * bs2) % low_resx2) %
                         low_resx2 );
-          offsetx3 = ( (low_resx3 - (coordx3 * upscalex3 * bs1) % low_resx3) %
+          offsetx3 = ( (low_resx3 - (coordx3 * upscalex3 * bs3) % low_resx3) %
                         low_resx3 );
 
           iStrt = coordx1 * (upscalex1 * bs1) + offsetx1;
@@ -651,7 +651,7 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
                         low_resx1 );
           offsetx2 = ( (low_resx2 - (coordx2 * upscalex2 * bs2) % low_resx2) %
                         low_resx2 );
-          offsetx3 = ( (low_resx3 - (coordx3 * upscalex3 * bs1) % low_resx3) %
+          offsetx3 = ( (low_resx3 - (coordx3 * upscalex3 * bs3) % low_resx3) %
                         low_resx3 );
 
           iStrt = coordx1 * (upscalex1 * bs1) + offsetx1;
