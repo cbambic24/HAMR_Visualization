@@ -48,7 +48,10 @@ class Radiation():
         gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
         # Electron internal energy
         u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
-        tIC = u_e / self.calc_qIC(rho, Te, urad)
+        # In instances where qIC = 0, set tIC to 0.
+        qIC = self.calc_qIC(rho, Te, urad)
+        tIC = np.zeros(qIC.shape)
+        tIC[qIC != 0.] = u_e[qIC != 0.] / qIC[qIC != 0.]
         if 'cooling' in kwargs:
             tIC[tIC < 0.0] = 0.0
             return tIC
@@ -72,14 +75,30 @@ class Radiation():
                 4. * self.kB * (Te - Trad) / mc2) * (
                 1. + 3.683 * Theta_e + 4. * np.square(Theta_e)) * (
                 1. / (1. + Theta_e))) # erg/cm^3 s
-
+    
     # Electron cooling time due to emission of radiation, i.e.
     # electron-radiation temperature equilibration timescale
     # t_rad^eq = (1 / kappa rho) * u_e / (a Te^4 c + q_IC) if Compton = True
     def calc_trad_emi(self, rho, Te, urad, **kwargs):
+        # Calculate gamma (ratio of specific heats)
+        # Equation 28 in Sadowski+ (2017)
+        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
+        gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
+        # Electron internal energy
+        u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
+        if kwargs.get('Compton'):
+            return (u_e / (self.calc_q_emi(rho, Te, urad, **kwargs) + 
+                self.q_IC(rho, Te, urad)))
+        else:
+            return u_e / self.calc_q_emi(rho, Te, urad, **kwargs)
+
+    # Emission rate assuming that radiation is blackbody spectrum
+    # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
+    def calc_q_emi(self, rho, Te, urad, **kwargs):
         # Calculate total emission opacity
         if 'opacities' in kwargs:
             opacities = kwargs.get('opacities')
+            kwargs.pop('opacities') # do not pass opacities as kwarg
         else:
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
@@ -88,46 +107,36 @@ class Radiation():
                        self.params, self.CONSTANTS, 
                        mechansim='emission', **kwargs)
         kappa_em = Opac.opacities['emission_total']
+        return kappa_em * rho * self.aRAD * Te ** 4 * self.c
+
+    # Electron heating time due to absorption of radiation, i.e.
+    # electron-radiation temperature equilibration timescale
+    # t_rad^eq = (1 / kappa rho) * u_e / (a T_rad^4 c)
+    def calc_trad_abs(self, rho, Te, urad, **kwargs):
         # Calculate gamma (ratio of specific heats)
         # Equation 28 in Sadowski+ (2017)
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
         # Electron internal energy
         u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
-        if kwargs.get('Compton'):
-            return ((1. / (kappa_em * rho)) * (
-                    u_e / (urad * self.c + q_IC(rho, Te, urad))))
-        else:
-            return ((1. / (kappa_em * rho)) * (
-                    u_e / (urad * self.c)))
+        return u_e / self.calc_q_abs(rho, Te, urad, **kwargs)
 
-    # Electron heating time due to absorption of radiation, i.e.
-    # electron-radiation temperature equilibration timescale
-    # t_rad^eq = (1 / kappa rho) * u_e / (a T_rad^4 c)
-    def calc_trad_abs(self, rho, Te, urad, **kwargs):
-        # Calculate total emission opacity
+    # Absorption rate assuming that radiation is blackbody spectrum
+    # Source term in Sadowski+ (2017) Equation 31 (term with Bhat)
+    def calc_q_abs(self, rho, Te, urad, **kwargs):
+        # Calculate total absorption opacity
         if 'opacities' in kwargs:
             opacities = kwargs.get('opacities')
+            kwargs.pop('opacities') # do not pass opacities as kwarg
         else:
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
                 'iron_line', 'molecular', 'synchrotron'])
         Opac = Opacity(opacities, rho, Te, urad, 
                        self.params, self.CONSTANTS, 
-                       mechanism='absorption', **kwargs)
+                       mechansim='absorption', **kwargs)
         kappa_abs = Opac.opacities['absorption_total']
-        # Calculate gamma (ratio of specific heats)
-        # Equation 28 in Sadowski+ (2017)
-        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
-        gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-        # Electron internal energy
-        u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
-        if kwargs.get('Compton'):
-            return ((1. / (kappa_abs * rho)) * (
-                    u_e / (urad * self.c + self.calc_qIC(rho, Te, urad))))
-        else:
-            return ((1. / (kappa_abs * rho)) * (
-                    u_e / (urad * self.c)))
+        return kappa_abs * rho * urad * self.c
 
 class Opacity():
     def __init__(self, opacities, rho, Te, urad, pars, CONSTANTS, **kwargs):
@@ -149,7 +158,7 @@ class Opacity():
         self.Te   = Te
         self.Tr   = (urad / self.aRAD) ** (1./4.)
 
-        self.opacities = opacities
+        self.opacities = opacities.copy()
 
         # Electron-scattering (Thomson) opacity
         kappa_es = 0.2 * (1 + self.X_ab) # cm^2/g
@@ -158,9 +167,9 @@ class Opacity():
         if 'electron_scattering' in opacities:
             self.opacities['electron_scattering'] = kappa_es
         
-        if kwargs.get('mechanism') is 'absorption':
+        if kwargs.get('mechanism') == 'absorption':
             self.calc_opacities('absorption', **kwargs)
-        elif kwargs.get('mechanism') is 'emission':
+        elif kwargs.get('mechanism') == 'emission':
             self.calc_opacities('emission', **kwargs)
         else:
             self.calc_opacities('both', **kwargs)
@@ -190,9 +199,9 @@ class Opacity():
         if ('bound_free' in self.opacities or 'CHIANTI'  in self.opacities or 
             'hydrogen'  in self.opacities or 'free_free' in self.opacities or
             'molecular' in self.opacities or 'synchrotron' in self.opacities):
-            if process is 'absorption' or process is 'both':
+            if process == 'absorption' or process == 'both':
                 self.calc_kappa('absorption')
-            if process is 'emission' or process is 'both':
+            if process == 'emission' or process == 'both':
                 self.calc_kappa('emission')
         ttot = get_time.time()
 
@@ -203,12 +212,12 @@ class Opacity():
     # 750 Z (1 + X + 0.75Y) as per Rybicki & Lightman (1986) and
     # the discussion in section C4 of McKinney+ (2017)
     def bound_free_opacity(self, process):
-        if process is 'absorption' or process is 'both':
+        if process == 'absorption' or process == 'both':
             self.opacities['bound_free_abs'] = (9.0e26 * (
                     self.Z_ab * (1. + self.X_ab + 0.75 * self.Y_ab) * (
                     self.rho * (self.Te ** -0.5) * (self.Tr ** -3) * (
                     np.log(1. + 1.6 * (self.Tr / self.Te))))))
-        if process is 'emission' or process is 'both':
+        if process == 'emission' or process == 'both':
             self.opacities['bound_free_emi'] = (9.0e26 * (
                     self.Z_ab * (1. + self.X_ab + 0.75 * self.Y_ab) * (
                     self.rho * (self.Te ** -3.5) * np.log(1. + 1.6))))
@@ -217,11 +226,11 @@ class Opacity():
     # Opacities based on calculations from the CHIANTI atomic database
     # McKinney+ (2017) Equation C11
     def CHIANTI_opacity(self, process):
-        if process is 'absorption' or process is 'both':
+        if process == 'absorption' or process == 'both':
             self.opacities['CHIANTI_abs'] = (3.0e34 * self.rho * (
                     (0.1 + (self.Z_ab / 0.02)) * (
                     (self.Te ** -1.7) * (self.Tr ** -3.0))))
-        if process is 'emission' or process is 'both':
+        if process == 'emission' or process == 'both':
             self.opacities['CHIANTI_emi'] = (3.0e34 * self.rho * (
                     (0.1 + (self.Z_ab / 0.02)) * (self.Te ** -4.7)))
         return None
@@ -231,13 +240,13 @@ class Opacity():
     # Sadowski prefactor is 1.33e24 instead of 1.2e24 and Sadowski includes
     # a factor of 1.047 in the absorption opacity
     def free_free_opacity(self, process):
-        if process is 'absorption' or process is 'both':
+        if process == 'absorption' or process == 'both':
             self.opacities['free_free_abs'] = (1.2e24 * (
                     (1. + self.X_ab) * (1. - self.Z_ab) * self.rho * (
                     (self.Te ** -0.5) * (self.Tr ** -3) * (
                     np.log(1.0 + 1.6 * (self.Tr / self.Te)) * (
                     (1. + 4.4e-10 * self.Te))))))
-        if process is 'emission' or process is 'both':
+        if process == 'emission' or process == 'both':
             self.opacities['free_free_emi'] = (1.2e24 * (
                     (1. + self.X_ab) * (1. - self.Z_ab) * self.rho * (
                     (self.Te ** -3.5) * np.log(1.0 + 1.6) * (
@@ -247,23 +256,28 @@ class Opacity():
     # H- opacity 
     # McKinney+ (2017) Equation C12
     def hydrogen_opacity(self, process):
-        if process is 'absorption' or process is 'both':
-            self.opacities['hydrogen_abs'] = (33. * 1.e-25 * (
-                    np.sqrt(self.Z_ab) * np.sqrt(self.rho) * ( 
-                    (self.Te ** 7.7))))  
-        if process is 'emission' or process is 'both':
-            self.opacities['hydrogen_emi'] = (33. * 1.e-25 * (
-                    np.sqrt(self.Z_ab) * np.sqrt(self.rho) * ( 
-                    (self.Te ** 7.7))))  
+        kappa_H = (33. * 1.e-25 * (
+            np.sqrt(self.Z_ab) * np.sqrt(self.rho) * (
+            self.Te ** 7.7)))
+        if process == 'absorption' or process == 'both':
+            self.opacities['hydrogen_abs'] = kappa_H
+        if process == 'emission' or process == 'both':
+            self.opacities['hydrogen_emi'] = kappa_H
+            #
+            #np.where(
+            #    kappa_inv != 0., 1. / kappa_inv, np.inf)
+            #(33. * 1.e-25 * (
+            #        np.sqrt(self.Z_ab) * np.sqrt(self.rho) * (
+            #        self.Te ** 7.7))) 
         return None
 
     # Iron-line opacity
     # McKinney+ (2017) Equation C15
     def iron_line_opacity(self, process):
-        if process is 'absorption' or process is 'both':
+        if process == 'absorption' or process == 'both':
             self.opacities['iron_line_abs'] = (0.3 * (self.Z_ab / 0.02) * (
                     np.exp(-6.0 * ((-12.0 + np.log(self.Te)) ** 2)))) 
-        if process is 'emission' or process is 'both':
+        if process == 'emission' or process == 'both':
             self.opacities['iron_line_emi'] = (0.3 * (self.Z_ab / 0.02) * (
                     np.exp(-6.0 * ((-12.0 + np.log(self.Te)) ** 2))))
         return None
@@ -271,9 +285,9 @@ class Opacity():
     # Molecular opacity
     # McKinney+ (2017) sentence after Equation C12
     def molecular_opacity(self, process):
-        if process is 'absorption' or process is 'both':
+        if process == 'absorption' or process == 'both':
             self.opacities['molecular_abs'] = 3. * self.Z_ab
-        if process is 'emission' or process is 'both':
+        if process == 'emission' or process == 'both':
             self.opacities['molecular_emi'] = 3. * self.Z_ab
         return None
     
@@ -285,14 +299,14 @@ class Opacity():
         e_2pimc  = self.e / (2. * np.pi * self.me * self.c)
         # McKinney+ (2017) Equation D2
         nu_mu    = (3./2.) * e_2pimc * np.sqrt(self.b2) * (Theta_e ** 2)
-        if process is 'absorption' or process is 'both':
+        if process == 'absorption' or process == 'both':
             # McKinney+ (2017) Equation D5
             phi = self.kB * self.Tr / (self.h * nu_mu)
             # McKinney+ (2017) Equation D6
             g   = 5.85374e-14 * ne * phi * (Theta_e ** -3) * (1. / self.Tr)
             self.opacities['synchrotron_abs'] = self.calc_kappa_sync(
                                                             g, phi, **kwargs)
-        if process is 'emission' or process is 'both':
+        if process == 'emission' or process == 'both':
             # McKinney+ (2017) Equation D5
             phi = self.kB * self.Te / (self.h * nu_mu)
             # McKinney+ (2017) Equation D6
@@ -329,9 +343,9 @@ class Opacity():
     #     (1 / (hydrogen + molecular)) + 
     #     (1 / (bound_free + ff + CHIANT)) ) + synchrotron
     def calc_kappa(self, process):
-        if process is 'absorption':
+        if process == 'absorption':
             proc = 'abs'
-        if process is 'emission':
+        if process == 'emission':
             proc = 'emi'
 
         synchrotron           = 0
@@ -340,7 +354,7 @@ class Opacity():
         if 'synchrotron' in self.opacities:
             synchrotron = 1.0
             kappa_synchrotron = self.opacities['synchrotron_%s' %proc]
-        if 'hydrogen' or 'molecular' in opacities:
+        if 'hydrogen' in self.opacities or 'molecular' in self.opacities:
             hydrogen_or_molecular = 1.0
             sum_keys = []
             if 'hydrogen' in self.opacities:
@@ -348,7 +362,9 @@ class Opacity():
             if 'molecular' in self.opacities:
                 sum_keys.append('molecular_%s' %proc)
             kappa_H_Mol = self.sum_opacities(sum_keys)
-        if 'bound_free' or 'CHIANTI' or 'free_free' in self.opacities:
+        if ('bound_free' in self.opacities or 
+            'CHIANTI'    in self.opacities or
+            'free_free'  in self.opacities):
             bf_or_CHI_or_ff = 1.0
             sum_keys = []
             if 'bound_free' in self.opacities:
