@@ -271,6 +271,8 @@ class Read():
         params['dx2'] *= self.lowres2 * (1.0 / self.upscalex2)
         params['dx3'] *= self.lowres3 * (1.0 / self.upscalex3)
 
+        self.params = params
+
     def read_grid(self, fnum, **kwargs):
         skip_read_params = kwargs.get('skip_read_params', False)
         direct           = kwargs.get('direct', False)
