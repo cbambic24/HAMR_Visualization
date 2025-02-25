@@ -27,6 +27,8 @@ class Accretion():
             self.G    = 1.0
             self.Msun = 1.0
             self.B0   = 1.0
+            self.MBH  = 1.0
+
         self.Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c) 
         self.pars      = pars
         self.CONSTANTS = CONSTANTS
@@ -34,27 +36,32 @@ class Accretion():
 
     # Calculate disk mass
     def calc_Mtot(self, **kwargs):
-        Rg = self.Rg
-        return np.sum((self.rho * self.uu[0]) * (Rg * Rg * Rg) * (
+        Mtot =  np.sum((self.rho * self.uu[0]) * (
                         self.sigma_cut(**kwargs) * (
                         self.gdet * self.dx1 * self.dx2 * self.dx3)))
-    
+        return self.upscale64(Mtot, self.Rg * self.Rg * self.Rg)
+
     # Calculate inward mass accretion rate as function of radius
     def calc_Mdot(self, **kwargs):
-        return (-self.rho * self.uu[1] * (self.Rg * self.Rg) * (
+        Mdot = (-self.rho * self.uu[1] * (
             self.sigma_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
-    
+        return self.upscale64(Mdot, self.Rg * self.Rg)
+        
     # Calculate energy accretion rate as a function of radius
     def calc_Edot(self, **kwargs):
+        rho0c2 = self.rho0 * self.c * self.c
         if 'TMHD' not in kwargs:
             stress_energy_MHD = self.calc_TMHD(upper_lower=True, 
-                    index = [1, 0], **kwargs)
+                index = [1, 0], **kwargs)
         else:
             stress_energy_MHD = kwargs.get('TMHD')
-        return (stress_energy_MHD * (self.Rg * self.Rg * self.c) * (
+        stress_energy_MHD *= (1. / rho0c2)
+        Edot = (stress_energy_MHD * (
             self.sigma_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+        stress_energy_MHD *= rho0c2
+        return self.upscale64(Edot, self.Rg * self.Rg * self.c * rho0c2)
 
     # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
     def calc_PhiBH(self, **kwargs):
@@ -90,6 +97,7 @@ class Accretion():
         else:
             return stress_energy_HD + stress_energy_EM
     
+    # Return where sigma < sigma_cut
     def sigma_cut(self, **kwargs):
         if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
             B02 = self.B0 * self.B0
@@ -97,11 +105,18 @@ class Accretion():
             b2  = Fld.calc_b2(self.B, self.B, self.gcov, 
                     from_B=True, uu=self.uu) / B02
             sigma = (b2 * B02 / (4. * np.pi)) / (self.rho * self.c * self.c)
+            return (sigma < kwargs.get('sigma_cut'))
         elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
             sigma = kwargs.get('sigma')
             return (sigma < kwargs.get('sigma_cut'))
         else:
             return 1.0
+
+    # Upscale q to 64-bit precision and apply units
+    def upscale64(self, q, units):
+        q_dbl  = np.float64(q.copy())
+        q_dbl *= units
+        return q_dbl
 
 class Analytic():
     def __init__(self, CONSTANTS, **kwargs):
@@ -121,11 +136,25 @@ class Analytic():
         return self.calc_LEdd(MBH) / (eta * self.c * self.c)
 
 class Coordinates():
-    def __init__(self, r, theta, phi):
-        self.r  = r
+    def __init__(self, r, theta, phi, CONSTANTS, **kwargs):
+        self.MBH = kwargs.get('MBH', 1.0)
+        if (kwargs.get('cgs')):
+            self.c    = CONSTANTS['c']        # cm/s
+            self.G    = CONSTANTS['G']        # cm^3/g s^2
+            self.Msun = CONSTANTS['Msun']     # g
+        else:
+            self.c    = 1.0
+            self.G    = 1.0
+            self.Msun = 1.0
+            self.MBH  = 1.0
+
+        Rg = (self.G * self.MBH * self.Msun) / (self.c * self.c)
+
+        self.r  = r / Rg
         self.th = theta
         self.ph = phi
 
+    # (t, r, theta, phi) -> (t, x, y, z)
     def sph_to_cart_vec(self, vec):
         shape = list(vec.shape)
         shape.insert(0, 4)
@@ -143,7 +172,24 @@ class Coordinates():
         drdx[3, 2] = (-self.r * np.sin(self.th))
 
         return np.einsum('ij...,j...->i...', drdx, vec)
-    
+
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def sph_to_cyl_vec(self, vec):
+        shape = list(vec.shape)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=np.float32)
+
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.ph)
+        drdz[1, 2] = self.r * np.cos(self.ph)
+        drdz[2, 3] = 1.
+        drdz[3, 1] = np.cos(self.ph)
+        drdz[3, 2] = -self.r * np.sin(self.ph)
+
+        return np.einsum('ij...,j...->i...', drdz, vec)
+        
+    # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_sph_vec(self, vec):
         shape = list(vec.shape)
         shape.insert(0, 4)
@@ -156,9 +202,14 @@ class Coordinates():
         dxdxp[3, 3] = 1.0
 
         return np.einsum('ij...,j...->i...', dxdxp, vec)
-    
+
+    # (t, x1, x2, x3) -> (t, x, y, z) 
     def int_to_cart_vec(self, vec):
         return self.sph_to_cart_vec(self.int_to_sph_vec(vec))
+
+    # (t, x1, x2, x3) -> (t, R, phi, z) 
+    def int_to_cyl_vec(self, vec):
+        return self.sph_to_cyl_vec(self.int_to_sph_vec(vec))
 
 class Field():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -173,18 +224,25 @@ class Field():
             self.B0   = 1.0
 
     # Compute b from B
+    # Assumes B has units and returns b with units
     def calc_b(self, B, uu, gcov):
         c, B0  = self.c, self.B0
         b      = np.zeros(B.shape)
+        # de-dimensionalize inputs
+        uu    *=  1. / c
+        B     *=  1. / B0
         # compute b^t
-        b[0]   = Tools.dot((uu / c), (B / B0), gcov)
+        b[0]   = Tools.dot(uu, B, gcov)
         # compute b^i
         for i in range(1, 4):
-            b[i] = ((B[i] / B0) + (uu[i] / c) * b[0]) / (uu[0] / c)
-        # re-dimensionalize 4-vector
-        return b * self.B0
+            b[i] = (B[i] + (uu[i] * b[0])) / uu[0]
+        # re-dimensionalize inputs and b
+        uu *= c
+        B  *= B0
+        return b * B0
     
-    # Compute b^2 (assumes B and uu have units)
+    # Compute b^2 
+    # Assumes B and uu have units
     def calc_b2(self, b, B, gcov, **kwargs):
         if (kwargs.get('from_B')):
             if (kwargs.get('uu') is None):
@@ -198,29 +256,53 @@ class Field():
     # Default TEM^{mu, nu}
     # "upper_lower": TEM^{mu}_{nu} 
     # "lower_lower": TEM_{mu, nu}
+    # If b and/or b2 arguments provided, assume they have units
     def calc_TEM(self, uu, B, gcov, gcon, **kwargs):
-        uu_tnsr = Tools.construct_dyadic(uu / self.c, gcov, **kwargs)
-        if 'b' in kwargs and 'b2' in kwargs:
-            bb_tnsr = Tools.construct_dyadic(
-                    kwargs.get('b') / self.B0, gcov, **kwargs)
-            b2 = kwargs.get('b2') / (self.B0 * self.B0)
-        elif 'b' in kwargs and 'b2' not in kwargs:
-            bb_tnsr = Tools.construct_dyadic(
-                    kwargs.get('b') / self.B0, gcov, **kwargs)
-            b2 = self.calc_b2(kwargs.get('b'), 
-                    kwargs.get('b'), gcov) / (self.B0 * self.B0)
-        elif 'b' not in kwargs and 'b2' in kwargs:
-            b       = self.calc_b(B, uu, gcov) / self.B0
-            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
-            b2      = kwargs.get('b2') / (self.B0 * self.B0)
-        else:
-            b       = self.calc_b(B, uu, gcov) / self.B0
-            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
-            b2      = self.calc_b2(b, b, gcov)
-        
+        rho0   = self.rho0
+        c      = self.c
+        rho0c2 = rho0 * c * c
+        B0     = self.B0
         B02    = self.B0 * self.B0
+        # de-dimensionalize uu
+        uu    *= 1. / c
+        if 'uu_tnsr' not in kwargs:
+            uu_tnsr = Tools.construct_dyadic(uu, gcov, **kwargs)
+        elif 'uu_tnsr' in kwargs:
+            uu_tnsr = kwargs.get('uu_tnsr')
+        if 'b' in kwargs and 'b2' in kwargs:
+            b       = kwargs.get('b')
+            b      *= 1. / B0
+            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
+            b      *= B0
+            b2      = kwargs.get('b2') 
+        elif 'b' in kwargs and 'b2' not in kwargs:
+            b       = kwargs.get('b')
+            b      *= 1. / B0
+            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
+            b2      = self.calc_b2(b, b, gcov) * B02
+            b      *= B0
+        elif 'b' not in kwargs and 'b2' in kwargs:
+            uu     *= c   
+            b       = self.calc_b(B, uu, gcov)
+            uu     *= 1. / c   
+            b      *= 1. / B0   
+            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
+            b      *= B0
+            b2      = kwargs.get('b2')
+        else:
+            uu     *= c   
+            b       = self.calc_b(B, uu, gcov)
+            uu     *= 1. / c
+            b      *= 1. / B0
+            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
+            b2      = self.calc_b2(b, b, gcov) * B02
+            b      *= B0
+        # re-dimensionalize uu
+        uu *= c
+        
         g_tnsr = Tools.g_metric(gcov, gcon, **kwargs)
-        return (b2*uu_tnsr + 0.5*b2*g_tnsr - bb_tnsr) * B02
+        return ( (b2 / B02) * uu_tnsr + 
+            0.5 *(b2 / B02) * g_tnsr - bb_tnsr) * rho0c2
     
 class Fluid():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -264,10 +346,16 @@ class Fluid():
             Te   = kwargs.get('Te')
             Ti   = kwargs.get('Ti')
             pgas = self.calc_pgas(ugas, Te, Ti)
+        c      = self.c
         rho0   = self.rho0
-        rho0c2 = self.rho0 * self.c * self.c
+        rho0c2 = rho0 * c * c
 
-        uu_tnsr = Tools.construct_dyadic(uu / self.c, gcov, **kwargs)
+        if 'uu_tnsr' not in kwargs:
+            uu     *= 1. / c
+            uu_tnsr = Tools.construct_dyadic(uu, gcov, **kwargs)
+            uu     *= c
+        elif 'uu_tnsr' in kwargs:
+            uu_tnsr = kwargs.get('uu_tnsr')
         g_tnsr  = Tools.g_metric(gcov, gcon, **kwargs)
         return (
             (((rho / rho0) + (ugas / rho0c2) + (pgas / rho0c2)) * uu_tnsr + 
@@ -315,14 +403,20 @@ class Fluid():
             rho / (self.mu_i * self.mp)) * self.kB * (Ti- Te))[
             (delta_energy < 0) & (Ti > Te)]
 
-        teq = delta_energy / self.calc_qie(rho, Te, Ti, **kwargs)
+        if 'qie' not in kwargs:
+            qie = self.calc_qie(rho, Te, Ti, **kwargs)
+        else:
+            qie = kwargs.get('qie')
         
+        teq = delta_energy / qie
+        teq[qie == 0.] = 0.
+
         # If temperature difference < 2% of Te, then assume negligible teq
         teq[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
-        if 'cooling' in kwargs:
+        if kwargs.get('cooling'):
             teq[Ti < Te] = 0.0
             return teq # s
-        elif 'heating' in kwargs:
+        elif kwargs.get('heating'):
             teq[Ti > Te] = 0.0
             return teq # s
         else:
@@ -346,12 +440,19 @@ class Fluid():
             self.Coulomb_log(ne, Te) * (
             self.Bessel_terms(Theta_e, Theta_i)))
         )
-        return qie # erg/cm^3 s
+        # If temperature difference < 2% of Te, then assume negligible qie
+        qie[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
+        if kwargs.get('cooling'):
+            qie[Ti < Te] = 0.0
+            return qie # erg/cm^3 s
+        elif kwargs.get('heating'):
+            qie[Ti > Te] = 0.0
+            return qie # erg/cm^3 s
+        else:    
+            return qie # erg/cm^3 s
 
     # H-AMR uses approximations for the Bessel functions when the
     # electrons (E) or ions (I) are cold (Theta < Theta_min)
-    # In this analysis, we use the approximations when
-    # both species are cold. Otherwise, the real formula is used.
     def Bessel_terms(self, Theta_e, Theta_i):
         coldE = (Theta_e <  self.Theta_min)
         coldI = (Theta_i <  self.Theta_min)
@@ -376,8 +477,8 @@ class Fluid():
             np.sqrt(0.5 * np.pi * (Theta_sum ** 3))))
 
     def hotE_coldI(self, Theta_e, Theta_i):
-        Theta_sum = Theta_e + Theta_i 
-        k2e       = kn(2, (1. / Theta_e))
+        Theta_sum  = Theta_e + Theta_i 
+        k2e        = kn(2, (1. / Theta_e))
         return (((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) * (
             np.sqrt(Theta_e))) / ( k2e * np.exp(1. / Theta_e) * (
             np.sqrt(Theta_sum ** 3))))
