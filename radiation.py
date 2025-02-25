@@ -31,14 +31,13 @@ class Radiation():
     # Default TRAD^{mu, nu}
     # "upper_lower": TRAD^{mu}_{nu} 
     # "lower_lower": TRAD_{mu, nu}
-    def calc_TRAD(self, urad_in, uu_rad, gcov, gcon, **kwargs):
-        urad    = urad_in.copy()
+    def calc_TRAD(self, urad, uu_rad, gcov, gcon, **kwargs):
         rho0c2  = self.rho0 * self.c * self.c
         rho0c3  = rho0c2 * self.c
-        uu_tnsr = Tools.construct_dyadic(uu_rad / rho0c3, gcov, **kwargs)
+        uu_tnsr = Tools.construct_dyadic(uu_rad / rho0c3, gcov, **kwargs) 
         g_tnsr  = Tools.g_metric(gcov, gcon, **kwargs)
-        urad   *= 1. / rho0c2
-        return ((4./3.) * urad * uu_tnsr + (1./3.) * urad * g_tnsr) * rho0c2
+        return ((4./3.) * (urad / rho0c2) * uu_tnsr + 
+                (1./3.) * (urad / rho0c2) * g_tnsr) * rho0c2
 
     # Compton cooling/heating time
     def calc_tIC(self, rho, Te, urad, **kwargs):
@@ -49,7 +48,7 @@ class Radiation():
         # Electron internal energy
         u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
         # In instances where qIC = 0, set tIC to 0.
-        qIC = self.calc_qIC(rho, Te, urad)
+        qIC = self.calc_qIC(rho, Te, urad, **kwargs)
         tIC = np.zeros(qIC.shape)
         tIC[qIC != 0.] = u_e[qIC != 0.] / qIC[qIC != 0.]
         if 'cooling' in kwargs:
@@ -63,7 +62,7 @@ class Radiation():
 
     # Compton cooling rate
     # Equation 35 in Sadowski+ (2017)
-    def calc_qIC(self, rho, Te, urad):
+    def calc_qIC(self, rho, Te, urad, **kwargs):
         opacities = dict.fromkeys(['electron_scattering'])
         Opac      = Opacity(opacities, rho, Te, urad, 
                             self.params, self.CONSTANTS)
@@ -71,10 +70,18 @@ class Radiation():
         Theta_e   = (self.kB * Te) / (self.me * self.c * self.c)
         Trad      = (urad / self.aRAD) ** (1./4.)
         mc2       = self.me * self.c * self.c
-        return (self.c * kappa_es * rho * urad * (
-                4. * self.kB * (Te - Trad) / mc2) * (
-                1. + 3.683 * Theta_e + 4. * np.square(Theta_e)) * (
-                1. / (1. + Theta_e))) # erg/cm^3 s
+        qIC = (self.c * kappa_es * rho * urad * (
+            4. * self.kB * (Te - Trad) / mc2) * (
+            1. + 3.683 * Theta_e + 4. * np.square(Theta_e)) * (
+            1. / (1. + Theta_e))) # erg/cm^3 s
+        if kwargs.get('cooling'):
+            qIC[Te < Trad] = 0.0
+            return qIC # erg/cm^3 s
+        elif kwargs.get('heating'):
+            qIC[Te > Trad] = 0.0
+            return qIC # erg/cm^3 s
+        else:
+            return qIC # erg/cm^3 s
     
     # Electron cooling time due to emission of radiation, i.e.
     # electron-radiation temperature equilibration timescale
@@ -107,7 +114,8 @@ class Radiation():
                        self.params, self.CONSTANTS, 
                        mechansim='emission', **kwargs)
         kappa_em = Opac.opacities['emission_total']
-        return kappa_em * rho * self.aRAD * Te ** 4 * self.c
+        Te_dbl   = np.float64(Te.copy())
+        return kappa_em * rho * self.aRAD * (Te_dbl ** 4) * self.c
 
     # Electron heating time due to absorption of radiation, i.e.
     # electron-radiation temperature equilibration timescale
@@ -256,19 +264,16 @@ class Opacity():
     # H- opacity 
     # McKinney+ (2017) Equation C12
     def hydrogen_opacity(self, process):
-        kappa_H = (33. * 1.e-25 * (
+        # Avoid overflow warnings
+        Te      = np.float64(self.Te.copy())
+        kappa_H = np.float64(33. * 1.e-25 * (
             np.sqrt(self.Z_ab) * np.sqrt(self.rho) * (
-            self.Te ** 7.7)))
+            Te ** 7.7)))
+        del Te
         if process == 'absorption' or process == 'both':
             self.opacities['hydrogen_abs'] = kappa_H
         if process == 'emission' or process == 'both':
             self.opacities['hydrogen_emi'] = kappa_H
-            #
-            #np.where(
-            #    kappa_inv != 0., 1. / kappa_inv, np.inf)
-            #(33. * 1.e-25 * (
-            #        np.sqrt(self.Z_ab) * np.sqrt(self.rho) * (
-            #        self.Te ** 7.7))) 
         return None
 
     # Iron-line opacity
@@ -374,7 +379,7 @@ class Opacity():
             if 'free_free' in self.opacities:
                 sum_keys.append('free_free_%s' %proc)
             kappa_bf_CHI_ff = self.sum_opacities(sum_keys)
-        
+
         if ('bound_free' in self.opacities or 'CHIANTI'   in self.opacities or 
             'hydrogen'   in self.opacities or 'free_free' in self.opacities or
             'molecular'  in self.opacities):
