@@ -809,7 +809,7 @@ void kernel_read_prims(std::string dir, int fnum, int by_block,
                     }
                     nuNum2[index_3D] = tempArray[vStrt + 11];
                     
-                    uNu2[index_3D] = tempArray[vStrt + 12];
+                    uNu3[index_3D] = tempArray[vStrt + 12];
                     for (ii = 0; ii < 4; ii++) {
                       uuNu2[ii * gridsize_3D + index_3D] = 
                       tempArray[vStrt + 13 + ii];
