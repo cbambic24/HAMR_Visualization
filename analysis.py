@@ -1,4 +1,6 @@
 import numpy as np
+from numba import jit
+from numba import prange
 from scipy.special import kn
 import tracemalloc
 
@@ -136,8 +138,9 @@ class Analytic():
         return self.calc_LEdd(MBH) / (eta * self.c * self.c)
 
 class Coordinates():
-    def __init__(self, r, theta, phi, CONSTANTS, **kwargs):
+    def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
         self.MBH = kwargs.get('MBH', 1.0)
+        self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
         if (kwargs.get('cgs')):
             self.c    = CONSTANTS['c']        # cm/s
             self.G    = CONSTANTS['G']        # cm^3/g s^2
@@ -210,6 +213,60 @@ class Coordinates():
     # (t, x1, x2, x3) -> (t, R, phi, z) 
     def int_to_cyl_vec(self, vec):
         return self.sph_to_cyl_vec(self.int_to_sph_vec(vec))
+
+    def integrate_z(self, q, **kwargs):
+        int_qdz = np.zeros(q.shape)
+        z       = self.r * np.cos(self.th)
+        dz      = np.abs(self.r * self.dx1 * np.cos(self.th))
+        R_cyl   = self.r * np.sin(self.th)
+        dR_cyl  = self.r * self.dx1 * np.sin(self.th) 
+        Rcyl_min= R_cyl - 0.5 * dR_cyl
+        Rcyl_max= R_cyl + 0.5 * dR_cyl
+
+        qdz = q * dz * self.sigma_cut(**kwargs) * self.theta_cut(**kwargs)
+        int_qdz = self.int_dz_loop(int_qdz, qdz, self.r, self.th, z, 
+                                   R_cyl, Rcyl_min, Rcyl_max)
+        
+        return int_qdz
+
+    @staticmethod
+    @jit(nopython=True, parallel=True)
+    def int_dz_loop(int_qdz, qdz, r, th, z, R_cyl, Rcyl_min, Rcyl_max):
+        for ir in prange(len(r[:, 0])):
+            for ith in range(len(th[0, :])):
+                temp_sum = 0.0
+                for jr in range(len(r[:, 0])):
+                    for jth in range(len(th[0, :])):
+                        if ((R_cyl[jr, jth] < Rcyl_max[ir, ith]) and
+                            (R_cyl[jr, jth] > Rcyl_min[ir, ith])):
+                            if (z[ir, ith] >= 0.):
+                                if (z[jr, jth] > z[ir, ith]):
+                                    temp_sum += qdz[jr, jth]
+                            else:
+                                if (z[jr, jth] < z[ir, ith]):
+                                    temp_sum += qdz[jr, jth]
+
+                int_qdz[ir, ith] = temp_sum
+        return int_qdz
+    
+    # Return where sigma < sigma_cut
+    def sigma_cut(self, **kwargs):
+        if 'sigma_cut' in kwargs and 'sigma' in kwargs:
+            sigma = kwargs.get('sigma')
+            return (sigma < kwargs.get('sigma_cut'))
+        elif 'sigma_cut' in kwargs and 'sigma' not in kwargs:
+            raise TypeError("Missing sigma in kwargs.")
+        elif 'sigma_cut' not in kwargs and 'sigma' in kwargs:
+            raise TypeError("Must specify value of sigma_cut.")
+        else:
+            return 1.0
+
+    def theta_cut(self, **kwargs):
+        if 'theta_cut' in kwargs:
+            return ((self.th > kwargs.get('theta_cut')) & 
+                    (self.th < np.pi - kwargs.get('theta_cut')))
+        else:
+            return 1.0
 
 class Field():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -566,6 +623,48 @@ if __name__ == "__main__":
 
 
 '''
+    def integrate_th(self, q, gcov, **kwargs):
+        shape = list(q.shape)
+        if (len(shape) == 2): axis = -1
+        else: axis = 2
+        qdth = np.zeros(q.shape)
+        qdth[self.theta < np.pi/2.] np.cumsum((q * gcov[2, 2] * self.dx2 * (
+            self.sigma_cut(**kwargs))[self.theta < np.pi/2.]), axis=axis)
+        qdth[self.theta > np.pi/2.] np.cumsum((q * gcov[2, 2] * self.dx2 * (
+            self.sigma_cut(**kwargs))[self.theta > np.pi/2.][:, ::-1]), axis=axis)
+        return qdth
+
+
+                theta_max = np.asin(Rcyl_max[ir, ith] / r[-1, 0])
+                r_min     = Rcyl_min[ir, ith]
+                if (np.any(r[:, 0] < r_min)):
+                    ir_min  = np.where(r[:, 0] < r_min)[0][-1]
+                else:
+                    ir_min = 0
+                ir_max    = len(r[:, 0])
+                if (z[ir, ith] > 0):
+                    it_min    = 0
+                    it_max    = np.where(th[0, :] > theta_max)[0][0]
+                else:
+                    it_min = len(th[0, :]) / 2
+                    it_max = np.where(th[0, :] > theta_max)[0][0] + it_min
+                temp_sum  = 0.0
+                for jr in range(ir_min, ir_max):
+                    for jth in range(it_min, it_max):
+                        temp_sum += (q * dz)[jr, jth]
+                int_qdz[ir, ith] = temp_sum
+                
+                #in_R_range = (
+                #    (R_cyl < Rcyl_max[ir, ith]) &
+                #    (R_cyl > Rcyl_min[ir, ith]))
+                #if (z[ir, ith] >= 0.):
+                #    in_z_range = (z > z[ir, ith])
+                #elif (z[ir, ith] < 0.):
+                #    in_z_range = (z < z[ir, ith])
+                #int_qdz[ir, ith] = np.sum(
+                #    q * dz * in_R_range * in_z_range)
+
+
 # Calculate precession period
 def calc_PrecPeriod(angle_tilt):
     gam,a,precperiod
