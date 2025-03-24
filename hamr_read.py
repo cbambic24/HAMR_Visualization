@@ -208,10 +208,10 @@ class Read():
 
         # Set grid spacing
         params['dx1'] = (np.log(params['Rout']) - np.log(params['Rin'])) / (
-            (params['bs1']*params['nb1']))
-        fractheta     = -1.0*params['startx2']
-        params['dx2'] = 2.0*fractheta/(params['bs2']*params['nb2'])
-        params['dx3'] = 2.0*np.pi/(params['bs3']*params['nb3'])
+            (params['bs1'] * params['nb1']))
+        fractheta     = -1.0 * params['startx2']
+        params['dx2'] = 2.0 * fractheta / (params['bs2'] * params['nb2'])
+        params['dx3'] = 2.0 * np.pi / (params['bs3'] * params['nb3'])
 
         nb         = params['n_active_total']
         # n_ord translates order of blocks in Z curve
@@ -705,9 +705,9 @@ class Read():
         return i_min, i_max
 
     def get_tbox_coords(self):
-        j_min = self.get_min_index((2.0/np.pi)*self.theta_min - 1.0,
+        j_min = self.get_min_index((2.0 / np.pi) * self.theta_min - 1.0,
                                    params['startx2'], params['dx2'])
-        j_max = self.get_max_index((2.0/np.pi)*self.theta_max - 1.0,
+        j_max = self.get_max_index((2.0 / np.pi) * self.theta_max - 1.0,
                                    params['startx2'], params['dx2'],
                                    self.gridsizex2)
         return j_min, j_max
