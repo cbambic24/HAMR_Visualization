@@ -105,8 +105,8 @@ class Accretion():
             B02 = self.B0 * self.B0
             Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
             b2  = Fld.calc_b2(self.B, self.B, self.gcov, 
-                    from_B=True, uu=self.uu) / B02
-            sigma = (b2 * B02 / (4. * np.pi)) / (self.rho * self.c * self.c)
+                    from_B=True, uu=self.uu)
+            sigma = (b2 / B02) / (self.rho / self.rho0)
             return (sigma < kwargs.get('sigma_cut'))
         elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
             sigma = kwargs.get('sigma')
