@@ -7,7 +7,22 @@ from scipy.interpolate import griddata
 class Cartesian():
     def __init__(self, params, **kwargs):
         self.params = params
+    
+    def plot_xy(self, fig, ax, X, Y, D, cmap, FS, **kwargs):
+        im = {}
+        vmin, vmax = self.get_vmin_vmax(D, **kwargs)
+        norm       = self.get_norm(vmin, vmax, **kwargs)
 
+        im['r'] = ax.pcolormesh(X['r'], Y['r'], D['r'],
+                                norm = norm, cmap = cmap, shading = 'gouraud')
+        cax = self.get_cax(fig, ax, im, FS, **kwargs)
+        
+        contours = kwargs.get('contours', False)
+        if (contours):
+            self.plot_contours(ax, im['r'], X['r'], Y['r'], contours)
+
+        return im, cax
+    
     def plot_xz(self, fig, ax, X, Z, D, cmap, FS, **kwargs):
         im = {}
         vmin, vmax = self.get_vmin_vmax(D, **kwargs)
@@ -20,16 +35,6 @@ class Cartesian():
         cax = self.get_cax(fig, ax, im, FS, **kwargs)
         return im, cax
 
-    def plot_xy(self, fig, ax, X, Y, D, cmap, FS, **kwargs):
-        im = {}
-        vmin, vmax = self.get_vmin_vmax(D, **kwargs)
-        norm       = self.get_norm(vmin, vmax, **kwargs)
-
-        im['r'] = ax.pcolormesh(X['r'], Y['r'], D['r'],
-                                norm = norm, cmap = cmap, shading = 'gouraud')
-        cax = self.get_cax(fig, ax, im, FS, **kwargs)
-        return im, cax
-    
     def plot_xz_mirror(self, fig, ax, X, Z, Dl, Dr, cmaps, FS, **kwargs):
         im   = {}
         vmin_l, vmax_l = self.get_vmin_vmax(Dl, 
@@ -39,7 +44,8 @@ class Cartesian():
             log=kwargs.get('log_left', False), 
             sym=kwargs.get('sym_left', False),
             linthresh=kwargs.get('linthresh_left', False))
-        
+        contours_l     = kwargs.get('contours_left', False)
+
         vmin_r, vmax_r = self.get_vmin_vmax(Dr,
             lim=kwargs.get('lim_right', False), 
             sym=kwargs.get('sym_right', False))
@@ -47,6 +53,7 @@ class Cartesian():
             log=kwargs.get('log_right', False), 
             sym=kwargs.get('sym_right', False),
             linthresh=kwargs.get('linthresh_right', False))
+        contours_r     = kwargs.get('contours_right', False)
 
         im['l'] = ax.pcolormesh(X['l'], Z['l'], Dl['l'],
                                 norm = norm_l, cmap = cmaps[0], 
@@ -55,11 +62,24 @@ class Cartesian():
                                 norm = norm_r, cmap = cmaps[1], 
                                 shading = 'gouraud')
         
-        cax_l = self.get_cax(fig, ax, im, FS, cbar_loc='left', **kwargs)
+        cax_l = self.get_cax(fig, ax, im, FS, cbar_loc='top', **kwargs)
         cax_r = self.get_cax(fig, ax, im, FS, **kwargs)
-        
+
+        if (contours_l):
+            self.plot_contours(ax, im['l'], X['l'], Z['l'], contours_l)
+        if (contours_r):
+            self.plot_contours(ax, im['r'], X['r'], Z['r'], contours_r)
+
         return im, cax_l, cax_r
-    
+
+    def plot_contours(self, ax, im, X, Y, contours):
+        for (quantity, level, linewidth, color) in zip(
+            contours['quantities'], contours['levels'], 
+            contours['linewidths'], contours['colors']):
+            ax.contour(X, Y, quantity, levels=[level], 
+                       linewidths=linewidth, colors=color)
+        return None
+
     def plot_xy_vec(self, fig, ax, X, Y, 
                     X_uni, Y_uni, VX, VY, **kwargs):
         xlim  = 1.1 * np.amax(np.abs(X_uni))
@@ -81,13 +101,27 @@ class Cartesian():
         VY_uni = griddata((x_data, y_data), VY_data, 
                           (X_uni, Y_uni), method='cubic')
         
+        if 'color_streamlines' in kwargs:
+            color_streamlines = kwargs.get('color_streamlines')
+            values            = color_streamlines['values']
+            cmap              = color_streamlines['cmap']
+
+            values_dat  = values['r'].ravel()
+            values_data = values_dat[selec]
+            values_uni  = griddata((x_data, y_data), values_data, 
+                                   (X_uni, Y_uni), method='cubic')
+        
         dens = kwargs.get('dens', 1.0)
 
         ax.streamplot(X_uni, Y_uni, VX_uni, VY_uni, 
                       density = (dens, dens),
-                      broken_streamlines = True,
+                      broken_streamlines = (
+                          kwargs.get('broken_streamlines', True)),
                       linewidth = kwargs.get('linewidth', 1.0), 
-                      color = kwargs.get('color', 'white'), 
+                      color = (kwargs.get('color', 'white') 
+                        if 'color_streamlines' not in kwargs else values_uni), 
+                      cmap = (
+                          None if 'color_streamlines' not in kwargs else cmap),
                       arrowsize = kwargs.get('arrowsize', 1.0))
     
     def plot_xz_vec(self, fig, ax, X, Z, 
@@ -110,27 +144,42 @@ class Cartesian():
                           (X_uni, Z_uni), method='cubic')
         VZ_uni = griddata((x_data, z_data), VZ_data, 
                           (X_uni, Z_uni), method='cubic')
-        
+
+        if 'color_streamlines' in kwargs:
+            color_streamlines = kwargs.get('color_streamlines')
+            values            = color_streamlines['values']
+            cmap              = color_streamlines['cmap']
+
+            values_dat  = np.concatenate(
+                [values['r'].ravel(), values['l'].ravel()])
+            values_data = values_dat[selec]
+            values_uni  = griddata((x_data, z_data), values_data, 
+                                   (X_uni, Z_uni), method='cubic')
+
         dens = kwargs.get('dens', 1.0)
         
         ax.streamplot(X_uni, Z_uni, VX_uni, VZ_uni, 
                       density = (dens, dens),
-                      broken_streamlines = True,
+                      broken_streamlines = (
+                          kwargs.get('broken_streamlines', True)),
                       linewidth = kwargs.get('linewidth', 1.0), 
-                      color = kwargs.get('color', 'white'), 
+                      color = (kwargs.get('color', 'white') 
+                        if 'color_streamlines' not in kwargs else values_uni), 
+                      cmap = (
+                          None if 'color_streamlines' not in kwargs else cmap),
                       arrowsize = kwargs.get('arrowsize', 1.0))
-        
+
     def standard_cbar(self, fig, ax, images, FS, **kwargs):
         divider = make_axes_locatable(ax)
-        if (kwargs.get('cbar_loc') == 'left'):
+        if (kwargs.get('cbar_loc') == 'top'):
             cax = divider.append_axes("top", size="4%", pad=0.2)
             cax.xaxis.set_ticks_position("top")
             cbar = fig.colorbar(images, cax=cax, location="top")
         else:
             cax = divider.append_axes("right", size="4%", pad=0.2)
             cbar = fig.colorbar(images, cax=cax, location="right")
-        if (kwargs.get('cbar_loc') == 'left'):
-            cbar.ax.yaxis.set_ticks_position('left')
+        #if (kwargs.get('cbar_loc') == 'left'):
+        #    cbar.ax.yaxis.set_ticks_position('left')
         if(kwargs.get('title')):
             title = kwargs.get('title')
             cbar.ax.set_xlabel(title, labelpad=20, fontsize=FS)
@@ -173,6 +222,8 @@ class Cartesian():
         else:
             if (kwargs.get('cbar_loc') == 'left'):
                 return self.standard_cbar(fig, ax, im['l'], FS, **kwargs)
+            elif (kwargs.get('cbar_loc') == 'top'):
+                return self.standard_cbar(fig, ax, im['l'], FS, **kwargs)
             else:
                 return self.standard_cbar(fig, ax, im['r'], FS, **kwargs)
 
@@ -180,5 +231,4 @@ class Cartesian():
 if __name__ == "__main__":
     print("Executing figs.py")
 
-    
- 
+
