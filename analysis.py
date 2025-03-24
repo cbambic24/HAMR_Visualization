@@ -176,6 +176,80 @@ class Coordinates():
 
         return np.einsum('ij...,j...->i...', drdx, vec)
 
+    # (t, r, theta, phi) -> (t, x, y, z)
+    def sph_to_cart_one_form(self, one_form):
+        return self.cart_to_sph_vec(one_form)
+    
+    # (t, r, theta, phi) -> (t, x, y, z)
+    def sph_to_cart_tnsr(self, tnsr):
+        shape = list(self.r.shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        drdx = np.zeros(shape, dtype=np.float32)
+        
+        # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
+        drdx[0, 0] = 1.0
+        drdx[1, 1] = (np.sin(self.th) * np.cos(self.ph))
+        drdx[1, 2] = (self.r * np.cos(self.th) * np.cos(self.ph))
+        drdx[1, 3] = (-self.r * np.sin(self.th) * np.sin(self.ph))
+        drdx[2, 1] = (np.sin(self.th) * np.sin(self.ph))
+        drdx[2, 2] = (self.r * np.cos(self.th) * np.sin(self.ph))
+        drdx[2, 3] = (self.r * np.sin(self.th) * np.cos(self.ph))
+        drdx[3, 1] = (np.cos(self.th))
+        drdx[3, 2] = (-self.r * np.sin(self.th))
+
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, drdx, drdx)
+
+    # (t, r, theta, phi) -> (t, x, y, z)
+    def sph_to_cart_cotnsr(self, cotnsr):
+        return self.cart_to_sph_tnsr(cotnsr)
+ 
+    # (t, x, y, z) -> (t, r, theta, phi)
+    def cart_to_sph_vec(self, vec):
+        shape = list(vec.shape)
+        shape.insert(0, 4)
+        dxdr = np.zeros(shape, dtype=np.float32)
+
+        # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
+        dxdr[0, 0] = 1.0
+        dxdr[1, 1] = (np.sin(self.th) * np.cos(self.ph))
+        dxdr[1, 2] = (np.sin(self.th) * np.sin(self.ph))
+        dxdr[1, 3] = (np.cos(self.th))
+        dxdr[2, 1] = ((1. / self.r) * (np.cos(self.th) * np.cos(self.ph)))
+        dxdr[2, 2] = ((1. / self.r) * (np.cos(self.th) * np.sin(self.ph)))
+        dxdr[2, 3] = (-(1. / self.r) * np.sin(self.th))
+        dxdr[3, 1] = (-(1. / self.r) * np.sin(self.ph) / np.sin(self.th))
+        dxdr[3, 2] = ((1. / self.r) * np.cos(self.ph) / np.sin(self.th))
+
+        return np.einsum('ij...,j...->i...', dxdr, vec)
+    
+    # (t, x, y, z) -> (t, r, theta, phi)
+    def cart_to_sph_one_form(self, one_form):
+        return self.sph_to_cart_vec(one_form)
+
+    # (t, x, y, z) -> (t, r, theta, phi)
+    def cart_to_sph_tnsr(self, tnsr):
+        shape = list(self.r.shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dxdr = np.zeros(shape, dtype=np.float32)
+
+        # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
+        dxdr[0, 0] = 1.0
+        dxdr[1, 1] = (np.sin(self.th) * np.cos(self.ph))
+        dxdr[1, 2] = (np.sin(self.th) * np.sin(self.ph))
+        dxdr[1, 3] = (np.cos(self.th))
+        dxdr[2, 1] = ((1. / self.r) * (np.cos(self.th) * np.cos(self.ph)))
+        dxdr[2, 2] = ((1. / self.r) * (np.cos(self.th) * np.sin(self.ph)))
+        dxdr[2, 3] = (-(1. / self.r) * np.sin(self.th))
+        dxdr[3, 1] = (-(1. / self.r) * np.sin(self.ph) / np.sin(self.th))
+        dxdr[3, 2] = ((1. / self.r) * np.cos(self.ph) / np.sin(self.th))
+        
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxdr, dxdr)
+    
+    def cart_to_sph_cotnsr(self, cotnsr):
+        return self.sph_to_cart_tnsr(cotnsr)
+
     # (t, r, theta, phi) -> (t, R, phi, z)
     def sph_to_cyl_vec(self, vec):
         shape = list(vec.shape)
@@ -184,14 +258,82 @@ class Coordinates():
 
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         drdz[0, 0] = 1.
-        drdz[1, 1] = np.sin(self.ph)
-        drdz[1, 2] = self.r * np.cos(self.ph)
+        drdz[1, 1] = np.sin(self.th)
+        drdz[1, 2] = self.r * np.cos(self.th)
         drdz[2, 3] = 1.
-        drdz[3, 1] = np.cos(self.ph)
-        drdz[3, 2] = -self.r * np.sin(self.ph)
+        drdz[3, 1] = np.cos(self.th)
+        drdz[3, 2] = -self.r * np.sin(self.th)
 
         return np.einsum('ij...,j...->i...', drdz, vec)
+    
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def sph_to_cyl_one_form(self, one_form):
+        return self.cyl_to_sph_vec(one_form)
+
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def sph_to_cyl_tnsr(self, tnsr):
+        shape = list(self.r.shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=np.float32)
         
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.th)
+        drdz[1, 2] = self.r * np.cos(self.th)
+        drdz[2, 3] = 1.
+        drdz[3, 1] = np.cos(self.th)
+        drdz[3, 2] = -self.r * np.sin(self.th)
+        
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, drdz, drdz)
+
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def sph_to_cyl_cotnsr(self, cotnsr):
+        return self.cyl_to_sph_tnsr(cotnsr)
+
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_sph_vec(self, vec):
+        shape = list(vec.shape)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=np.float32)
+        
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[1, 2] = 0.
+        dzdr[1, 3] = np.cos(self.th)
+        dzdr[2, 1] = (1. / self.r) * np.cos(self.th)
+        dzdr[2, 3] = -(1. / self.r) * np.sin(self.th)
+        dzdr[3, 2] = 1.
+
+        return np.einsum('ij...,j...->i...', dzdr, vec)
+
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_sph_one_form(self, one_form):
+        return self.sph_to_cyl_vec(one_form)
+
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_sph_tnsr(self, tnsr):
+        shape = list(self.r.shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=np.float32)
+        
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[1, 2] = 0.
+        dzdr[1, 3] = np.cos(self.th)
+        dzdr[2, 1] = (1. / self.r) * np.cos(self.th)
+        dzdr[2, 3] = -(1. / self.r) * np.sin(self.th)
+        dzdr[3, 2] = 1.
+        
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dzdr, dzdr)
+
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_sph_cotnsr(self, cotnsr):
+        return self.sph_to_cyl_tnsr(cotnsr)
+
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_sph_vec(self, vec):
         shape = list(vec.shape)
@@ -206,18 +348,173 @@ class Coordinates():
 
         return np.einsum('ij...,j...->i...', dxdxp, vec)
 
+    # (t, x1, x2, x3) -> (t, r, theta, phi) 
+    def int_to_sph_one_form(self, one_form):
+        return self.sph_to_int_vec(one_form)
+
+    # (t, x1, x2, x3) -> (t, r, theta, phi) 
+    def int_to_sph_tnsr(self, tnsr):
+        shape = list(self.r.shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dxdxp = np.zeros(shape, dtype=np.float32)
+
+        # Transformation to Spherical Kerr Schild from internal coordinates
+        dxdxp[0, 0] = 1.0
+        dxdxp[1, 1] = self.r
+        dxdxp[2, 2] = np.pi / 2.0
+        dxdxp[3, 3] = 1.0
+
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxdxp, dxdxp)
+    
+    # (t, x1, x2, x3) -> (t, r, theta, phi) 
+    def int_to_sph_cotnsr(self, cotnsr):
+        return self.sph_to_int_tnsr(cotnsr)
+
+    # (t, r, theta, phi) -> (t, x1, x2, x3) 
+    def sph_to_int_vec(self, vec):
+        shape = list(vec.shape)
+        shape.insert(0, 4)
+        dxpdx = np.zeros(shape, dtype=np.float32)
+
+        # Transformation to internal coordinates from Spherical Kerr Schild
+        dxpdx[0, 0] = 1.0
+        dxpdx[1, 1] = 1. / self.r
+        dxpdx[2, 2] = 2.0 / np.pi
+        dxpdx[3, 3] = 1.0
+
+        return np.einsum('ij...,j...->i...', dxpdx, vec)
+
+    # (t, r, theta, phi) -> (t, x1, x2, x3) 
+    def sph_to_int_one_form(self, one_form):
+        return self.int_to_sph_vec(one_form)
+
+    # (t, r, theta, phi) -> (t, x1, x2, x3) 
+    def sph_to_int_tnsr(self, tnsr):
+        shape = list(self.r.shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dxpdx = np.zeros(shape, dtype=np.float32)
+        
+        # Transformation to internal coordinates from Spherical Kerr Schild
+        dxpdx[0, 0] = 1.0
+        dxpdx[1, 1] = 1. / self.r
+        dxpdx[2, 2] = 2.0 / np.pi
+        dxpdx[3, 3] = 1.0
+        
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxpdx, dxpdx)
+
+    # (t, r, theta, phi) -> (t, x1, x2, x3) 
+    def sph_to_int_cotnsr(self, cotnsr):
+        return self.int_to_sph_tnsr(cotnsr)
+
     # (t, x1, x2, x3) -> (t, x, y, z) 
     def int_to_cart_vec(self, vec):
         return self.sph_to_cart_vec(self.int_to_sph_vec(vec))
 
+    # (t, x1, x2, x3) -> (t, x, y, z) 
+    def int_to_cart_one_form(self, one_form):
+        return self.sph_to_cart_one_form(self.int_to_sph_one_form(one_form))
+    
+    # (t, x1, x2, x3) -> (t, x, y, z) 
+    def int_to_cart_tnsr(self, tnsr):
+        return self.sph_to_cart_tnsr(self.int_to_sph_tnsr(tnsr))
+
+    # (t, x1, x2, x3) -> (t, x, y, z) 
+    def int_to_cart_cotnsr(self, cotnsr):
+        return self.sph_to_cart_cotnsr(self.int_to_sph_cotnsr(cotnsr))
+
     # (t, x1, x2, x3) -> (t, R, phi, z) 
     def int_to_cyl_vec(self, vec):
         return self.sph_to_cyl_vec(self.int_to_sph_vec(vec))
+    
+    # (t, x1, x2, x3) -> (t, R, phi, z) 
+    def int_to_cyl_one_form(self, one_form):
+        return self.sph_to_cyl_one_form(self.int_to_sph_one_form(one_form))
+    
+    # (t, x1, x2, x3) -> (t, R, phi, z) 
+    def int_to_cyl_tnsr(self, tnsr):
+        return self.sph_to_cyl_tnsr(self.int_to_sph_tnsr(tnsr))
+    
+    # (t, x1, x2, x3) -> (t, R, phi, z) 
+    def int_to_cyl_cotnsr(self, cotnsr):
+        return self.sph_to_cyl_cotnsr(self.int_to_sph_cotnsr(cotnsr))
 
-    def integrate_z(self, q, **kwargs):
+    # Compute dot product between two vectors in the desired
+    # coordinate system. Assumes vec_a, vec_b, and gcov are in
+    # internal coordinates. Memory intensive on 3D arrays.
+    # As an alternative, one could compute the one-form of the vector a,
+    # and then convert to the desired coordinate system; however, this
+    # requires computing the inverse of the coordinate transformation matrix.
+    def dot(self, vec_a_in, vec_b_in, gcov, coord_system, **kwargs):
+        vec_a = np.copy(vec_a_in)
+        vec_b = np.copy(vec_b_in)
+        if (coord_system == 'internal'):
+            if 'component' in kwargs:
+                vec_a, vec_b = self.isolate_component(vec_a, vec_b, **kwargs)
+            return Tools.dot(vec_a, vec_b, gcov)
+        elif (coord_system == 'spherical'):
+            gcov_sph  = self.int_to_sph_cotnsr(gcov)
+            vec_a_sph = self.int_to_sph_vec(vec_a)
+            vec_b_sph = self.int_to_sph_vec(vec_b)
+            if 'component' in kwargs:
+                vec_a_sph, vec_b_sph = self.isolate_component(
+                    vec_a_sph, vec_b_sph, **kwargs)
+            return Tools.dot(vec_a_sph, vec_b_sph, gcov_sph)
+        elif (coord_system == 'cylindrical'):
+            gcov_cyl  = self.int_to_cyl_cotnsr(gcov)
+            vec_a_cyl = self.int_to_cyl_vec(vec_a)
+            vec_b_cyl = self.int_to_cyl_vec(vec_b)
+            if 'component' in kwargs:
+                vec_a_cyl, vec_b_cyl = self.isolate_component(
+                    vec_a_cyl, vec_b_cyl, **kwargs)
+            return Tools.dot(vec_a_cyl, vec_b_cyl, gcov_cyl)
+        elif (coord_system == 'Cartesian'):
+            gcov_cart  = self.int_to_cart_cotnsr(gcov)
+            vec_a_cart = self.int_to_cart_vec(vec_a)
+            vec_b_cart = self.int_to_cart_vec(vec_b)
+            if 'component' in kwargs:
+                vec_a_cart, vec_b_cart = self.isolate_component(
+                    vec_a_cart, vec_b_cart, **kwargs)
+            return Tools.dot(vec_a_cart, vec_b_cart, gcov_cart)
+
+    # Zero all components other than kwargs.get('component')
+    def isolate_component(self, vec_a, vec_b, **kwargs):
+        indices_to_zero = [1, 2, 3]
+        for i in range(0, 4):
+            if (kwargs.get('component') == int(i)):
+                if (int(i) != 0):
+                    indices_to_zero.remove(int(i))
+        for index in indices_to_zero:
+            vec_a[index] = 0.
+            vec_b[index] = 0.
+        return vec_a, vec_b
+
+    # symmetric \int_{0}^{\theta} dth q(r, th)
+    def cum_integrate_th(self, q, gcov22, **kwargs):
+        int_qdth = np.zeros(q.shape)
+        qdth = q * np.sqrt(gcov22) * self.dx2 * (
+            self.sigma_cut(**kwargs) * self.theta_cut(**kwargs))
+        shape = list(q.shape)
+        if (len(shape) == 2):
+            ith0 = np.argwhere(self.th[0, :] < np.pi/2)[-1][0] + 1
+            int_qdth[:, :ith0] = np.cumsum(qdth[:, :ith0], axis=-1)
+            int_qdth[:, ith0:] = np.cumsum(qdth[:, ith0:][:, ::-1], 
+                                           axis=-1)[:, ::-1]
+        elif (len(shape) == 3):
+            ith0 = np.argwhere(self.th[0, :, 0] < np.pi/2)[-1][0] + 1
+            print(ith0)
+            int_qdth[:, :ith0, :] = np.cumsum(qdth[:, :ith0, :], axis=1)
+            int_qdth[:, ith0:, :] = np.cumsum(qdth[:, ith0:, :][:, ::-1, :], 
+                                              axis=1)[:, ::-1, :]
+
+        return int_qdth
+
+    def cum_integrate_z(self, q, gcov22, **kwargs):
         int_qdz = np.zeros(q.shape)
         z       = self.r * np.cos(self.th)
-        dz      = np.abs(self.r * self.dx1 * np.cos(self.th))
+        dz      = (np.abs(np.sqrt(gcov22) * self.dx1 * np.cos(self.th)) +
+            np.abs(np.sqrt(gcov22) * (np.pi/2.) * self.dx2 * np.sin(self.th)))
         R_cyl   = self.r * np.sin(self.th)
         dR_cyl  = self.r * self.dx1 * np.sin(self.th) 
         Rcyl_min= R_cyl - 0.5 * dR_cyl
@@ -628,7 +925,8 @@ if __name__ == "__main__":
         if (len(shape) == 2): axis = -1
         else: axis = 2
         qdth = np.zeros(q.shape)
-        qdth[self.theta < np.pi/2.] np.cumsum((q * gcov[2, 2] * self.dx2 * (
+        qdth[self.theta < np.pi/2.] 
+        np.cumsum((q * gcov[2, 2] * self.dx2 * (
             self.sigma_cut(**kwargs))[self.theta < np.pi/2.]), axis=axis)
         qdth[self.theta > np.pi/2.] np.cumsum((q * gcov[2, 2] * self.dx2 * (
             self.sigma_cut(**kwargs))[self.theta > np.pi/2.][:, ::-1]), axis=axis)
