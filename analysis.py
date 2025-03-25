@@ -8,7 +8,7 @@ class Accretion():
     def __init__(self, grid, data, pars, CONSTANTS, **kwargs):
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
         self.gdet                    = grid['gdet']
-        self.r                       = grid['r']
+        self.r, self.th, self.phi    = grid['r'], grid['theta'], grid['phi']
         self.gcov, self.gcon         = grid['gcov'], grid['gcon']
         self.rho, self.uu, self.ugas = data['rho'], data['uu'], data['u_gas']
         self.B                       = data['B']
@@ -70,6 +70,21 @@ class Accretion():
         return (0.5 * np.abs(self.B[1]) * (self.Rg * self.Rg) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
 
+    # Calculate angular momentum accretion rate as a function of radius
+    def calc_Ldot(self, **kwargs):
+        rho0c2 = self.rho0 * self.c * self.c
+        if 'TMHD' not in kwargs:
+            stress_energy_MHD = self.calc_TMHD(upper_lower=True, 
+                index = [1, 3], **kwargs)
+        else:
+            stress_energy_MHD = kwargs.get('TMHD')
+        stress_energy_MHD *= (1. / rho0c2)
+        Ldot = (stress_energy_MHD * (
+            self.sigma_cut(**kwargs) * (
+            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+        stress_energy_MHD *= rho0c2
+        return self.upscale64(Ldot, self.Rg * self.Rg * rho0c2)
+
     # Calculate full MHD (+ Radiation) stress-energy tensor
     def calc_TMHD(self, **kwargs):
         Flu = Fluid(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
@@ -113,6 +128,78 @@ class Accretion():
             return (sigma < kwargs.get('sigma_cut'))
         else:
             return 1.0
+    
+    # If optically_thin = True, return where tau < tau_cut
+    def tau_cut(self, **kwargs):
+        if 'sigma_cut' not in kwargs and 'tau' not in kwargs:
+            import warnings
+            warnings.warn("""Warning: integrating optical depth without
+                          a cut on sigma...""")
+        if 'tau_cut' in kwargs and 'tau' not in kwargs:
+            tau = self.calc_tau(**kwargs)
+            if (kwargs.get('optically_thin', True)):
+                return (tau < kwargs.get('tau_cut'))
+            else:
+                return (tau >= kwargs.get('tau_cut'))
+        elif 'tau_cut' in kwargs and 'tau' in kwargs:
+            tau = kwargs.get('tau')
+            if (kwargs.get('optically_thin', True)):
+                return (tau < kwargs.get('tau_cut'))
+            else:
+                return (tau >= kwargs.get('tau_cut'))
+        else:
+            return 1.0
+
+    # Calculate optical depth if required for tau_cut        
+    def calc_tau(self, **kwargs):
+        c, Rg = self.c, self.Rg
+        if self.kwargs.get('radiation'):
+            import radiation
+            Rad = radiation.Radiation(self.pars, self.CONSTANTS, 
+                                      cgs=self.kwargs.get('cgs'))
+            self.Te = kwargs.get('Te')     
+        else:
+            raise ValueError("""Cannot calculate optical depth tau 
+                             without initializing Accretion class with 
+                             radiation=True.""")
+        if 'opacities' not in kwargs:
+            raise ValueError("""Cannot calculate tau without opacities 
+                             dictionary passed as kwarg.""")
+        else:
+            opacities = kwargs.get('opacities')
+        if 'synchrotron' in opacities or 'sigma' not in kwargs:
+            # b2 is required for synchrotron opacities
+            if 'b2' not in kwargs:
+                Fld = Field(self.pars, self.CONSTANTS, 
+                            cgs=self.kwargs.get('cgs'))
+                b2  = Fld.calc_b2(self.B, self.B, self.gcov,
+                        from_B=True, uu=self.uu)
+            else:
+                b2  = kwargs.get('b2')
+            sigma = b2 / (4. * np.pi * self.rho * c * c)
+            Opac  = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
+                self.pars, self.CONSTANTS, b2 = b2, XRB = True)
+        else:
+            sigma = kwargs.get('sigma')
+            Opac  = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
+                self.pars, self.CONSTANTS, XRB = True)
+
+        if (len(Opac.opacities) == 1 and 'electron_scattering' in opacities):
+            kappa = Opac.opacities['electron_scattering']
+        else:
+            kappa = Opac.opacities['absorption_total']
+            
+        Coords = Coordinates(self.r / Rg, self.th, self.phi, self.pars, 
+                             self.CONSTANTS)
+        
+        if kwargs.get('integral', 'theta') == 'z':
+            return Rg * Coords.cum_integrate_z(kappa * self.rho, 
+                self.gcov[2, 2], theta_cut = kwargs.get('theta_cut', np.pi/6.), 
+				**kwargs)
+        else:
+            return Rg * Coords.cum_integrate_th(kappa * self.rho, 
+                self.gcov[2, 2], theta_cut = kwargs.get('theta_cut', np.pi/6.), 
+				**kwargs)
 
     # Upscale q to 64-bit precision and apply units
     def upscale64(self, q, units):
@@ -141,7 +228,7 @@ class Coordinates():
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
         self.MBH = kwargs.get('MBH', 1.0)
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
-        if (kwargs.get('cgs')):
+        if (kwargs.get('cgs', False)):
             self.c    = CONSTANTS['c']        # cm/s
             self.G    = CONSTANTS['G']        # cm^3/g s^2
             self.Msun = CONSTANTS['Msun']     # g
