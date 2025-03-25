@@ -12,12 +12,18 @@ import tracemalloc
 import time as get_time
 
 def main(**kwargs):
-    fnum    = int(kwargs.get('fnum'))
-    nslices = int(kwargs.get('nslices'))
+    fnum    = kwargs.get('fnum')
+    nslices = kwargs.get('nslices')
+    reduced = kwargs.get('reduced')
     restart = kwargs.get('restart')
     
     main_dir = '/lustre/orion/ast178/proj-shared/cbambic/'
     sim      = 'Thin_RAD_MAD_HiRes'
+    if not reduced:
+        data_dir = main_dir + 'DATA/' + sim
+    else:
+        data_dir = main_dir + 'DATA/' + sim + '/reduced'
+
     profiles = {}
         
     # Quantities (quants) for profile averaging
@@ -31,7 +37,9 @@ def main(**kwargs):
         'Edot_Poyt', 'Edot_Fluid', 'Edot_Rad', 'Phi_BH'
     ]
     cool_keys = [
-        'qIC', 'qie', 'qemi', 'qabs'
+        'qIC', 'qie', 'qemi', 'qabs',
+        'qIC_thin',  'qie_thin',  'qemi_thin',
+        'qIC_thick', 'qie_thick', 'qemi_thick'
     ]
     vec_keys = [
         'vR',   'vphi',  'vz', 
@@ -39,17 +47,16 @@ def main(**kwargs):
     ]
 
     # First, determine the limits of the slices.
-    H = hr.Read(main_dir + 'DATA/' + sim, 
-	    cgs_data = True, cgs_grid = True, MBH = 10.0)
+    H = hr.Read(data_dir, cgs_data = True, cgs_grid = True, MBH = 10.0)
     H.read_params(fnum)
-    profiles['t'] = hr.params['t']
-    profiles['a'] = hr.params['a']
+    profiles['t'] = H.params['t']
+    profiles['a'] = H.params['a']
 
-    nx = int(hr.params['nb1'] * hr.params['bs1'] * H.upscalex1)
-    nz = int(hr.params['nb3'] * hr.params['bs3'] * H.upscalex3)
+    nx = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1)
+    nz = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3)
     phi_1D = np.zeros(nz)
     for k in range(0, nz):
-        phi_1D[k] = (hr.params['startx3'] + (k + 0.5) * hr.params['dx3'])
+        phi_1D[k] = (H.params['startx3'] + (k + 0.5) * H.params['dx3'])
 
     dphi = phi_1D[1] - phi_1D[0]
 
@@ -74,10 +81,9 @@ def main(**kwargs):
             profiles['%s' %key]= np.zeros(nx)
         first_call = False
 
-    counter = 0
     # Outer loop over whole data slice that fits on single node.
     # Inner loop over slivers of data slice assigned to each core.
-    for i in range(iphi_start, len(phi_1D), iphi_stp):
+    for slice_num, i in enumerate(range(iphi_start, len(phi_1D), iphi_stp)):
         profiles['saved'] = False
         phi_min = phi_1D[i]
         phi_max = phi_1D[i + iphi_stp - 1]
@@ -95,7 +101,7 @@ def main(**kwargs):
         if (rank == 0): 
             phi_min_loc -= dphi 
 
-        H = hr.Read(main_dir + 'DATA/Thin_RAD_MAD_HiRes', 
+        H = hr.Read(data_dir, 
 	    cgs_data = True, cgs_grid = True, MBH = 10.0,
             coords1D = True,
             phi_min = phi_min_loc, 
@@ -128,17 +134,17 @@ def main(**kwargs):
         k_min, k_max = H.block_info['k_min'], H.block_info['k_max']
 
         # Initialize Accretion class
-        Acc = ana.Accretion(H.grid, H.data, hr.params, hr.CONSTANTS, 
+        Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
             cgs=True, MBH=10.0, radiation=True)
         # Initialize Coordinates class
         Coords = ana.Coordinates(H.grid['r'], H.grid['theta'], H.grid['phi'],
-            hr.CONSTANTS, cgs=True, MBH=10.0)
+            H.params, hr.CONSTANTS, cgs=True, MBH=10.0)
         # Initialize Fluid class
-        Fluid = ana.Fluid(hr.params, hr.CONSTANTS, cgs=True)
+        Fluid = ana.Fluid(H.params, hr.CONSTANTS, cgs=True)
         # Initialize Field class
-        Field = ana.Field(hr.params, hr.CONSTANTS, cgs=True)
+        Field = ana.Field(H.params, hr.CONSTANTS, cgs=True)
         # Initialize Radiation class
-        Radi  = rad.Radiation(hr.params, hr.CONSTANTS, cgs=True)
+        Radi  = rad.Radiation(H.params, hr.CONSTANTS, cgs=True)
 
         # Calculate sigma (3D)
         b     = Field.calc_b(H.data['B'], H.data['uu'], H.grid['gcov'])
@@ -179,10 +185,14 @@ def main(**kwargs):
         prof_loc['Edot_Rad']  = Acc.calc_Edot(TMHD = stress_energy_RAD, 
                                     sigma_cut = 3.0, sigma = sigma)[0]
         prof_loc['Phi_BH']    = Acc.calc_PhiBH()[0] 
-        print("Completed Mdot, Edot, Phi_BH on rank %d" %rank, flush=True)
+        
         del stress_energy_MHD 
         del stress_energy_HD, stress_energy_EM, stress_energy_RAD        
-        
+
+        opacities = dict.fromkeys(['electron_scattering'])
+        tau_es    = Acc.calc_tau(opacities = opacities, integral = 'theta', 
+                        sigma_cut = 3.0, sigma = sigma, Te = H.data['Te'])
+
         # Deallocate magnetic field in the lab frame and radiation 4-momentum
         # as well as metric tensor and inverse
         H.data['B']      = H.data['rho']
@@ -209,7 +219,7 @@ def main(**kwargs):
 
         for (key, quant) in zip(keys, quants):
             prof_loc['%s' %key] = thph_sum(quant, 
-                H.grid, H.data, hr.params, hr.CONSTANTS, 
+                H.grid, H.data, H.params, hr.CONSTANTS, 
                 weight=H.data['rho'], 
                 sigma_cut=3.0, sigma=sigma)[0]
         
@@ -217,24 +227,42 @@ def main(**kwargs):
 
         qIC = Radi.calc_qIC(H.data['rho'], 
             H.data['Te'], H.data['u_rad'], cooling=True)
-        prof_loc['qIC'] = thph_sum(qIC, H.grid, H.data, 
-            hr.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
+        prof_loc['qIC']       = thph_sum(qIC, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
+        prof_loc['qIC_thin']  = thph_sum(qIC, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma,
+            tau_cut = 1.0, tau = tau_es, optically_thin = True)[0]
+        prof_loc['qIC_thick'] = thph_sum(qIC, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma,
+            tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qIC
         qie = Fluid.calc_qie(H.data['rho'], 
             H.data['Te'], H.data['Ti'], cooling=True)
         qie[qie < 0.] = 0.
-        prof_loc['qie'] = thph_sum(qie, H.grid, H.data, 
-            hr.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
+        prof_loc['qie']       = thph_sum(qie, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
+        prof_loc['qie_thin']  = thph_sum(qie, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma,
+            tau_cut = 1.0, tau = tau_es, optically_thin = True)[0]
+        prof_loc['qie_thick'] = thph_sum(qie, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma,
+            tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qie
         qemi= Radi.calc_q_emi(H.data['rho'], H.data['Te'], 
             H.data['u_rad'], b2=b2, XRB=True)
-        prof_loc['qemi'] = thph_sum(qemi, H.grid, H.data, 
-            hr.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
+        prof_loc['qemi']       = thph_sum(qemi, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
+        prof_loc['qemi_thin']  = thph_sum(qemi, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma,
+            tau_cut = 1.0, tau = tau_es, optically_thin = True)[0]
+        prof_loc['qemi_thick'] = thph_sum(qemi, H.grid, H.data, 
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma,
+            tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qemi
-        qabs= Radi.calc_q_emi(H.data['rho'], H.data['Te'], 
+        qabs= Radi.calc_q_abs(H.data['rho'], H.data['Te'], 
             H.data['u_rad'], b2=b2, XRB=True)
         prof_loc['qabs'] = thph_sum(qabs, H.grid, H.data, 
-            hr.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
+            H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
         del qabs
 
         # Deallocate temperatures and energy densities 
@@ -257,46 +285,48 @@ def main(**kwargs):
 
         for (key, quant) in zip(vec_keys, quants):
             prof_loc['%s' %key] = thph_sum(quant, 
-                H.grid, H.data, hr.params, hr.CONSTANTS, 
+                H.grid, H.data, H.params, hr.CONSTANTS, 
                 weight=H.data['rho'], 
                 sigma_cut=3.0, sigma=sigma)[0]
 
         del uu_cyl, b_cyl
-        if (rank == 0):
-            print("End of iteration %d" %counter, flush=True)
-        counter += 1
-
+        
         if (rank == 0):
             # Put spherical radius in dictionary 
             profiles['r']   = H.grid['r'][0, :, 0, 0] / Rg
-            profiles['dx1'] = hr.params['dx1']
+            profiles['dx1'] = H.params['dx1']
 
         # Gather local profiles (prof_loc) from all processors and 
         # place them in main profiles dictionary
         prof_global = comm.gather(prof_loc)
         
+        print("Rank %d done analyzing range of k: (%d, %d)." 
+            %(rank, k_min, k_max), flush=True)
+
         if (rank == 0):
             for prof in prof_global:
                 for key in keys + acc_keys + cool_keys + vec_keys:
                     profiles['%s' %key] += prof_loc['%s' %key]
 
             profiles['k_max'] = k_min + (k_max - k_min) * size 
-            print("Saving profiles ...", flush=True)
             if not os.path.exists(main_dir + 'Averages/' + sim):
                 os.makedirs(main_dir + 'Averages/' + sim)
 
             profiles['saved'] = True
             np.save(main_dir + 'Averages/' + sim + 
                     '/Profiles_%d' %fnum, profiles)
-            print("Done saving profiles on rank 0.", flush=True)
-
-        print("Done with current slice on rank %d." %rank, flush=True)
-    print("Done with all profiles.")
+            print("Finished with slice %d of %d" %(slice_num + 1, nslices), 
+                    flush=True)
+    
+    print(tracemalloc.get_traced_memory(), flush=True)
+    tracemalloc.stop()
+    print("Done with all profiles for file number %d." %fnum)
 
 def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
     w    = kwargs.get('weight', 1.0)
-    Acc2 = ana.Accretion(grid, data, params, CONSTANTS, cgs=True)
-    return (q * w * Acc2.sigma_cut(**kwargs) * (
+    Acc2 = ana.Accretion(grid, data, params, CONSTANTS, 
+            cgs=True, radiation=True)
+    return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
         grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
 
 def read_restart(profile_file, iphi_stp):
@@ -312,9 +342,12 @@ if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
                         description="""Calculate 1D profiles for single 
                         ultra-high-resolution simulation output.""")
-    parser.add_argument('fnum', help = """dump number""")
-    parser.add_argument('--nslices', type=str, required=False, help="""
-                        number of slices in phi used to load the data""")
+    parser.add_argument('fnum', type=int, help = """dump number""")
+    parser.add_argument('--nslices', type=int, required=False, default=1,
+                        help="""number of slices in phi for loading data""")
+    parser.add_argument('--reduced', action='store_true', required=False,
+                        help="""boolean to determine if profile extraction
+                        should be done on reduced data.""")
     parser.add_argument('--restart', action='store_true', required=False, 
                         help="""boolean set to determine if profile 
                         integration should continue from last k_max""")
