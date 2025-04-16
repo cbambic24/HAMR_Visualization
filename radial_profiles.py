@@ -23,7 +23,7 @@ def main(**kwargs):
     main_dir = '/lustre/orion/ast178/proj-shared/cbambic/'
     sim      = 'Thin_RAD_MAD_HiRes'
     
-	if not reduced:
+    if not reduced:
         data_dir = main_dir + 'DATA/' + sim
     else:
         data_dir = main_dir + 'DATA/' + sim + '/reduced'
