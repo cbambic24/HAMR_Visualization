@@ -147,7 +147,8 @@ class Read():
             # nv is the number of variables required to encode grid structure
             nv = (size - self.BYTES_PER_VAR) // nmax // self.BYTES_PER_VAR
         else:
-            raise FileNotFoundError("Cannot find grid file.")
+            raise FileNotFoundError("Cannot find grid file in %s" 
+                %(self.dir + "/gdumps/"))
 
         # Next, read in the information for the "block" array
         # which contains all information to encode grid structure
@@ -176,7 +177,8 @@ class Read():
         if (os.path.isfile(self.dir + "/dumps%d/parameters" % fnum)):
             fin = open(self.dir + "/dumps%d/parameters" % fnum, "rb")
         else:
-            raise FileNotFoundError("Cannot find parameters file.")
+            raise FileNotFoundError("Cannot find parameters file in %s." 
+                %(self.dir + "/dumps%d/parameters" % fnum))
 
         for par, par_type in zip(param_keys, param_types):
             params['%s' %par] = Tools.get_fromfile(fin, par_type)
@@ -271,6 +273,7 @@ class Read():
         params['dx2'] *= self.lowres2 * (1.0 / self.upscalex2)
         params['dx3'] *= self.lowres3 * (1.0 / self.upscalex3)
 
+        self.amr    = amr
         self.params = params
 
     def read_grid(self, fnum, **kwargs):
@@ -282,7 +285,7 @@ class Read():
         # Read in grid from gdump files or directly compute grid variables
         self.check_lowres_settings()
 
-        if (self.by_block and not direct):
+        if (self.by_block):
             bs1_new = int(params['bs1'] / self.lowres1)
             bs2_new = int(params['bs2'] / self.lowres2)
             bs3_new = int(params['bs3'] / self.lowres3)
@@ -333,14 +336,12 @@ class Read():
             self.check_griddump_exists()
 
         # Allocate memory
-        if not self.coords1D:
-            x1, x2, x3, r, theta, phi = Tools.zeroNd([dim, nx, ny, nz], 6)
-        elif self.coords1D and direct:
+        if direct and not self.by_block and self.coords1D:
             x1, r     = Tools.zeroNd([nx], 2)
             x2, theta = Tools.zeroNd([ny], 2)
             x3, phi   = Tools.zeroNd([nz], 2)
-        elif self.coords1D and not direct:
-            raise ValueError("Must use direct=True with coords1D.")
+        else:
+            x1, x2, x3, r, theta, phi = Tools.zeroNd([dim, nx, ny, nz], 6)
 
         if (self.axisym):
             gcov, gcon, dxdxp = Tools.zeroNd([4, 4, dim, nx, ny, 1], 3)
@@ -357,74 +358,41 @@ class Read():
             'k_min' : k_min,
             'k_max' : k_max
         }
+            
+        self.Toolsc = hamr_readc.PyTools()
 
         if (direct):
-            if not self.do_box:
-                startx1 = params['startx1']
-                startx2 = params['startx2']
-                startx3 = params['startx3']
-            else:
-                startx1 = np.log(self.r_min)
-                startx2 = ((2.0/np.pi) * self.theta_min) - 1.0
-                startx3 = self.phi_min
-            
-            for i in range(0, nx):
-                if not self.coords1D:
-                    x1[:, i, :, :] = startx1 + (i + 0.5) * params['dx1']
-                else:
-                    x1[i]          = startx1 + (i + 0.5) * params['dx1']
-            for j in range(0, ny):
-                if not self.coords1D:
-                    x2[:, :, j, :] = startx2 + (j + 0.5) * params['dx2']
-                else:
-                    x2[j]          = startx2 + (j + 0.5) * params['dx2']
-            for k in range(0, nz):
-                if not self.coords1D:
-                    x3[:, :, :, k] = startx3 + (k + 0.5) * params['dx3']
-                else:
-                    x3[k]          = startx3 + (k + 0.5) * params['dx3']
- 
-            r     = np.exp(x1)
-            theta = (x2 + 1.0) * (np.pi/2.0)
-            phi   = x3
+            if not self.by_block:
+                x1, x2, x3, r, theta, phi = self.coords_direct(x1, x2, x3, 
+                    r, theta, phi, [dim, nx, ny, nz])
+            elif self.by_block:
+                x1, x2, x3, r, theta, phi = self.coords_directBK(x1, x2, x3,
+                    r, theta, phi, [dim, nx, ny, nz])
+           
+            # Calculate gcov in internal coordinates and the transformation matrix
+            # dxdxp to go from spherical Kerr-Schild to internal coordinates
+            gcov, dxdxp = self.gcov_dxdxp_direct(dxdxp, r, theta, phi, nx, ny)
 
-            if not self.coords1D:
-                gcov_kerr = self.get_gcov_KS(r, theta, phi, nx, ny)
-            else:
-                gcov_kerr = self.get_gcov_KS(r[None, :, None, None], 
-                                             theta[None, None, :, None], 
-                                             phi[None, None, None, :], nx, ny)
-            
-            if not self.coords1D:
-                dxdxp[0, 0] = 1.0
-                dxdxp[1, 1, 0, :, :, 0] = r[0, :, :, 0]
-                dxdxp[2, 2] = np.pi / 2.0
-                dxdxp[3, 3] = 1.0
-            else:
-                dxdxp[0, 0] = 1.0
-                dxdxp[1, 1, 0, :, :, 0] = r[:, None]
-                dxdxp[2, 2] = np.pi / 2.0
-                dxdxp[3, 3] = 1.0
-
-            # Set covariant metric in internal coordinates
-            gcov = np.einsum('kl...,ki...,lj...->ij...', 
-                             gcov_kerr, dxdxp, dxdxp)
-            gcon = np.zeros([4, 4, 1, nx, ny, 1], dtype=np.float32)
             # Invert gcov to find gcon in internal coordinates
-            hamr_readc.invert_4x4(gcov, gcon, 1, nx, ny, 1)
+            self.Toolsc.invert_4x4(gcov, gcon, dim, nx, ny, 1)
 
             # Calculate determinant of metric
-            hamr_readc.det_4x4(gcov, gdet, 1, nx, ny, 1)
+            self.Toolsc.det_4x4(gcov, gdet, dim, nx, ny, 1)
             gdet = np.sqrt(-1.0*gdet)
-
-        else:
-            hamr_readc.read_grid(self.dir, self.axisym, self.by_block,
-                                 self.export_raytracing,
-                                 amr, self.amr_info, self.block_info, 
-                                 params, self.options,
-                                 x1, x2, x3, r, theta, phi,
-                                 gcov, gcon, gdet, dxdxp)
         
+        else:
+            Readc = hamr_readc.PyRead(self.dir, self.axisym, self.by_block,
+                self.export_raytracing, amr, self.amr_info, self.block_info, 
+                self.options, params, physics)
+            
+            Readc.read_grid(x1, x2, x3, r, theta, phi, 
+                gcov, gcon, gdet, dxdxp)
+
+            if self.coords1D:
+                x1, r     = x1[:, :, 0, 0], r[    :, :, 0, 0]
+                x2, theta = x2[:, 0, :, 0], theta[:, 0, :, 0]
+                x3, phi   = x3[:, 0, 0, :], phi[  :, 0, 0, :]
+                    
         if not self.coords1D:
             self.grid = {
                 'x1'    : x1,
@@ -438,19 +406,33 @@ class Read():
                 'gdet'  : gdet,
                 'dxdxp' : dxdxp
             }
-        else:
-            self.grid = {
-                'x1'    : x1[None, :, None, None],
-                'x2'    : x2[None, None, :, None], 
-                'x3'    : x3[None, None, None, :],
-                'r'     : r[None, :, None, None],
-                'theta' : theta[None, None, :, None],
-                'phi'   : phi[None, None, None, :],
-                'gcov'  : gcov,
-                'gcon'  : gcon,
-                'gdet'  : gdet,
-                'dxdxp' : dxdxp
-            }
+        elif self.coords1D:
+            if not self.by_block:
+                self.grid = {
+                    'x1'    : x1[None, :, None, None],
+                    'x2'    : x2[None, None, :, None], 
+                    'x3'    : x3[None, None, None, :],
+                    'r'     : r[None, :, None, None],
+                    'theta' : theta[None, None, :, None],
+                    'phi'   : phi[None, None, None, :],
+                    'gcov'  : gcov,
+                    'gcon'  : gcon,
+                    'gdet'  : gdet,
+                    'dxdxp' : dxdxp
+                }
+            elif self.by_block:
+                self.grid = {
+                    'x1'    : x1[:, :, None, None],
+                    'x2'    : x2[:, None, :, None], 
+                    'x3'    : x3[:, None, None, :],
+                    'r'     : r[:, :, None, None],
+                    'theta' : theta[:, None, :, None],
+                    'phi'   : phi[:, None, None, :],
+                    'gcov'  : gcov,
+                    'gcon'  : gcon,
+                    'gdet'  : gdet,
+                    'dxdxp' : dxdxp
+                }
 
         if (self.cgs_grid):
             self.restore_units_grid()
@@ -523,9 +505,9 @@ class Read():
             E = B
         
         if (physics['TWO_T']):
-            Ti, Te = Tools.zeroNd([dim, nx, ny, nz], 2)
+            Te, Ti = Tools.zeroNd([dim, nx, ny, nz], 2)
         else:
-            Ti, Te = rho, rho
+            Te, Ti = rho, rho
 
         if (physics['P_NUM']):
             p_num = np.zeros([dim, nx, ny, nz], dtype=np.float32)
@@ -565,14 +547,14 @@ class Read():
             'k_max' : k_max
         }
 
-        hamr_readc.read_prims(self.dir, fnum, self.by_block,
-                             self.export_raytracing,
-                             amr, self.amr_info, self.block_info, 
-                             params, physics, self.options,
-                             rho, u_gas, uu, B, E, u_rad, uu_rad,
-                             Ti, Te, p_num, Ye, X_alpha, X_atm, 
-                             u_nu1, u_nu2, u_nu3, uu_nu1, uu_nu2, uu_nu3,
-                             n_nu1, n_nu2, n_nu3, tr1, tr2)
+        Readc = hamr_readc.PyRead(self.dir, self.axisym, self.by_block,
+            self.export_raytracing, amr, self.amr_info, self.block_info, 
+            self.options, params, physics)
+        
+        Readc.read_prims(fnum, rho, u_gas, uu, B, 
+            E, u_rad, uu_rad, Te, Ti, p_num, Ye, X_alpha, X_atm, 
+            u_nu1, u_nu2, u_nu3, uu_nu1, uu_nu2, uu_nu3, 
+            n_nu1, n_nu2, n_nu3, tr1, tr2)
         
         self.data = {
             'rho'   : rho,
@@ -589,8 +571,8 @@ class Read():
             self.data['E'] = E
 
         if (physics['TWO_T']):
-            self.data['Ti'] = Ti
             self.data['Te'] = Te
+            self.data['Ti'] = Ti
 
         if (physics['P_NUM']):
             self.data['p_num'] = p_num
@@ -644,8 +626,8 @@ class Read():
             mu_i = 4.0 / (4.0 * X_ab + Y_ab)
             mu_e = 2.0 / (1.0 + X_ab)
 
-            self.data['Ti'] *= mu_i * mp * c * c / kB 
             self.data['Te'] *= mu_e * mp * c * c / kB 
+            self.data['Ti'] *= mu_i * mp * c * c / kB 
 
     def restore_units_grid(self):
         # Output grid variables in CGS units
@@ -686,8 +668,98 @@ class Read():
     def get_gcon_KS(self, gcov, nx, ny):
         # Calculate contravariant metric in spherical Kerr-Schild coordinates
         gcon = np.zeros((4, 4, 1, nx, ny, 1), dtype=np.float32)
-        hamr_readc.invert_4x4(gcov, gcon, params)
+        self.Toolsc.invert_4x4(gcov, gcon, params)
         return gcon
+
+    def gcov_dxdxp_direct(self, dxdxp, r, theta, phi, nx, ny):
+        if not self.coords1D:
+            gcov_kerr = self.get_gcov_KS(r, theta, phi, nx, ny)
+        else:
+            if not self.by_block:
+                gcov_kerr = self.get_gcov_KS(r[None, :, None, None], 
+                    theta[None, None, :, None], 
+                    phi[None, None, None, :], nx, ny)
+            else:
+                gcov_kerr = self.get_gcov_KS(r[:, :, None, None], 
+                    theta[:, None, :, None], 
+                    phi[:, None, None, :], nx, ny)
+        
+        dxdxp = self.dxdxp_direct(dxdxp, r)
+        # Set covariant metric in internal coordinates
+        gcov = np.einsum('kl...,ki...,lj...->ij...', gcov_kerr, dxdxp, dxdxp)
+        return gcov, dxdxp
+
+    def dxdxp_direct(self, dxdxp, r):
+        if not self.coords1D:
+            if not self.by_block:
+                dxdxp[0, 0] = 1.0
+                dxdxp[1, 1, 0, :, :, 0] = r[0, :, :, 0]
+                dxdxp[2, 2] = np.pi / 2.0
+                dxdxp[3, 3] = 1.0
+            else:
+                dxdxp[0, 0] = 1.0
+                dxdxp[1, 1, :, :, :, 0] = r[:, :, :, 0]
+                dxdxp[2, 2] = np.pi / 2.0
+                dxdxp[3, 3] = 1.0
+        else:
+            if not self.by_block:
+                dxdxp[0, 0] = 1.0
+                dxdxp[1, 1, 0, :, :, 0] = r[:, None]
+                dxdxp[2, 2] = np.pi / 2.0
+                dxdxp[3, 3] = 1.0
+            else:
+                dxdxp[0, 0] = 1.0
+                dxdxp[1, 1, :, :, :, 0] = r[:, :, None]
+                dxdxp[2, 2] = np.pi / 2.0
+                dxdxp[3, 3] = 1.0
+        return dxdxp
+
+    def coords_direct(self, x1, x2, x3, r, theta, phi, indices):
+        [dim, nx, ny, nz] = indices
+        if not self.do_box:
+            startx1 = params['startx1']
+            startx2 = params['startx2']
+            startx3 = params['startx3']
+        else:
+            startx1 = np.log(self.r_min)
+            startx2 = ((2.0/np.pi) * self.theta_min) - 1.0
+            startx3 = self.phi_min
+            
+        for i in range(0, nx):
+            if not self.coords1D:
+                x1[:, i, :, :] = startx1 + (i + 0.5) * params['dx1']
+            else:
+                x1[i]          = startx1 + (i + 0.5) * params['dx1']
+        for j in range(0, ny):
+            if not self.coords1D:
+                x2[:, :, j, :] = startx2 + (j + 0.5) * params['dx2']
+            else:
+                x2[j]          = startx2 + (j + 0.5) * params['dx2']
+        for k in range(0, nz):
+            if not self.coords1D:
+                x3[:, :, :, k] = startx3 + (k + 0.5) * params['dx3']
+            else:
+                x3[k]          = startx3 + (k + 0.5) * params['dx3']
+ 
+        r     = np.exp(x1)
+        theta = (x2 + 1.0) * (np.pi/2.0)
+        phi   = x3
+        return x1, x2, x3, r, theta, phi
+
+    def coords_directBK(self, x1, x2, x3, r, theta, phi, indices):
+        Readc = hamr_readc.PyRead(self.dir, self.axisym, 
+            self.by_block, self.export_raytracing, amr, self.amr_info, 
+            self.block_info, self.options, params, physics)
+
+        Readc.read_grid_coords(x1, x2, x3, r, theta, phi)
+        if self.coords1D:
+            x1_1D, r_1D     = x1[:, :, 0, 0], r[    :, :, 0, 0]
+            x2_1D, theta_1D = x2[:, 0, :, 0], theta[:, 0, :, 0]
+            x3_1D, phi_1D   = x3[:, 0, 0, :], phi[  :, 0, 0, :]
+
+            x1, x2, x3      = x1_1D, x2_1D, x3_1D
+            r, theta, phi   = r_1D, theta_1D, phi_1D
+        return x1, x2, x3, r, theta, phi
 
     ### Helper functions for box selection ###
     def get_min_index(self, box_min, startx, dx):
