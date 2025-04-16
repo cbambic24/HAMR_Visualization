@@ -102,6 +102,8 @@ class Radiation():
     # Emission rate assuming that radiation is blackbody spectrum
     # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
     def calc_q_emi(self, rho, Te, urad, **kwargs):
+        if (kwargs.get('cpp', False)):
+            return self.calc_q_emi_cpp(rho, Te, urad, **kwargs)
         # Calculate total emission opacity
         if 'opacities' in kwargs:
             opacities = kwargs.get('opacities')
@@ -109,7 +111,7 @@ class Radiation():
         else:
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
-                'iron_line', 'molecular', 'synchrotron'])
+                'molecular', 'synchrotron']) # 'iron_line' not used
         Opac = Opacity(opacities, rho, Te, urad, 
                        self.params, self.CONSTANTS, 
                        mechansim='emission', **kwargs)
@@ -132,6 +134,8 @@ class Radiation():
     # Absorption rate assuming that radiation is blackbody spectrum
     # Source term in Sadowski+ (2017) Equation 31 (term with Bhat)
     def calc_q_abs(self, rho, Te, urad, **kwargs):
+        if (kwargs.get('cpp', False)):
+            return self.calc_q_abs_cpp(rho, Te, urad, **kwargs)
         # Calculate total absorption opacity
         if 'opacities' in kwargs:
             opacities = kwargs.get('opacities')
@@ -139,12 +143,69 @@ class Radiation():
         else:
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
-                'iron_line', 'molecular', 'synchrotron'])
+                'molecular', 'synchrotron']) # 'iron_line' not used
         Opac = Opacity(opacities, rho, Te, urad, 
                        self.params, self.CONSTANTS, 
                        mechansim='absorption', **kwargs)
         kappa_abs = Opac.opacities['absorption_total']
         return kappa_abs * rho * urad * self.c
+    
+    # C++ accelerated
+    # Emission rate assuming that radiation is blackbody spectrum
+    # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
+    def calc_q_emi_cpp(self, rho, Te, urad, **kwargs):
+        if 'b2' in kwargs:
+            b2 = np.float32(kwargs.get('b2'))
+        else:
+            raise ValueError("""Missing keyword argument b2
+                              for calculating synchrotron opacity.""") 
+        Tr = (urad / self.aRAD) ** (1./4.)
+        import hamr_readc
+        Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
+        dtype    = np.float64 # C++ layer expects double
+        [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
+        
+        XRB  = 1 if kwargs.get('XRB') else 0
+        qemi = np.zeros(rho.shape, dtype=dtype)
+        Radiationc.calc_q_emi_tot(qemi, rho, Te, Tr, b2, 
+            XRB, nb, nx1, nx2, nx3)
+        return qemi
+            
+    # C++ accelerated 
+    # Absorption rate assuming that radiation is blackbody spectrum
+    # Source term in Sadowski+ (2017) Equation 31 (term with Bhat)
+    def calc_q_abs_cpp(self, rho, Te, urad, **kwargs):
+        if 'b2' in kwargs:
+            b2 = np.float32(kwargs.get('b2'))
+        else:
+            raise ValueError("""Missing keyword argument b2
+                              for calculating synchrotron opacity.""") 
+        Tr = (urad / self.aRAD) ** (1./4.)
+        import hamr_readc
+        Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
+        dtype    = np.float64 # C++ layer expects double
+        [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
+        
+        XRB  = 1 if kwargs.get('XRB') else 0
+        qabs = np.zeros(rho.shape, dtype=dtype)
+        Radiationc.calc_q_abs_tot(qabs, rho, Te, Tr, b2, 
+            XRB, nb, nx1, nx2, nx3)
+        return qabs
+    
+    # Necessary for C++ acceleration
+    def check_dims(self, rho, Te, Tr, b2):
+        rho_dims = list(rho.shape)
+        Te_dims  = list(Te.shape)
+        Tr_dims  = list(Tr.shape)
+        b2_dims  = list(b2.shape)
+
+        if (len(rho_dims) != len(Te_dims) != len(Tr_dims) != len(b2_dims)):
+            raise ValueError("""Your arrays must have the same dimensions 
+                                to be passed to C++.""")
+        if (len(rho_dims) != 4):
+            raise ValueError("""Your arrays must have dimension 4
+                                to be passed to C++""")
+        return rho_dims
 
 class Opacity():
     def __init__(self, opacities, rho, Te, urad, pars, CONSTANTS, **kwargs):
@@ -166,6 +227,8 @@ class Opacity():
         self.Te   = Te
         self.Tr   = (urad / self.aRAD) ** (1./4.)
 
+        self.params    = pars
+        self.CONSTANTS = CONSTANTS
         self.opacities = opacities.copy()
 
         # Electron-scattering (Thomson) opacity
@@ -183,7 +246,11 @@ class Opacity():
             self.calc_opacities('both', **kwargs)
 
     def calc_opacities(self, process, **kwargs):
-        t0 = get_time.time()
+        if (kwargs.get('cpp', False) and 'bound_free' in self.opacities and
+            'CHIANTI' in self.opacities and 'free_free' in self.opacities and
+            'hydrogen' in self.opacities and 'molecular' in self.opacities and
+            'synchrotron' in self.opacities):
+            return self.calc_kappa_total_cpp(process, **kwargs)
         if 'bound_free' in self.opacities:
             self.bound_free_opacity(process)
         if 'CHIANTI' in self.opacities:
@@ -203,7 +270,6 @@ class Opacity():
                 raise ValueError("""Missing keyword argument b2
                                   for calculating synchrotron opacity.""")
             self.synchrotron_opacity(process, **kwargs)
-            
         if ('bound_free' in self.opacities or 'CHIANTI'  in self.opacities or 
             'hydrogen'  in self.opacities or 'free_free' in self.opacities or
             'molecular' in self.opacities or 'synchrotron' in self.opacities):
@@ -211,9 +277,6 @@ class Opacity():
                 self.calc_kappa('absorption')
             if process == 'emission' or process == 'both':
                 self.calc_kappa('emission')
-        ttot = get_time.time()
-
-        print("Opacity calculations took %.4e s" %(ttot - t0), flush=True)
 
     # Bound-free opacity
     # Replace (1+X)(1-Z) in the free-free opacity with
@@ -299,6 +362,8 @@ class Opacity():
     # Synchrotron opacity
     # McKinney+ (2017) Equations D2, D5, D6, and D7
     def synchrotron_opacity(self, process, **kwargs):
+        if kwargs.get('cpp', False):
+            return self.synchrotron_opacity_cpp(process, **kwargs)
         ne       = self.rho / (self.mu_e * self.mp)
         Theta_e  = (self.kB * self.Te) / (self.me * self.c * self.c)
         e_2pimc  = self.e / (2. * np.pi * self.me * self.c)
@@ -341,6 +406,25 @@ class Opacity():
             raise ValueError("""Must specify XRB or AGN to use 
                               synchrotron opacities.""")
         return a, b, c, d, e
+
+    # Perform synchrotron opacity calculations in C++
+    def synchrotron_opacity_cpp(self, process, **kwargs):
+        import hamr_readc
+        Opacityc = hamr_readc.PyOpacity(self.params, self.CONSTANTS)
+        dtype    = np.float64 # C++ layer expects double
+        [nb, nx1, nx2, nx3] = self.check_dims()
+        
+        XRB = 1 if kwargs.get('XRB') else 0
+        if process == 'absorption' or process == 'both':
+            kappa_sync = np.zeros(self.rho.shape, dtype=dtype)
+            Opacityc.calc_kappa_sync(kappa_sync, self.rho, self.Te, self.Tr, 
+                                     self.b2, 0, XRB, nb, nx1, nx2, nx3)
+            self.opacities['synchrotron_abs'] = kappa_sync
+        if process == 'emission' or process == 'both':
+            kappa_sync = np.zeros(self.rho.shape, dtype=dtype)
+            Opacityc.calc_kappa_sync(kappa_sync, self.rho, self.Te, self.Tr, 
+                                     self.b2, 1, XRB, nb, nx1, nx2, nx3)
+            self.opacities['synchrotron_emi'] = kappa_sync
 
     # Calculate total opacity
     # This is a generalized way to write
@@ -390,7 +474,32 @@ class Opacity():
         else:
             self.opacities['%s_total' %process] = kappa_synchrotron
         return None
-   
+            
+    def calc_kappa_total_cpp(self, process, **kwargs):
+        if 'b2' in kwargs:
+            self.b2 = kwargs.get('b2')
+        else:
+            raise ValueError("""Missing keyword argument b2
+                              for calculating synchrotron opacity.""") 
+        import hamr_readc
+        Opacityc = hamr_readc.PyOpacity(self.params, self.CONSTANTS)
+        dtype    = np.float64 # C++ layer expects double
+        [nb, nx1, nx2, nx3] = self.check_dims()
+        
+        XRB = 1 if kwargs.get('XRB') else 0
+        if process == 'absorption' or process == 'both':
+            proc = 'absorption'
+            kappa_abs = np.zeros(self.rho.shape, dtype=dtype)
+            Opacityc.calc_kappa_abs_tot(kappa_abs, self.rho, self.Te, self.Tr, 
+                                     self.b2, XRB, nb, nx1, nx2, nx3)
+            self.opacities['%s_total' %proc] = kappa_abs
+        if process == 'emission' or process == 'both':
+            proc = 'emission'
+            kappa_emi = np.zeros(self.rho.shape, dtype=dtype)
+            Opacityc.calc_kappa_emi_tot(kappa_emi, self.rho, self.Te, self.Tr, 
+                                     self.b2, XRB, nb, nx1, nx2, nx3)
+            self.opacities['%s_total' %proc] = kappa_emi
+
     def sum_opacities(self, keys):
         summed_opacity = self.opacities['%s' %keys[0]]
         if len(keys) > 1:
@@ -398,4 +507,17 @@ class Opacity():
                 summed_opacity += self.opacities['%s' %key]
         return summed_opacity
 
+    def check_dims(self):
+        rho_dims = list(self.rho.shape)
+        Te_dims  = list(self.Te.shape)
+        Tr_dims  = list(self.Tr.shape)
+        b2_dims  = list(self.b2.shape)
 
+        if (len(rho_dims) != len(Te_dims) != len(Tr_dims) != len(b2_dims)):
+            raise ValueError("""Your arrays must have the same dimensions 
+                                to be passed to C++.""")
+        if (len(rho_dims) != 4):
+            raise ValueError("""Your arrays must have dimension 4
+                                to be passed to C++""")
+        return rho_dims
+            
