@@ -2,7 +2,7 @@ import sys
 import os
 import argparse
 import numpy as np
-sys.path.insert(0, '/lustre/orion/ast178/proj-shared/' + 
+sys.path.insert(0, '/lustre/orion/ast178/proj-shared/' +
     'cbambic/HAMR_Visualization/Read_HAMR_Data')
 import hamr_read as hr
 import analysis as ana
@@ -16,10 +16,14 @@ def main(**kwargs):
     nslices = kwargs.get('nslices')
     reduced = kwargs.get('reduced')
     restart = kwargs.get('restart')
-    
+    lowres1 = kwargs.get('lowres1')
+    lowres2 = kwargs.get('lowres2')
+    lowres3 = kwargs.get('lowres3')
+
     main_dir = '/lustre/orion/ast178/proj-shared/cbambic/'
     sim      = 'Thin_RAD_MAD_HiRes'
-    if not reduced:
+    
+	if not reduced:
         data_dir = main_dir + 'DATA/' + sim
     else:
         data_dir = main_dir + 'DATA/' + sim + '/reduced'
@@ -52,8 +56,8 @@ def main(**kwargs):
     profiles['t'] = H.params['t']
     profiles['a'] = H.params['a']
 
-    nx = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1)
-    nz = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3)
+    nx = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / lowres1)
+    nz = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / lowres3)
     phi_1D = np.zeros(nz)
     for k in range(0, nz):
         phi_1D[k] = (H.params['startx3'] + (k + 0.5) * H.params['dx3'])
@@ -62,17 +66,16 @@ def main(**kwargs):
 
     if (len(phi_1D) % nslices != 0):
         raise ValueError(
-                "nslices must evenly divide len(phi_1D) = %d" %len(phi_1D))    
+            "nslices must evenly divide len(phi_1D) = %d" %len(phi_1D))    
     iphi_stp = int(len(phi_1D)/nslices)
 
     # Logic to allow restarts if profile extraction is interrupted.
     if not restart:
-        iphi_start = 0
         first_call = True
     else:
         profile_file = (main_dir + 'Averages/' + sim + 
             '/Profiles_%d.npy' %fnum)
-        profiles, iphi_start = read_restart(profile_file, iphi_stp)
+        profiles = read_restart(profile_file)
         first_call = False
 
     # Initialize profiles dictionary
@@ -80,10 +83,15 @@ def main(**kwargs):
         for key in keys + acc_keys + cool_keys + vec_keys:
             profiles['%s' %key]= np.zeros(nx)
         first_call = False
+        profiles['slice_num_restart'] = 0
 
     # Outer loop over whole data slice that fits on single node.
     # Inner loop over slivers of data slice assigned to each core.
-    for slice_num, i in enumerate(range(iphi_start, len(phi_1D), iphi_stp)):
+    for slice_num, i in enumerate(range(0, len(phi_1D), iphi_stp)):
+        if (restart):
+            while slice_num < profiles['slice_num_restart']:
+                continue
+     
         profiles['saved'] = False
         phi_min = phi_1D[i]
         phi_max = phi_1D[i + iphi_stp - 1]
@@ -101,11 +109,11 @@ def main(**kwargs):
         if (rank == 0): 
             phi_min_loc -= dphi 
 
+        t0 = get_time.time()
         H = hr.Read(data_dir, 
-	    cgs_data = True, cgs_grid = True, MBH = 10.0,
-            coords1D = True,
-            phi_min = phi_min_loc, 
-            phi_max = phi_max_loc)
+	    cgs_data = True, cgs_grid = True, MBH = 10.0, coords1D = True, 
+            lowres1 = lowres1, lowres2 = lowres2, lowres3 = lowres3,
+            phi_min = phi_min_loc, phi_max = phi_max_loc)
         
         # Define constants
         MBH = 10.0
@@ -132,6 +140,7 @@ def main(**kwargs):
         H.read_grid(fnum, direct=True)
         H.read_prims(fnum, skip_read_params=True)
         k_min, k_max = H.block_info['k_min'], H.block_info['k_max']
+        tdata = get_time.time()
 
         # Initialize Accretion class
         Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
@@ -147,13 +156,14 @@ def main(**kwargs):
         Radi  = rad.Radiation(H.params, hr.CONSTANTS, cgs=True)
 
         # Calculate sigma (3D)
-        b     = Field.calc_b(H.data['B'], H.data['uu'], H.grid['gcov'])
-        b2    = Field.calc_b2(b, H.data['B'], H.grid['gcov'])
+        b     = Field.calc_b(H.data['B'], H.data['uu'], 
+                             H.grid['gcov'], cpp=False)
+        b2    = Field.calc_b2(b, H.data['B'], H.grid['gcov'], cpp=False)
         sigma = (b2 / (4. * np.pi)) / (H.data['rho'] * c * c)
-
+        
         # Calculate u^mu u_nu tensor
         uu_tnsr = ana.Tools.construct_dyadic(H.data['uu'] / c, H.grid['gcov'], 
-            upper_lower=True, index=[1,0])
+            upper_lower=True, index=[1,0], cpp=False)
         
         # Calculate gas pressure
         pgas  = Fluid.calc_pgas(H.data['u_gas'], H.data['Te'], H.data['Ti'])
@@ -161,13 +171,13 @@ def main(**kwargs):
         # Mass and energy accretion rates. Radial magnetic flux (Phi_BH).
         stress_energy_HD  = Fluid.calc_THD(H.data['rho'], H.data['uu'], 
             H.data['u_gas'], pgas, H.grid['gcov'], H.grid['gcon'], 
-            uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0])
+            uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=False)
         stress_energy_EM  = Field.calc_TEM(H.data['uu'], H.data['B'], 
             H.grid['gcov'], H.grid['gcon'], b2 = b2, b = b, 
-            uu_tnsr = uu_tnsr, upper_lower=True, index=[1, 0])
+            uu_tnsr = uu_tnsr, upper_lower=True, index=[1, 0], cpp=False)
         stress_energy_RAD = Radi.calc_TRAD(H.data['u_rad'], H.data['uu_rad'], 
             H.grid['gcov'], H.grid['gcon'], 
-            upper_lower=True, index=[1, 0])
+            upper_lower=True, index=[1, 0], cpp=False)
         del uu_tnsr
         
         stress_energy_MHD = stress_energy_HD + stress_energy_EM + stress_energy_RAD
@@ -180,7 +190,7 @@ def main(**kwargs):
                                     sigma_cut = 3.0, sigma = sigma)[0]
         prof_loc['Edot_Poyt'] = Acc.calc_Edot(TMHD = stress_energy_EM, 
                                     sigma_cut = 3.0, sigma = sigma)[0]
-        prof_loc['Edot_Fluid']=Acc.calc_Edot(TMHD = stress_energy_HD, 
+        prof_loc['Edot_Fluid']= Acc.calc_Edot(TMHD = stress_energy_HD, 
                                     sigma_cut = 3.0, sigma = sigma)[0]
         prof_loc['Edot_Rad']  = Acc.calc_Edot(TMHD = stress_energy_RAD, 
                                     sigma_cut = 3.0, sigma = sigma)[0]
@@ -188,7 +198,7 @@ def main(**kwargs):
         
         del stress_energy_MHD 
         del stress_energy_HD, stress_energy_EM, stress_energy_RAD        
-
+        
         opacities = dict.fromkeys(['electron_scattering'])
         tau_es    = Acc.calc_tau(opacities = opacities, integral = 'theta', 
                         sigma_cut = 3.0, sigma = sigma, Te = H.data['Te'])
@@ -224,7 +234,7 @@ def main(**kwargs):
                 sigma_cut=3.0, sigma=sigma)[0]
         
         del Theta_e, Theta_i, gam_e, gam_i, pgas
-
+        
         qIC = Radi.calc_qIC(H.data['rho'], 
             H.data['Te'], H.data['u_rad'], cooling=True)
         prof_loc['qIC']       = thph_sum(qIC, H.grid, H.data, 
@@ -237,7 +247,7 @@ def main(**kwargs):
             tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qIC
         qie = Fluid.calc_qie(H.data['rho'], 
-            H.data['Te'], H.data['Ti'], cooling=True)
+            H.data['Te'], H.data['Ti'], cooling=True, cpp=False)
         qie[qie < 0.] = 0.
         prof_loc['qie']       = thph_sum(qie, H.grid, H.data, 
             H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
@@ -249,7 +259,7 @@ def main(**kwargs):
             tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qie
         qemi= Radi.calc_q_emi(H.data['rho'], H.data['Te'], 
-            H.data['u_rad'], b2=b2, XRB=True)
+            H.data['u_rad'], b2=b2, XRB=True, cpp=False)
         prof_loc['qemi']       = thph_sum(qemi, H.grid, H.data, 
             H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
         prof_loc['qemi_thin']  = thph_sum(qemi, H.grid, H.data, 
@@ -260,7 +270,7 @@ def main(**kwargs):
             tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qemi
         qabs= Radi.calc_q_abs(H.data['rho'], H.data['Te'], 
-            H.data['u_rad'], b2=b2, XRB=True)
+            H.data['u_rad'], b2=b2, XRB=True, cpp=False)
         prof_loc['qabs'] = thph_sum(qabs, H.grid, H.data, 
             H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
         del qabs
@@ -312,13 +322,20 @@ def main(**kwargs):
             if not os.path.exists(main_dir + 'Averages/' + sim):
                 os.makedirs(main_dir + 'Averages/' + sim)
 
-            profiles['saved'] = True
             np.save(main_dir + 'Averages/' + sim + 
                     '/Profiles_%d' %fnum, profiles)
             print("Finished with slice %d of %d" %(slice_num + 1, nslices), 
                     flush=True)
+            profiles['saved'] = True
+            profiles['slice_num_restart'] = slice_num + 1
+        
+            tend = get_time.time()
+
+            print("Time to load in data: %.4e" %(tdata - t0), flush=True)
+            print("Time for analysis: %.4e" %(tend - tdata), flush=True)
+            print("Total computation time: %.4e" %(tend - t0), flush=True)
+            print(tracemalloc.get_traced_memory(), flush=True)
     
-    print(tracemalloc.get_traced_memory(), flush=True)
     tracemalloc.stop()
     print("Done with all profiles for file number %d." %fnum)
 
@@ -329,14 +346,15 @@ def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
     return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
         grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
 
-def read_restart(profile_file, iphi_stp):
+def read_restart(profile_file, lowres1, lowres2, lowres3):
     profiles_in = np.load(profile_file, allow_pickle=True).ravel()[0]
-    iphi_end    = profiles_in['k_max'] + 1
-    if (profiles_in['saved']):
-        iphi_start  = iphi_end - 1
-    else:
-        iphi_start  = iphi_end - iphi_stp
-    return profiles_in, iphi_start
+    if (lowres1 != profiles_in['lowres1']):
+        raise ValueError("Chosen lowres1 parameter incompatible with restart")
+    if (lowres2 != profiles_in['lowres2']):
+        raise ValueError("Chosen lowres2 parameter incompatible with restart")
+    if (lowres3 != profiles_in['lowres3']):
+        raise ValueError("Chosen lowres3 parameter incompatible with restart")
+    return profiles_in
 
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
@@ -348,6 +366,12 @@ if __name__ == '__main__':
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")
+    parser.add_argument('--lowres1', type=int, default=1, required=False,
+                        help = """downsampling parameter in x1""")
+    parser.add_argument('--lowres2', type=int, default=1, required=False,
+                        help = """downsampling parameter in x2""")
+    parser.add_argument('--lowres3', type=int, default=1, required=False,
+                        help = """downsampling parameter in x3""")
     parser.add_argument('--restart', action='store_true', required=False, 
                         help="""boolean set to determine if profile 
                         integration should continue from last k_max""")
