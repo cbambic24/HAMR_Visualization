@@ -673,7 +673,7 @@ class Coordinates():
 
     # symmetric \int_{0}^{\theta} dth q(r, th)
     def cum_integrate_th(self, q, gcov22, **kwargs):
-		int_qdth = np.zeros(q.shape)
+        int_qdth = np.zeros(q.shape)
         qdth = q * np.sqrt(gcov22) * self.dx2 * (
             self.sigma_cut(**kwargs) * self.theta_cut(**kwargs))
         shape = list(q.shape)
