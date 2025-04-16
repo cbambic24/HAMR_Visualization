@@ -49,7 +49,12 @@ class Accretion():
             self.sigma_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
         return self.upscale64(Mdot, self.Rg * self.Rg)
-        
+    
+    # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
+    def calc_PhiBH(self, **kwargs):
+        return (0.5 * np.abs(self.B[1]) * (self.Rg * self.Rg) * (
+            self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+    
     # Calculate energy accretion rate as a function of radius
     def calc_Edot(self, **kwargs):
         rho0c2 = self.rho0 * self.c * self.c
@@ -64,11 +69,6 @@ class Accretion():
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
         stress_energy_MHD *= rho0c2
         return self.upscale64(Edot, self.Rg * self.Rg * self.c * rho0c2)
-
-    # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
-    def calc_PhiBH(self, **kwargs):
-        return (0.5 * np.abs(self.B[1]) * (self.Rg * self.Rg) * (
-            self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
 
     # Calculate angular momentum accretion rate as a function of radius
     def calc_Ldot(self, **kwargs):
@@ -114,7 +114,8 @@ class Accretion():
         else:
             return stress_energy_HD + stress_energy_EM
     
-    # Return where sigma < sigma_cut
+    # Return where sigma < sigma_cut if jet = False
+    # Return where sigma > sigma_cut if jet = True
     def sigma_cut(self, **kwargs):
         if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
             B02 = self.B0 * self.B0
@@ -122,10 +123,14 @@ class Accretion():
             b2  = Fld.calc_b2(self.B, self.B, self.gcov, 
                     from_B=True, uu=self.uu)
             sigma = (b2 / B02) / (self.rho / self.rho0)
-            return (sigma < kwargs.get('sigma_cut'))
+            return ((sigma < kwargs.get('sigma_cut')) 
+                    if not kwargs.get('jet', False)
+                    else (sigma > kwargs.get('sigma_cut')))
         elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
             sigma = kwargs.get('sigma')
-            return (sigma < kwargs.get('sigma_cut'))
+            return ((sigma < kwargs.get('sigma_cut')) 
+                    if not kwargs.get('jet', False)
+                    else (sigma > kwargs.get('sigma_cut')))
         else:
             return 1.0
     
@@ -167,7 +172,7 @@ class Accretion():
                              dictionary passed as kwarg.""")
         else:
             opacities = kwargs.get('opacities')
-        if 'synchrotron' in opacities or 'sigma' not in kwargs:
+        if 'synchrotron' in opacities:
             # b2 is required for synchrotron opacities
             if 'b2' not in kwargs:
                 Fld = Field(self.pars, self.CONSTANTS, 
@@ -176,13 +181,24 @@ class Accretion():
                         from_B=True, uu=self.uu)
             else:
                 b2  = kwargs.get('b2')
-            sigma = b2 / (4. * np.pi * self.rho * c * c)
             Opac  = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
                 self.pars, self.CONSTANTS, b2 = b2, XRB = True)
         else:
-            sigma = kwargs.get('sigma')
             Opac  = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
                 self.pars, self.CONSTANTS, XRB = True)
+        
+        if 'sigma' not in kwargs:
+            if 'b2' not in kwargs and 'synchrotron' not in opacities:
+                Fld = Field(self.pars, self.CONSTANTS, 
+                            cgs=self.kwargs.get('cgs'))
+                b2  = Fld.calc_b2(self.B, self.B, self.gcov,
+                        from_B=True, uu=self.uu)
+            else:
+                b2  = kwargs.get('b2')
+            sigma = b2 / (4. * np.pi * self.rho * c * c)
+        else:
+            sigma = kwargs.get('sigma')
+            
 
         if (len(Opac.opacities) == 1 and 'electron_scattering' in opacities):
             kappa = Opac.opacities['electron_scattering']
@@ -206,6 +222,62 @@ class Accretion():
         q_dbl  = np.float64(q.copy())
         q_dbl *= units
         return q_dbl
+
+class AccretionBK(Accretion):
+    def __init__(self, amr, amr_info, grid, data, pars, CONSTANTS, **kwargs):
+        self.n_ord       = amr_info['n_ord']
+        self.levelx1     = amr_info['levelx1']
+        self.levelx2     = amr_info['levelx2']
+        self.levelx3     = amr_info['levelx3']
+        self.max_levelx1 = amr['max_levelx1']
+        self.max_levelx2 = amr['max_levelx2']
+        self.max_levelx3 = amr['max_levelx3']
+        self.amr         = amr
+        self.amr_info    = amr_info
+        self.pars        = pars
+
+        self.calc_dx()
+
+        self.params = self.pars.copy()
+        self.params['dx1'] = self.dx1[:, None, None, None]
+        self.params['dx2'] = self.dx2[:, None, None, None]
+        self.params['dx3'] = self.dx3[:, None, None, None]
+
+        super().__init__(grid, data, self.params, CONSTANTS, **kwargs)
+
+    def calc_Mtot(self, **kwargs):
+        Mtot = super().calc_Mtot(**kwargs)
+        return self.fold(Mtot)
+
+    def calc_Mdot(self, **kwargs):
+        Mdot = super().calc_Mdot(**kwargs)
+        return self.fold(Mdot)
+    
+    def calc_PhiBHBK(self):
+        PhiBH = super().calc_PhiBH(**kwargs)
+        return self.fold(PhiBH)
+    
+    def calc_Edot(self, **kwargs):
+        Edot = super().calc_Edot(**kwargs)
+        return self.fold(Edot)
+
+    def calc_LdotBK(self):
+        Ldot = super().calc_Ldot(**kwargs)
+        return self.fold(Ldot)
+
+    def calc_dx(self):
+        n = np.arange(0, self.pars['n_active_total'])
+        self.upscalex1 = 2**(self.max_levelx1 - self.levelx1[self.n_ord[n]])
+        self.upscalex2 = 2**(self.max_levelx2 - self.levelx2[self.n_ord[n]])
+        self.upscalex3 = 2**(self.max_levelx3 - self.levelx3[self.n_ord[n]])
+
+        self.dx1 = self.pars['dx1'] * self.upscalex1
+        self.dx2 = self.pars['dx2'] * self.upscalex2
+        self.dx3 = self.pars['dx3'] * self.upscalex3
+        return None
+    
+    def fold(self, q):
+        return q
 
 class Analytic():
     def __init__(self, CONSTANTS, **kwargs):
@@ -245,7 +317,7 @@ class Coordinates():
         self.ph = phi
 
     # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_vec(self, vec):
+    def sph_to_cart_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
         drdx = np.zeros(shape, dtype=np.float32)
@@ -261,11 +333,14 @@ class Coordinates():
         drdx[3, 1] = (np.cos(self.th))
         drdx[3, 2] = (-self.r * np.sin(self.th))
 
-        return np.einsum('ij...,j...->i...', drdx, vec)
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', drdx, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, drdx)
 
     # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_one_form(self, one_form):
-        return self.cart_to_sph_vec(one_form)
+    def sph_to_cart_one_form(self, one_form, **kwargs):
+        return self.cart_to_sph_vec(one_form, **kwargs)
     
     # (t, r, theta, phi) -> (t, x, y, z)
     def sph_to_cart_tnsr(self, tnsr):
@@ -292,7 +367,7 @@ class Coordinates():
         return self.cart_to_sph_tnsr(cotnsr)
  
     # (t, x, y, z) -> (t, r, theta, phi)
-    def cart_to_sph_vec(self, vec):
+    def cart_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
         dxdr = np.zeros(shape, dtype=np.float32)
@@ -308,11 +383,14 @@ class Coordinates():
         dxdr[3, 1] = (-(1. / self.r) * np.sin(self.ph) / np.sin(self.th))
         dxdr[3, 2] = ((1. / self.r) * np.cos(self.ph) / np.sin(self.th))
 
-        return np.einsum('ij...,j...->i...', dxdr, vec)
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dxdr, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, dxdr)
     
     # (t, x, y, z) -> (t, r, theta, phi)
-    def cart_to_sph_one_form(self, one_form):
-        return self.sph_to_cart_vec(one_form)
+    def cart_to_sph_one_form(self, one_form, **kwargs):
+        return self.sph_to_cart_vec(one_form, **kwargs)
 
     # (t, x, y, z) -> (t, r, theta, phi)
     def cart_to_sph_tnsr(self, tnsr):
@@ -338,7 +416,7 @@ class Coordinates():
         return self.sph_to_cart_tnsr(cotnsr)
 
     # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_vec(self, vec):
+    def sph_to_cyl_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
         drdz = np.zeros(shape, dtype=np.float32)
@@ -347,15 +425,18 @@ class Coordinates():
         drdz[0, 0] = 1.
         drdz[1, 1] = np.sin(self.th)
         drdz[1, 2] = self.r * np.cos(self.th)
-        drdz[2, 3] = 1.
+        drdz[2, 3] = self.r * np.sin(self.th)
         drdz[3, 1] = np.cos(self.th)
         drdz[3, 2] = -self.r * np.sin(self.th)
 
-        return np.einsum('ij...,j...->i...', drdz, vec)
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', drdz, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, drdz)
     
     # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_one_form(self, one_form):
-        return self.cyl_to_sph_vec(one_form)
+    def sph_to_cyl_one_form(self, one_form, **kwargs):
+        return self.cyl_to_sph_vec(one_form, **kwargs)
 
     # (t, r, theta, phi) -> (t, R, phi, z)
     def sph_to_cyl_tnsr(self, tnsr):
@@ -368,7 +449,7 @@ class Coordinates():
         drdz[0, 0] = 1.
         drdz[1, 1] = np.sin(self.th)
         drdz[1, 2] = self.r * np.cos(self.th)
-        drdz[2, 3] = 1.
+        drdz[2, 3] = self.r * np.sin(self.th)
         drdz[3, 1] = np.cos(self.th)
         drdz[3, 2] = -self.r * np.sin(self.th)
         
@@ -379,7 +460,7 @@ class Coordinates():
         return self.cyl_to_sph_tnsr(cotnsr)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_vec(self, vec):
+    def cyl_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
         dzdr = np.zeros(shape, dtype=np.float32)
@@ -391,13 +472,16 @@ class Coordinates():
         dzdr[1, 3] = np.cos(self.th)
         dzdr[2, 1] = (1. / self.r) * np.cos(self.th)
         dzdr[2, 3] = -(1. / self.r) * np.sin(self.th)
-        dzdr[3, 2] = 1.
+        dzdr[3, 2] = (1. / self.r) * (1. / np.sin(self.th))
 
-        return np.einsum('ij...,j...->i...', dzdr, vec)
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dzdr, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, dzdr)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_one_form(self, one_form):
-        return self.sph_to_cyl_vec(one_form)
+    def cyl_to_sph_one_form(self, one_form, **kwargs):
+        return self.sph_to_cyl_vec(one_form, **kwargs)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_sph_tnsr(self, tnsr):
@@ -413,7 +497,7 @@ class Coordinates():
         dzdr[1, 3] = np.cos(self.th)
         dzdr[2, 1] = (1. / self.r) * np.cos(self.th)
         dzdr[2, 3] = -(1. / self.r) * np.sin(self.th)
-        dzdr[3, 2] = 1.
+        dzdr[3, 2] = (1. / self.r) * (1. / np.sin(self.th))
         
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dzdr, dzdr)
 
@@ -422,7 +506,7 @@ class Coordinates():
         return self.sph_to_cyl_tnsr(cotnsr)
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_vec(self, vec):
+    def int_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
         dxdxp = np.zeros(shape, dtype=np.float32)
@@ -433,11 +517,14 @@ class Coordinates():
         dxdxp[2, 2] = np.pi / 2.0
         dxdxp[3, 3] = 1.0
 
-        return np.einsum('ij...,j...->i...', dxdxp, vec)
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dxdxp, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, dxdxp)
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_one_form(self, one_form):
-        return self.sph_to_int_vec(one_form)
+    def int_to_sph_one_form(self, one_form, **kwargs):
+        return self.sph_to_int_vec(one_form, **kwargs)
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_sph_tnsr(self, tnsr):
@@ -459,7 +546,7 @@ class Coordinates():
         return self.sph_to_int_tnsr(cotnsr)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_vec(self, vec):
+    def sph_to_int_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
         dxpdx = np.zeros(shape, dtype=np.float32)
@@ -470,11 +557,14 @@ class Coordinates():
         dxpdx[2, 2] = 2.0 / np.pi
         dxpdx[3, 3] = 1.0
 
-        return np.einsum('ij...,j...->i...', dxpdx, vec)
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dxpdx, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, dxpdx)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_one_form(self, one_form):
-        return self.int_to_sph_vec(one_form)
+    def sph_to_int_one_form(self, one_form, **kwargs):
+        return self.int_to_sph_vec(one_form, **kwargs)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
     def sph_to_int_tnsr(self, tnsr):
@@ -496,12 +586,14 @@ class Coordinates():
         return self.int_to_sph_tnsr(cotnsr)
 
     # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_vec(self, vec):
-        return self.sph_to_cart_vec(self.int_to_sph_vec(vec))
+    def int_to_cart_vec(self, vec, **kwargs):
+        return self.sph_to_cart_vec(
+            self.int_to_sph_vec(vec, **kwargs), **kwargs)
 
     # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_one_form(self, one_form):
-        return self.sph_to_cart_one_form(self.int_to_sph_one_form(one_form))
+    def int_to_cart_one_form(self, one_form, **kwargs):
+        return self.sph_to_cart_one_form(
+            self.int_to_sph_one_form(one_form, **kwargs), **kwargs)
     
     # (t, x1, x2, x3) -> (t, x, y, z) 
     def int_to_cart_tnsr(self, tnsr):
@@ -512,12 +604,14 @@ class Coordinates():
         return self.sph_to_cart_cotnsr(self.int_to_sph_cotnsr(cotnsr))
 
     # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_vec(self, vec):
-        return self.sph_to_cyl_vec(self.int_to_sph_vec(vec))
+    def int_to_cyl_vec(self, vec, **kwargs):
+        return self.sph_to_cyl_vec(
+            self.int_to_sph_vec(vec, **kwargs), **kwargs)
     
     # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_one_form(self, one_form):
-        return self.sph_to_cyl_one_form(self.int_to_sph_one_form(one_form))
+    def int_to_cyl_one_form(self, one_form, **kwargs):
+        return self.sph_to_cyl_one_form(
+            self.int_to_sph_one_form(one_form, **kwargs), **kwargs)
     
     # (t, x1, x2, x3) -> (t, R, phi, z) 
     def int_to_cyl_tnsr(self, tnsr):
@@ -539,7 +633,7 @@ class Coordinates():
         if (coord_system == 'internal'):
             if 'component' in kwargs:
                 vec_a, vec_b = self.isolate_component(vec_a, vec_b, **kwargs)
-            return Tools.dot(vec_a, vec_b, gcov)
+            return Tools.dot(vec_a, vec_b, gcov, **kwargs)
         elif (coord_system == 'spherical'):
             gcov_sph  = self.int_to_sph_cotnsr(gcov)
             vec_a_sph = self.int_to_sph_vec(vec_a)
@@ -547,7 +641,7 @@ class Coordinates():
             if 'component' in kwargs:
                 vec_a_sph, vec_b_sph = self.isolate_component(
                     vec_a_sph, vec_b_sph, **kwargs)
-            return Tools.dot(vec_a_sph, vec_b_sph, gcov_sph)
+            return Tools.dot(vec_a_sph, vec_b_sph, gcov_sph, **kwargs)
         elif (coord_system == 'cylindrical'):
             gcov_cyl  = self.int_to_cyl_cotnsr(gcov)
             vec_a_cyl = self.int_to_cyl_vec(vec_a)
@@ -555,7 +649,7 @@ class Coordinates():
             if 'component' in kwargs:
                 vec_a_cyl, vec_b_cyl = self.isolate_component(
                     vec_a_cyl, vec_b_cyl, **kwargs)
-            return Tools.dot(vec_a_cyl, vec_b_cyl, gcov_cyl)
+            return Tools.dot(vec_a_cyl, vec_b_cyl, gcov_cyl, **kwargs)
         elif (coord_system == 'Cartesian'):
             gcov_cart  = self.int_to_cart_cotnsr(gcov)
             vec_a_cart = self.int_to_cart_vec(vec_a)
@@ -563,7 +657,7 @@ class Coordinates():
             if 'component' in kwargs:
                 vec_a_cart, vec_b_cart = self.isolate_component(
                     vec_a_cart, vec_b_cart, **kwargs)
-            return Tools.dot(vec_a_cart, vec_b_cart, gcov_cart)
+            return Tools.dot(vec_a_cart, vec_b_cart, gcov_cart, **kwargs)
 
     # Zero all components other than kwargs.get('component')
     def isolate_component(self, vec_a, vec_b, **kwargs):
@@ -579,25 +673,29 @@ class Coordinates():
 
     # symmetric \int_{0}^{\theta} dth q(r, th)
     def cum_integrate_th(self, q, gcov22, **kwargs):
-        int_qdth = np.zeros(q.shape)
+		int_qdth = np.zeros(q.shape)
         qdth = q * np.sqrt(gcov22) * self.dx2 * (
             self.sigma_cut(**kwargs) * self.theta_cut(**kwargs))
         shape = list(q.shape)
         if (len(shape) == 2):
             ith0 = np.argwhere(self.th[0, :] < np.pi/2)[-1][0] + 1
             int_qdth[:, :ith0] = np.cumsum(qdth[:, :ith0], axis=-1)
-            int_qdth[:, ith0:] = np.cumsum(qdth[:, ith0:][:, ::-1], 
+            int_qdth[:, ith0:] = np.cumsum(qdth[:, ith0:][:, ::-1],
                                            axis=-1)[:, ::-1]
         elif (len(shape) == 3):
             ith0 = np.argwhere(self.th[0, :, 0] < np.pi/2)[-1][0] + 1
-            print(ith0)
             int_qdth[:, :ith0, :] = np.cumsum(qdth[:, :ith0, :], axis=1)
-            int_qdth[:, ith0:, :] = np.cumsum(qdth[:, ith0:, :][:, ::-1, :], 
+            int_qdth[:, ith0:, :] = np.cumsum(qdth[:, ith0:, :][:, ::-1, :],
                                               axis=1)[:, ::-1, :]
-
+        elif (len(shape) == 4):
+            ith0 = np.argwhere(self.th[0, :, 0, 0] < np.pi/2)[-1][0] + 1
+            int_qdth[:, :, :ith0, :] = np.cumsum(qdth[:, :, :ith0, :], axis=2)
+            int_qdth[:, :, ith0:, :] = np.cumsum(
+                qdth[:, :, ith0:, :][:, :, ::-1, :], axis=2)[:, :, ::-1, :]
         return int_qdth
 
     def cum_integrate_z(self, q, gcov22, **kwargs):
+        # note that this only works with a 2D array
         int_qdz = np.zeros(q.shape)
         z       = self.r * np.cos(self.th)
         dz      = (np.abs(np.sqrt(gcov22) * self.dx1 * np.cos(self.th)) +
@@ -666,14 +764,15 @@ class Field():
 
     # Compute b from B
     # Assumes B has units and returns b with units
-    def calc_b(self, B, uu, gcov):
+    def calc_b(self, B, uu, gcov, **kwargs):
         c, B0  = self.c, self.B0
-        b      = np.zeros(B.shape)
+        b      = np.zeros(B.shape, dtype=(np.float32 
+            if 'dtype' not in kwargs else kwargs.get('dtype')))
         # de-dimensionalize inputs
         uu    *=  1. / c
         B     *=  1. / B0
         # compute b^t
-        b[0]   = Tools.dot(uu, B, gcov)
+        b[0]   = Tools.dot(uu, B, gcov, **kwargs)
         # compute b^i
         for i in range(1, 4):
             b[i] = (B[i] + (uu[i] * b[0])) / uu[0]
@@ -690,8 +789,8 @@ class Field():
                 raise TypeError("Must specify uu to use from_B.")
             else:
                 uu = kwargs.get('uu')
-                b  = self.calc_b(B, uu, gcov)
-        return Tools.dot(b, b, gcov)
+                b  = self.calc_b(B, uu, gcov, **kwargs)
+        return Tools.dot(b, b, gcov, **kwargs)
     
     # Compute the electromagnetic stress-energy tensor
     # Default TEM^{mu, nu}
@@ -868,6 +967,8 @@ class Fluid():
     # Equation 20 in Sadowski+ (2017)
     # see also Stepney & Guilbert (1983) Equation 15
     def calc_qie(self, rho, Te, Ti, **kwargs):
+        if kwargs.get('cpp', False):
+            return self.calc_qie_cpp(rho, Te, Ti, **kwargs)
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
         ne      = rho / (self.mu_e * self.mp)
@@ -951,17 +1052,47 @@ class Fluid():
 
     def Coulomb_log(self, ne, Te):
         return 35.4 + np.log((Te / 1.e7) * np.sqrt(1.0e-3 / ne))
+    
+    def calc_qie_cpp(self, rho, Te, Ti, **kwargs):
+        if (not self.kwargs.get('cgs')):
+            import warnings
+            warnings.warn("""Warning: calculating Coulomb energy exchange
+                          rate without CGS units applied...""")
+        import hamr_readc
+        Fluidc = hamr_readc.PyFluid(self.params, self.CONSTANTS)
+        dims   = list(rho.shape)
+        dtype  = np.float64 # C++ layer expects double
+        if (len(dims) != 4):
+            raise ValueError("This array with shape " + 
+                             str(dims) + " cannot be passed to C++.")
+        [nb, nx1, nx2, nx3] = dims
+        qie = np.zeros(rho.shape, dtype=dtype)
+        Fluidc.calc_qie(qie, rho, Te, Ti, nb, nx1, nx2, nx3)
+        # If temperature difference < 2% of Te, then assume negligible qie
+        qie[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
+        if kwargs.get('cooling'):
+            qie[Ti < Te] = 0.0
+            return qie # erg/cm^3 s
+        elif kwargs.get('heating'):
+            qie[Ti > Te] = 0.0
+            return qie # erg/cm^3 s
+        else:    
+            return qie # erg/cm^3 s
 
     def heating_Qi_Qe(self, rho, ugas, **kwargs):
         print("Implement the electron-to-ion heating ratio from Rowan+2017.")
 
 class Tools():
-    def dot(a, b, gcov):
+    def dot(a, b, gcov, **kwargs):
         # contract two 4-vectors (g_ij a^j b^i)
+        if (kwargs.get('cpp', False)):
+            return Tools.dot_cpp(a, b, gcov, **kwargs)
         a_cov = np.einsum('ij...,j...->i...', gcov, a)
         return np.einsum('i...,i...->...', a_cov, b)
 
     def construct_dyadic(uu, gcov, **kwargs):
+        if kwargs.get('cpp', False):
+            return Tools.construct_dyadic_cpp(uu, gcov, **kwargs)
         if 'index' in kwargs:
             [mu, nu] = kwargs.get('index')
             if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
@@ -1001,6 +1132,83 @@ class Tools():
             elif ('lower_lower' in kwargs):
                 g_tnsr = gcov
         return g_tnsr
+    
+    def dot_cpp(a, b, gcov, **kwargs):
+        import hamr_readc
+        Toolsc = hamr_readc.PyTools()
+        dims   = list(a.shape)
+        dtype  = np.float32 # C++ layer expects float 
+        if (len(dims) != 5 or dims[0] != 4):
+            raise ValueError("This 4-vector with shape " +
+                             str(dims) + " cannot be passed to C++.")
+        [ndim, nb, nx1, nx2, nx3] = dims
+        axisym = 1 if (gcov.shape[-1] == 1) else 0
+        a_cov = np.zeros(a.shape, dtype=dtype)
+        Toolsc.lower_index(np.float32(a), a_cov, gcov, 
+            nb, nx1, nx2, nx3, axisym)
+        return np.einsum('i...,i...->...', a_cov, b)
+
+    def contract_vector_cpp(a, gcov, **kwargs):
+        import hamr_readc
+        Toolsc = hamr_readc.PyTools()
+        dims   = list(a.shape)
+        dtype  = np.float32 # C++ layer expects float 
+        if (len(dims) != 5 or dims[0] != 4):
+            raise ValueError("This 4-vector with shape " +
+                             str(dims) + " cannot be passed to C++.")
+        [ndim, nb, nx1, nx2, nx3] = dims
+        axisym = 1 if (gcov.shape[-1] == 1) else 0 
+        a_cov = np.zeros(a.shape, dtype=dtype)
+        Toolsc.lower_index(np.float32(a), a_cov, gcov, 
+            nb, nx1, nx2, nx3, axisym)
+        return a_cov
+
+    def construct_dyadic_cpp(uu, gcov, **kwargs):
+        import hamr_readc
+        Toolsc = hamr_readc.PyTools()
+        dims   = list(uu.shape)
+        dtype  = np.float32 # C++ layer expects float 
+        if (len(dims) != 5 or dims[0] != 4):
+            raise ValueError("This 4-vector with shape " + 
+                             str(dims) + " cannot be passed to C++.")
+        [ndim, nb, nx1, nx2, nx3] = dims
+        axisym = 1 if (gcov.shape[-1] == 1) else 0
+        if 'index' in kwargs:
+            [mu, nu] = kwargs.get('index')
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                uu_tnsr = uu[mu] * uu[nu]
+            elif ('upper_lower' in kwargs):
+                uu_nu = np.zeros(uu[nu].shape, dtype=dtype)
+                Toolsc.lower_index_mu(np.float32(uu), uu_nu, gcov, nu, 
+                                      nb, nx1, nx2, nx3, axisym)
+                uu_tnsr = uu[mu] * uu_nu
+            elif ('lower_lower' in kwargs):
+                uu_mu = np.zeros(uu[mu].shape, dtype=dtype)
+                uu_nu = np.zeros(uu[nu].shape, dtype=dtype)
+                Toolsc.lower_index_mu(np.float32(uu), uu_mu, gcov, mu, 
+                                      nb, nx1, nx2, nx3, axisym)
+                Toolsc.lower_index_mu(np.float32(uu), uu_nu, gcov, nu, 
+                                      nb, nx1, nx2, nx3, axisym)
+                uu_tnsr = uu_mu * uu_nu
+        else:
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                uu_tnsr = np.einsum('i...,j...->ij...', uu, uu, optimize=True)
+            elif ('upper_lower' in kwargs):
+                uu_nu = np.zeros(uu.shape, dtype=dtype)
+                Toolsc.lower_index(np.float32(uu), uu_nu, gcov, 
+                                   nb, nx1, nx2, nx3, axisym)
+                uu_tnsr = np.einsum(
+                    'i...,j...->ij...', uu, uu_nu, optimize=True)
+            elif ('lower_lower' in kwargs):
+                uu_mu = np.zeros(uu.shape, dtype=dtype)
+                uu_nu = np.zeros(uu.shape, dtype=dtype)
+                Toolsc.lower_index(np.float32(uu), uu_mu, gcov, 
+                                   nb, nx1, nx2, nx3, axisym)
+                Toolsc.lower_index(np.float32(uu), uu_nu, gcov, 
+                                   nb, nx1, nx2, nx3, axisym)
+                uu_tnsr = np.einsum(
+                    'i...,j...->ij...', uu_mu, uu_nu, optimize=True)
+        return uu_tnsr
 
 if __name__ == "__main__":
     print("Executing analysis.")
