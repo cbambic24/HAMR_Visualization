@@ -8,20 +8,17 @@ import hamr_read as hr
 import analysis as ana
 import radiation as rad
 from mpi4py import MPI
-import tracemalloc
-import time as get_time
 
 def main(**kwargs):
+    main_dir= '/lustre/orion/ast178/proj-shared/cbambic/'
+    sim     = kwargs.get('sim')
     fnum    = kwargs.get('fnum')
     nslices = kwargs.get('nslices')
-    reduced = kwargs.get('reduced')
-    restart = kwargs.get('restart')
     lowres1 = kwargs.get('lowres1')
     lowres2 = kwargs.get('lowres2')
     lowres3 = kwargs.get('lowres3')
-
-    main_dir = '/lustre/orion/ast178/proj-shared/cbambic/'
-    sim      = 'Thin_RAD_MAD_HiRes'
+    reduced = kwargs.get('reduced')
+    restart = kwargs.get('restart')
     
     if not reduced:
         data_dir = main_dir + 'DATA/' + sim
@@ -60,7 +57,8 @@ def main(**kwargs):
     nz = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / lowres3)
     phi_1D = np.zeros(nz)
     for k in range(0, nz):
-        phi_1D[k] = (H.params['startx3'] + (k + 0.5) * H.params['dx3'])
+        phi_1D[k] = (
+            H.params['startx3'] + (k + 0.5) * H.params['dx3'] * lowres3)
 
     dphi = phi_1D[1] - phi_1D[0]
 
@@ -109,9 +107,8 @@ def main(**kwargs):
         if (rank == 0): 
             phi_min_loc -= dphi 
 
-        t0 = get_time.time()
-        H = hr.Read(data_dir, 
-	    cgs_data = True, cgs_grid = True, MBH = 10.0, coords1D = True, 
+        H = hr.Read(data_dir, cgs_data = True, cgs_grid = True, 
+            MBH = 10.0, coords1D = True, 
             lowres1 = lowres1, lowres2 = lowres2, lowres3 = lowres3,
             phi_min = phi_min_loc, phi_max = phi_max_loc)
         
@@ -135,12 +132,10 @@ def main(**kwargs):
         mi   = (x_AB + y_AB) * mp  
         me   = hr.CONSTANTS['me'] 
 
-        tracemalloc.start()
         # Read grid and data
         H.read_grid(fnum, direct=True)
         H.read_prims(fnum, skip_read_params=True)
         k_min, k_max = H.block_info['k_min'], H.block_info['k_max']
-        tdata = get_time.time()
 
         # Initialize Accretion class
         Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
@@ -157,13 +152,13 @@ def main(**kwargs):
 
         # Calculate sigma (3D)
         b     = Field.calc_b(H.data['B'], H.data['uu'], 
-                             H.grid['gcov'], cpp=False)
-        b2    = Field.calc_b2(b, H.data['B'], H.grid['gcov'], cpp=False)
+                             H.grid['gcov'], cpp=True)
+        b2    = Field.calc_b2(b, H.data['B'], H.grid['gcov'], cpp=True)
         sigma = (b2 / (4. * np.pi)) / (H.data['rho'] * c * c)
         
         # Calculate u^mu u_nu tensor
         uu_tnsr = ana.Tools.construct_dyadic(H.data['uu'] / c, H.grid['gcov'], 
-            upper_lower=True, index=[1,0], cpp=False)
+            upper_lower=True, index=[1,0], cpp=True)
         
         # Calculate gas pressure
         pgas  = Fluid.calc_pgas(H.data['u_gas'], H.data['Te'], H.data['Ti'])
@@ -171,13 +166,13 @@ def main(**kwargs):
         # Mass and energy accretion rates. Radial magnetic flux (Phi_BH).
         stress_energy_HD  = Fluid.calc_THD(H.data['rho'], H.data['uu'], 
             H.data['u_gas'], pgas, H.grid['gcov'], H.grid['gcon'], 
-            uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=False)
+            uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
         stress_energy_EM  = Field.calc_TEM(H.data['uu'], H.data['B'], 
             H.grid['gcov'], H.grid['gcon'], b2 = b2, b = b, 
-            uu_tnsr = uu_tnsr, upper_lower=True, index=[1, 0], cpp=False)
+            uu_tnsr = uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
         stress_energy_RAD = Radi.calc_TRAD(H.data['u_rad'], H.data['uu_rad'], 
             H.grid['gcov'], H.grid['gcon'], 
-            upper_lower=True, index=[1, 0], cpp=False)
+            upper_lower=True, index=[1, 0], cpp=True)
         del uu_tnsr
         
         stress_energy_MHD = stress_energy_HD + stress_energy_EM + stress_energy_RAD
@@ -247,7 +242,7 @@ def main(**kwargs):
             tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qIC
         qie = Fluid.calc_qie(H.data['rho'], 
-            H.data['Te'], H.data['Ti'], cooling=True, cpp=False)
+            H.data['Te'], H.data['Ti'], cooling=True, cpp=True)
         qie[qie < 0.] = 0.
         prof_loc['qie']       = thph_sum(qie, H.grid, H.data, 
             H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
@@ -259,7 +254,7 @@ def main(**kwargs):
             tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qie
         qemi= Radi.calc_q_emi(H.data['rho'], H.data['Te'], 
-            H.data['u_rad'], b2=b2, XRB=True, cpp=False)
+            H.data['u_rad'], b2=b2, XRB=True, cpp=True)
         prof_loc['qemi']       = thph_sum(qemi, H.grid, H.data, 
             H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
         prof_loc['qemi_thin']  = thph_sum(qemi, H.grid, H.data, 
@@ -270,7 +265,7 @@ def main(**kwargs):
             tau_cut = 1.0, tau = tau_es, optically_thin = False)[0]
         del qemi
         qabs= Radi.calc_q_abs(H.data['rho'], H.data['Te'], 
-            H.data['u_rad'], b2=b2, XRB=True, cpp=False)
+            H.data['u_rad'], b2=b2, XRB=True, cpp=True)
         prof_loc['qabs'] = thph_sum(qabs, H.grid, H.data, 
             H.params, hr.CONSTANTS, sigma_cut=3.0, sigma=sigma)[0]
         del qabs
@@ -282,9 +277,9 @@ def main(**kwargs):
         H.data['u_gas'] = H.data['rho']
         H.data['u_rad'] = H.data['rho']
 
-        uu_cyl = Coords.int_to_cyl_vec(H.data['uu'])
+        uu_cyl = Coords.int_to_cyl_vec(H.data['uu'], cpp=True)
         H.data['uu'] = H.data['rho']
-        b_cyl  = Coords.int_to_cyl_vec(b)
+        b_cyl  = Coords.int_to_cyl_vec(b, cpp=True)
 
         quants = [
             uu_cyl[1] / uu_cyl[0],
@@ -316,7 +311,7 @@ def main(**kwargs):
         if (rank == 0):
             for prof in prof_global:
                 for key in keys + acc_keys + cool_keys + vec_keys:
-                    profiles['%s' %key] += prof_loc['%s' %key]
+                    profiles['%s' %key] += prof['%s' %key]
 
             profiles['k_max'] = k_min + (k_max - k_min) * size 
             if not os.path.exists(main_dir + 'Averages/' + sim):
@@ -328,15 +323,7 @@ def main(**kwargs):
                     flush=True)
             profiles['saved'] = True
             profiles['slice_num_restart'] = slice_num + 1
-        
-            tend = get_time.time()
 
-            print("Time to load in data: %.4e" %(tdata - t0), flush=True)
-            print("Time for analysis: %.4e" %(tend - tdata), flush=True)
-            print("Total computation time: %.4e" %(tend - t0), flush=True)
-            print(tracemalloc.get_traced_memory(), flush=True)
-    
-    tracemalloc.stop()
     print("Done with all profiles for file number %d." %fnum)
 
 def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
@@ -360,21 +347,27 @@ if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
                         description="""Calculate 1D profiles for single 
                         ultra-high-resolution simulation output.""")
+    parser.add_argument('sim', type=str, help = """simulation name""")
     parser.add_argument('fnum', type=int, help = """dump number""")
-    parser.add_argument('--nslices', type=int, required=False, default=1,
-                        help="""number of slices in phi for loading data""")
+    parser.add_argument('--nslices', type=int, required=False,
+                        default=1,
+                        help="""number of slices in phi 
+                        used to load the data""")
+    parser.add_argument('--lowres1', type=int, default=1,
+                        required=False,
+                        help = """downsampling parameter in x1""")
+    parser.add_argument('--lowres2', type=int, default=1,
+                        required=False,
+                        help = """downsampling parameter in x2""")
+    parser.add_argument('--lowres3', type=int, default=1,
+                        required=False,
+                        help = """downsampling parameter in x3""")
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")
-    parser.add_argument('--lowres1', type=int, default=1, required=False,
-                        help = """downsampling parameter in x1""")
-    parser.add_argument('--lowres2', type=int, default=1, required=False,
-                        help = """downsampling parameter in x2""")
-    parser.add_argument('--lowres3', type=int, default=1, required=False,
-                        help = """downsampling parameter in x3""")
     parser.add_argument('--restart', action='store_true', required=False, 
                         help="""boolean set to determine if profile 
-                        integration should continue from last k_max""")
+                        integration should continue from last slice_num""")
     args = parser.parse_args()
     main(**vars(args))
 
