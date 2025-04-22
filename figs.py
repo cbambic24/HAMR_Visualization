@@ -174,10 +174,10 @@ class Cartesian():
         if (kwargs.get('cbar_loc') == 'top'):
             cax = divider.append_axes("top", size="4%", pad=0.2)
             cax.xaxis.set_ticks_position("top")
-            cbar = fig.colorbar(images, cax=cax, location="top")
+            cbar = fig.colorbar(images, cax=cax)
         else:
             cax = divider.append_axes("right", size="4%", pad=0.2)
-            cbar = fig.colorbar(images, cax=cax, location="right")
+            cbar = fig.colorbar(images, cax=cax)
         #if (kwargs.get('cbar_loc') == 'left'):
         #    cbar.ax.yaxis.set_ticks_position('left')
         if(kwargs.get('title')):
