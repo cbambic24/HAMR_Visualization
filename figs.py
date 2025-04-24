@@ -209,7 +209,7 @@ class Cartesian():
             if (kwargs.get('sym')):
                 print('Symmetric log')
                 return colors.SymLogNorm(linthresh = kwargs.get('linthresh'),
-                                         vmin = vmin, vmax = vmax, base=10)
+                                         vmin = vmin, vmax = vmax)
             else:
                 print('Positive log')
                 return colors.LogNorm(vmin = vmin, vmax = vmax)
