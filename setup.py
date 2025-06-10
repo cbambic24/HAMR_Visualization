@@ -19,7 +19,9 @@ setup(
                            extra_compile_args=["-fopenmp", "-std=c++17",
                                                "-Wno-unused-result",
                                                "-Wno-deprecated-declarations"],
-                           extra_link_args=["-fopenmp"])
+                           extra_link_args=["-fopenmp"],
+                           define_macros=[("NPY_NO_DEPRECATED_API", 
+                                "NPY_1_7_API_VERSION")])
     ]
 )
 # "/openmp", 
