@@ -11,11 +11,9 @@
 #define MIN(X,Y) ((X) < (Y) ?  (X) : (Y))
 #define MAX(X,Y) ((X) > (Y) ?  (X) : (Y))
 
-
-// default constructor
+// Fluid class 
 Fluid::Fluid() {};
 
-// parameterized constructor
 Fluid::Fluid(const std::unordered_map<std::string, double>& params,
     const std::unordered_map<std::string, double>& CONSTANTS) {
   rho0 = params.at("density_scale");
@@ -30,7 +28,6 @@ Fluid::Fluid(const std::unordered_map<std::string, double>& params,
   me   = CONSTANTS.at("me");
   sigT = CONSTANTS.at("sigmaT");
   ThetaMin = 1.0e-2;
-
 };
 
 void Fluid::calcQie(double* qie, float* rho, float* Te, float* Ti, 
@@ -40,63 +37,82 @@ void Fluid::calcQie(double* qie, float* rho, float* Te, float* Ti,
   me_mi    = me / mi;
 
   // Loop over each of nb * nx1 * nx2 * nx3 cells
+  int n;
+  double ne, nAvg, Thetae, Thetai; 
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  #pragma omp parallel for private(n, ne, nAvg, Thetae, Thetai, \
-  Thetam, Thetasum, k2k2, k1, k0)
+  TwoTemperature twoT(ThetaMin); 
+  #pragma omp parallel for private(n, ne, nAvg, \
+    Thetae, Thetai) firstprivate(twoT)
   for (n = 0; n < gridsize_3D; n++) {
     ne     = rho[n] / (mu_e * mp);
     nAvg   = (xAB + yAB) * rho[n] / mp;
     Thetae = kB * Te[n] / (me * c * c);
     Thetai = kB * Ti[n] / (mi * c * c);
-    Thetam = 0.0, Thetasum = 0.0, k2k2 = 0.0, k1 = 0.0, k0 = 0.0;
     qie[n] = ((3./2.) * me_mi * cksigmaT * ne * nAvg * (Ti[n] - Te[n]) * (
-      CoulombLog(ne, Te[n]) * (
-      BesselTerms(Thetae, Thetai, Thetam, Thetasum, k2k2, k1, k0))));
+      twoT.CoulombLog(ne, Te[n]) * twoT.BesselTerms(Thetae, Thetai)));
   }
 }
 
-double Fluid::CoulombLog(double ne, float Te) {
+Fluid::~Fluid() {};
+
+// Two-temperature class 
+TwoTemperature::TwoTemperature() {};
+
+TwoTemperature::TwoTemperature(double ThetaMin) {
+  this->ThetaMin = ThetaMin;
+  Thetam   = 0.0;
+  Thetasum = 0.0;
+  k0       = 0.0;
+  k1       = 0.0;
+  k2k2     = 0.0;
+};
+
+TwoTemperature::TwoTemperature (TwoTemperature& twoT) {
+  ThetaMin = twoT.ThetaMin;
+  Thetam   = twoT.Thetam;
+  Thetasum = twoT.Thetasum;
+  k0       = twoT.k0;
+  k1       = twoT.k1;
+  k2k2     = twoT.k2k2;
+};
+
+double TwoTemperature::CoulombLog(double ne, float Te) {
   return 35.4 + std::log((Te / 1.e7) * std::sqrt(1.0e-3 / ne));
 }
 
-double Fluid::BesselTerms(double Thetae, double Thetai, 
-    double Thetam, double Thetasum, double k2k2, double k1, double k0) {
+double TwoTemperature::BesselTerms(double Thetae, double Thetai) {
   if ((Thetae < ThetaMin) && (Thetai < ThetaMin)) {
-    return coldEcoldI(Thetae, Thetai, Thetam, Thetasum, k2k2, k1, k0);
+    return coldEcoldI(Thetae, Thetai);
   } else if ((Thetae >= ThetaMin) && (Thetai < ThetaMin)) {
-    return hotEcoldI(Thetae, Thetai, Thetam, Thetasum, k2k2, k1, k0);
+    return hotEcoldI(Thetae, Thetai);
   } else if ((Thetae < ThetaMin) && (Thetai >= ThetaMin)) {
-    return coldEhotI(Thetae, Thetai, Thetam, Thetasum, k2k2, k1, k0);
+    return coldEhotI(Thetae, Thetai);
   } else {
-    return hotEhotI(Thetae, Thetai, Thetam, Thetasum, k2k2, k1, k0);
+    return hotEhotI(Thetae, Thetai);
   }
 }
 
-double Fluid::coldEcoldI(double Thetae, double Thetai, 
-    double Thetam, double Thetasum, double k2k2, double k1, double k0) {
+double TwoTemperature::coldEcoldI(double Thetae, double Thetai) {
   Thetasum = Thetae + Thetai;
   return ((2. * Thetasum * Thetasum + 2.0 * Thetasum + 1.0) / (
     std::sqrt(0.5 * M_PI * std::pow(Thetasum, 3.0))));
 }
 
-double Fluid::hotEcoldI(double Thetae, double Thetai, 
-    double Thetam, double Thetasum, double k2k2, double k1, double k0) {
+double TwoTemperature::hotEcoldI(double Thetae, double Thetai) { 
   Thetasum  = Thetae + Thetai;
   return (((2. * (Thetasum * Thetasum) + 2.0 * Thetasum + 1.0) * (
     std::sqrt(Thetae))) / (std::cyl_bessel_k(2, 1.0 / Thetae) * (
     std::exp(1.0 / Thetae) * std::sqrt(std::pow(Thetasum, 3.0)))));
 }
 
-double Fluid::coldEhotI(double Thetae, double Thetai, 
-    double Thetam, double Thetasum, double k2k2, double k1, double k0) {
+double TwoTemperature::coldEhotI(double Thetae, double Thetai) {
   Thetasum  = Thetae + Thetai;
   return (((2. * (Thetasum * Thetasum) + 2.0 * Thetasum + 1.0) * (
     std::sqrt(Thetai))) / (std::cyl_bessel_k(2, 1.0 / Thetai) * (
     std::exp(1.0 / Thetai) * std::sqrt(std::pow(Thetasum, 3.0)))));
 }
 
-double Fluid::hotEhotI(double Thetae, double Thetai, 
-    double Thetam, double Thetasum, double k2k2, double k1, double k0) {
+double TwoTemperature::hotEhotI(double Thetae, double Thetai) {
   Thetasum = Thetae + Thetai;
   Thetam   = (Thetae * Thetai) / Thetasum;
   k2k2     = ((1.0 / std::cyl_bessel_k(2, 1.0 / Thetai)) * 
@@ -107,13 +123,11 @@ double Fluid::hotEhotI(double Thetae, double Thetai,
   return k2k2 * (k1 + k0);
 }
 
-// default destructor
-Fluid::~Fluid() {};
+TwoTemperature::~TwoTemperature() {};
 
-// default constructor
+// Opacity class
 Opacity::Opacity() {};
 
-// parameterized constructor
 Opacity::Opacity(const std::unordered_map<std::string, double>& params,
     const std::unordered_map<std::string, double>& CONSTANTS) {
   rho0 = params.at("density_scale");
@@ -132,9 +146,37 @@ Opacity::Opacity(const std::unordered_map<std::string, double>& params,
   eStatC = CONSTANTS.at("e");
   h    = CONSTANTS.at("h");
   kappaMol = 3.0 * zAB;
-
 };
 
+Opacity::Opacity (Opacity& opac) {
+  rho0 = opac.rho0;
+  c    = opac.c;
+  kB   = opac.kB;
+  aRAD = opac.aRAD;
+  xAB  = opac.xAB;
+  yAB  = opac.yAB;
+  zAB  = opac.zAB;
+  mu_i = opac.mu_i;
+  mu_e = opac.mu_e;
+  mp   = opac.mp;
+  mi   = opac.mi;
+  me   = opac.me;
+  sigT = opac.sigT;
+  eStatC = opac.eStatC;
+  h    = opac.h; 
+  kappaMol = opac.kappaMol;
+  
+  // copy variables used within member functions
+  e_2pimc   = opac.e_2pimc;
+  ne        = opac.ne;
+  Thetae    = opac.Thetae;
+  nu_mu     = opac.nu_mu;
+  phi       = opac.phi;
+  g         = opac.g;
+  kappaGInv = opac.kappaGInv;
+};
+
+// Bound-free opacities
 double Opacity::kappaBoundFreeAbs(float rho, float Te, float Tr) {
   return (9.0e26 * (zAB * (1.0 + xAB + 0.75 * yAB) * (
     rho * (1.0 / std::sqrt(Te)) * (1.0 / (Tr * Tr * Tr)) * (
@@ -146,6 +188,7 @@ double Opacity::kappaBoundFreeEmi(float rho, float Te, float Tr) {
     rho * std::pow(Te, -3.5) * std::log(1.0 + 1.6))));
 }
 
+// CHIANTI opacities
 double Opacity::kappaCHIANTIAbs(float rho, float Te, float Tr) {
   return (3.0e34 * rho * (0.1 + (zAB / 0.02)) * ( 
     (std::pow(Te, -1.7) * (1.0 / (Tr * Tr * Tr)))));
@@ -155,6 +198,7 @@ double Opacity::kappaCHIANTIEmi(float rho, float Te, float Tr) {
   return (3.0e34 * rho * ((0.1 + (zAB / 0.02)) * std::pow(Te, -4.7)));
 }
 
+// Free-free opacities
 double Opacity::kappaFreeFreeAbs(float rho, float Te, float Tr) {
   return (1.2e24 * (1.0 + xAB) * (1.0 - zAB) * rho * ( 
     (1.0 / std::sqrt(Te)) * (1.0 / (Tr * Tr * Tr)) * (
@@ -166,15 +210,18 @@ double Opacity::kappaFreeFreeEmi(float rho, float Te, float Tr) {
     std::pow(Te, -3.5) * std::log(1.0 + 1.6) * (1.0 + 4.4e-10 * Te)));
 }
 
+// Hydrogen opacity
 double Opacity::kappaH(float rho, float Te, float Tr) {
   return 33.0 * 1.e-25 * std::sqrt(zAB) * std::sqrt(rho) * std::pow(Te, 7.7);
 }
 
+// Iron-line opacity
 double Opacity::kappaFe(float rho, float Te, float Tr) {
   return (0.3 * (zAB / 0.02) * (
     std::exp(-6.0 * (std::pow((-12.0 + std::log(Te)), 2)))));
 }
 
+// Synchrotron opacities
 double Opacity::kappaSyncAbs(float rho, float Te, 
     float Tr, float b2, double async, double bsync,
     double csync, double dsync, double esync) {
@@ -205,38 +252,24 @@ double Opacity::kappaSyncEmi(float rho, float Te,
   return (g / kappaGInv) / rho;
 }
 
-void Opacity::kappaAbsTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  #pragma omp parallel for private(n)
-  for (n = 0; n < gridsize_3D; n++) {
-    kappa[n] = kappaSyncAbs(rho[n], Te[n], Tr[n], b2[n], 
-      async, bsync, csync, dsync, esync) + ( 
-      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
-      (1.0 / (kappaBoundFreeAbs(rho[n], Te[n], Tr[n]) + 
-	      kappaFreeFreeAbs( rho[n], Te[n], Tr[n]) + 
-      kappaCHIANTIAbs(rho[n], Te[n], Tr[n])))))); 
+void Opacity::getABCDESynch(int XRB, double& a, double& b, double& c, 
+    double& d, double& e) {
+  if (XRB) { // XRB synchrotron opacity coefficients
+    a = 1.27; 
+    b = 1.03; 
+    c = 0.000763;
+    d = 0.616;
+    e = 2.91;
+  } else { // AGN synchrotron opacity coefficients
+    a = 0.206; 
+    b = 2.59;
+    c = 3.44;
+    d = 9.33;
+    e = 3.09;
   }
 }
 
-void Opacity::kappaEmiTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  #pragma omp parallel for private(n)
-  for (n = 0; n < gridsize_3D; n++) {
-    kappa[n] = kappaSyncEmi(rho[n], Te[n], Tr[n], b2[n], 
-      async, bsync, csync, dsync, esync) + ( 
-      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
-      (1.0 / (kappaBoundFreeEmi(rho[n], Te[n], Tr[n]) + 
-	      kappaFreeFreeEmi( rho[n], Te[n], Tr[n]) + 
-      kappaCHIANTIEmi(rho[n], Te[n], Tr[n])))))); 
-  }
-}
-
+// Total absorption and emission opacities
 double Opacity::kappaAbsTotal(float rho, float Te, float Tr, 
     float b2, int XRB) {
   getABCDESynch(XRB, async, bsync, csync, dsync, esync);
@@ -258,72 +291,94 @@ double Opacity::kappaEmiTotal(float rho, float Te, float Tr,
 	     kappaFreeFreeEmi(rho, Te, Tr) + 
              kappaCHIANTIEmi( rho, Te, Tr)))))); 
 }
-  
+
+// Opacities exposed to Cython/Python
+// Total absorption and emission opacities
+void Opacity::kappaAbsTotal(double* kappa, float* rho, float* Te, float* Tr,
+  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
+  gridsize_3D = nb * nx1 * nx2 * nx3;
+  int n;
+  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
+  #pragma omp parallel for private(n)
+  for (n = 0; n < gridsize_3D; n++) {
+    kappa[n] = kappaSyncAbs(rho[n], Te[n], Tr[n], b2[n], 
+      async, bsync, csync, dsync, esync) + ( 
+      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
+      (1.0 / (kappaBoundFreeAbs(rho[n], Te[n], Tr[n]) + 
+	      kappaFreeFreeAbs( rho[n], Te[n], Tr[n]) + 
+      kappaCHIANTIAbs(rho[n], Te[n], Tr[n])))))); 
+  }
+}
+
+void Opacity::kappaEmiTotal(double* kappa, float* rho, float* Te, float* Tr,
+  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
+  gridsize_3D = nb * nx1 * nx2 * nx3;
+  int n;
+  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
+  #pragma omp parallel for private(n)
+  for (n = 0; n < gridsize_3D; n++) {
+    kappa[n] = kappaSyncEmi(rho[n], Te[n], Tr[n], b2[n], 
+      async, bsync, csync, dsync, esync) + ( 
+      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
+      (1.0 / (kappaBoundFreeEmi(rho[n], Te[n], Tr[n]) + 
+	      kappaFreeFreeEmi( rho[n], Te[n], Tr[n]) + 
+      kappaCHIANTIEmi(rho[n], Te[n], Tr[n])))))); 
+  }
+}
+
+// Synchrotron opacity exposed to Cython/Python
 void Opacity::kappaSynchrotron(double* kappa, float* rho, float* Te, 
     float* Tr, float* b2, int emi, int XRB, 
     int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
+  int n;
+  // Private (P) variables in OMP threads
+  double neP, ThetaeP, nu_muP, phiP, gP, kappaGInvP;
   gridsize_3D = nb * nx1 * nx2 * nx3;
   e_2pimc = eStatC / (2.0 * M_PI * me * c);
   getABCDESynch(XRB, async, bsync, csync, dsync, esync);
   if (emi) {
     #pragma omp parallel for private(n, \
-      ne, Thetae, nu_mu, phi, g, kappaGInv) 
+      neP, ThetaeP, nu_muP, phiP, gP, kappaGInvP) 
     for (n = 0; n < gridsize_3D; n++) {
-      ne     = rho[n] / (mu_e * mp);
-      Thetae = (kB * Te[n]) / (me * c * c);
-      nu_mu  = (3.0/2.0) * e_2pimc * std::sqrt(b2[n]) * Thetae * Thetae;
-      phi    = kB * Te[n] / (h * nu_mu);
-      g = 5.85374e-14 * ne * phi * (1.0 / (Thetae * Thetae * Thetae * Te[n]));
-      kappaGInv = (
-        1.0 / (async * std::pow(phi, -bsync) * std::log(1.0 + csync * phi)) + (
-        1.0 / (dsync * std::pow(phi, -esync))));
-      kappa[n] = (g / kappaGInv) / rho[n];
+      neP     = rho[n] / (mu_e * mp);
+      ThetaeP = (kB * Te[n]) / (me * c * c);
+      nu_muP  = (3.0/2.0) * e_2pimc * std::sqrt(b2[n]) * ThetaeP * ThetaeP;
+      phiP    = kB * Te[n] / (h * nu_muP);
+      gP      = (5.85374e-14 * neP * phiP * (
+        1.0 / (ThetaeP * ThetaeP * ThetaeP * Te[n])));
+      kappaGInvP = (
+        1.0 / (async * std::pow(phiP, -bsync) * std::log(1.0 + csync * phiP)) 
+        + (1.0 / (dsync * std::pow(phiP, -esync))));
+      kappa[n] = (gP / kappaGInvP) / rho[n];
     }
   } else {
     #pragma omp parallel for private(n, \
-      ne, Thetae, nu_mu, phi, g, kappaGInv) 
+      neP, ThetaeP, nu_muP, phiP, gP, kappaGInvP) 
     for (n = 0; n < gridsize_3D; n++) {
-      ne     = rho[n] / (mu_e * mp);
-      Thetae = (kB * Te[n]) / (me * c * c);
-      nu_mu  = (3.0/2.0) * e_2pimc * std::sqrt(b2[n]) * Thetae * Thetae;
-      phi    = kB * Tr[n] / (h * nu_mu);
-      g = 5.85374e-14 * ne * phi * (1.0 / (Thetae * Thetae * Thetae * Tr[n]));
-      kappaGInv = (
-        1.0 / (async * std::pow(phi, -bsync) * std::log(1.0 + csync * phi)) + (
-        1.0 / (dsync * std::pow(phi, -esync))));
-      kappa[n] = (g / kappaGInv) / rho[n];
+      neP     = rho[n] / (mu_e * mp);
+      ThetaeP = (kB * Te[n]) / (me * c * c);
+      nu_muP  = (3.0/2.0) * e_2pimc * std::sqrt(b2[n]) * ThetaeP * ThetaeP;
+      phiP    = kB * Tr[n] / (h * nu_muP);
+      gP      = (5.85374e-14 * neP * phiP * (
+        1.0 / (ThetaeP * ThetaeP * ThetaeP * Tr[n])));
+      kappaGInvP = (
+        1.0 / (async * std::pow(phiP, -bsync) * std::log(1.0 + csync * phiP)) 
+        + (1.0 / (dsync * std::pow(phiP, -esync))));
+      kappa[n] = (gP / kappaGInvP) / rho[n];
     }
   }
 }
 
-void Opacity::getABCDESynch(int XRB, double& a, double& b, double& c, 
-    double& d, double& e) {
-  if (XRB) { // XRB synchrotron opacity coefficients
-    a = 1.27; 
-    b = 1.03; 
-    c = 0.000763;
-    d = 0.616;
-    e = 2.91;
-  } else { // AGN synchrotron opacity coefficients
-    a = 0.206; 
-    b = 2.59;
-    c = 3.44;
-    d = 9.33;
-    e = 3.09;
-  }
-}
-
-// default destructor
 Opacity::~Opacity() {};
 
-// default constructor
+// Radiation class
 Radiation::Radiation() {};
 
-// parameterized constructor
 Radiation::Radiation(const std::unordered_map<std::string, double>& params,
     const std::unordered_map<std::string, double>& CONSTANTS) 
-    : Opac(params, CONSTANTS)
 {
   rho0 = params.at("density_scale");
   c    = CONSTANTS.at("c");
@@ -340,16 +395,21 @@ Radiation::Radiation(const std::unordered_map<std::string, double>& params,
   sigT = CONSTANTS.at("sigmaT");
   eStatC = CONSTANTS.at("e");
   kappaMol = 3.0 * zAB;
-
+  this->params = params;
+  this->CONSTANTS = CONSTANTS;
 };
 
+// Total absorption and emission rates
 void Radiation::qAbs(double* qabs, float* rho, float* Te, float* Tr,
   float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  #pragma omp parallel for private(n, kappaAbs)
+  Opacity opac(this->params, this->CONSTANTS);
+  int n;
+  double kappaAbs;
+  #pragma omp parallel for private(n, kappaAbs) firstprivate(opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappaAbs = Opac.kappaAbsTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
+    kappaAbs = opac.kappaAbsTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
     qabs[n]  = kappaAbs * rho[n] * aRAD * Tr[n] * Tr[n] * Tr[n] * Tr[n] * c;  
   }
 }
@@ -358,20 +418,20 @@ void Radiation::qEmi(double* qemi, float* rho, float* Te, float* Tr,
   float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  #pragma omp parallel for private(n, kappaEmi)
+  Opacity opac(this->params, this->CONSTANTS);
+  int n;
+  double kappaEmi;
+  #pragma omp parallel for private(n, kappaEmi) firstprivate(opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappaEmi = Opac.kappaEmiTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
+    kappaEmi = opac.kappaEmiTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
     qemi[n]  = kappaEmi * rho[n] * aRAD * Te[n] * Te[n] * Te[n] * Te[n] * c;  
   }
 }
 
-// default destructor
 Radiation::~Radiation() {};
 
-// default constructor
 Read::Read() {};
 
-// parameterized constructor
 Read::Read(std::string dir, int axisym, int by_block, int export_raytracing,
     const std::unordered_map<std::string, double>& amr,
     const std::unordered_map<std::string, std::vector<int>>& amr_info,
@@ -383,7 +443,6 @@ Read::Read(std::string dir, int axisym, int by_block, int export_raytracing,
   this->axisym            = axisym;
   this->by_block          = by_block;
   this->export_raytracing = export_raytracing;
-  n = 0;
   dbl_size = sizeof(double);
   float_size = sizeof(float);
   // nPrim: rho, uGas, uu (4-vector), B (3-vector)
@@ -470,23 +529,32 @@ void Read::readGrid(float* x1, float* x2, float* x3,
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
 
-  #pragma omp parallel for private(n, iGlob, jGlob, kGlob, \
-  fin, filename, bsLR, coord, exponent, offset, upscale, \
-  iLoc, jLoc, kLoc, iStrt, iEnd, iStp, ii, \
-  iInRange, jInRange, kInRange, read_data, read_file, \
-  index_3D, index_2D, gridsize_3D, gridsize_2D)
+  long int gridsize_2D, gridsize_3D, index_2D, index_3D;
+  int n; // index over blocks
+  int iGlob, jGlob, kGlob; // global indices
+  int ii; // index over metric components
+  AMRVar iStrt, iEnd, iStp; // loop variables
+  bool iInRange, jInRange, kInRange;
+  std::string filename;
+  FILE* fin;
+  int read_data, read_file;
+  ReadIn readIn; 
+
+  #pragma omp parallel for private(n, iGlob, jGlob, kGlob, ii, \
+    iStrt, iEnd, iStp, index_3D, \
+    index_2D, gridsize_3D, gridsize_2D, \
+    iInRange, jInRange, kInRange, \
+    filename, fin, read_data, read_file) firstprivate(readIn)
   for (n = 0; n < nb; n++) {
     gridsize_2D = (i_max - i_min) * (j_max - j_min);
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
     std::vector<double> tempArray(58);
     std::vector<int> levelArray(gridsize_2D);
-    exponent.x1 = maxLevel.x1 - amrLevel.x1[n_ord[n]];
-    exponent.x2 = maxLevel.x2 - amrLevel.x2[n_ord[n]];
-    exponent.x3 = maxLevel.x3 - amrLevel.x3[n_ord[n]];
-    coord.x1    = amrCoord.x1[n_ord[n]];
-    coord.x2    = amrCoord.x2[n_ord[n]];
-    coord.x3    = amrCoord.x3[n_ord[n]];
 
+    iInRange = false;
+    jInRange = false;
+    kInRange = false;
+    
     filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
 
     if (omp_get_thread_num() == 0) {
@@ -494,85 +562,25 @@ void Read::readGrid(float* x1, float* x2, float* x3,
     }
 
     checkFileExists(filename);
-    checkGridFileSize(filename, nvar, nmtc);
+    checkGridFileSize(filename);
     fin = fopen(filename.c_str(), "rb");
     
     read_file = 0;
     read_data = 0;
-
-    // either 2^n or 1 (not used if by_block == 1)
-    upscale.x1 = pow(2, exponent.x1); 
-    upscale.x2 = pow(2, exponent.x2);
-    upscale.x3 = pow(2, exponent.x3);
-
-    // allow data to be read into 4D arrays (organized by block) 
-    // or as a 3D unigrid array
-    setLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, 
-             bs1, coord.x1, upscale.x1, lowRes.x1);
-    setLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, 
-             bs2, coord.x2, upscale.x2, lowRes.x2);
-    setLoops(iStrt.x3, iEnd.x3, iStp.x3, offset.x3, 
-             bs3, coord.x3, upscale.x3, lowRes.x3);
-
+   
+    readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+    
     for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
       for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
         for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-          if (by_block) {
-            read_data = 1;
-            if (read_file == 0) {
-              read_file = 1;
-            }
-          } else {
-            // if not by block, check data range
-            iInRange = (iGlob / lowRes.x1 >= i_min && 
-              iGlob / lowRes.x1 < i_max);
-              
-            jInRange = (jGlob / lowRes.x2 >= j_min && 
-              jGlob / lowRes.x2 < j_max);
-              
-            kInRange = (kGlob / lowRes.x3 >= k_min && 
-              kGlob / lowRes.x3 < k_max);
-
-            if (iInRange && jInRange && kInRange) {
-              read_data = 1;
-              if (read_file == 0) {
-                read_file = 1;
-              }
-            }
+          read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+            iInRange, jInRange, kInRange);
+          if (read_file == 0 && read_data == 1) {
+            read_file = 1;
           }
-
           if (read_data) {
-            if (by_block) {
-              // convert to 1D index to read in binary data
-              bsLR.x1 = bs1 / lowRes.x1;
-              bsLR.x2 = bs2 / lowRes.x2;
-              bsLR.x3 = bs3 / lowRes.x3;
-
-              index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                          (iGlob * bsLR.x2 * bsLR.x3) + 
-                          (jGlob * bsLR.x3) + kGlob);
-              // gridsize is only modified if by block
-              gridsize_3D = nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-                  
-              fseek(fin, ((iGlob * lowRes.x1) * bs2 * bs3 + 
-                (jGlob * lowRes.x2) * bs3 + 
-                (kGlob * lowRes.x3)) * nvar * dbl_size, SEEK_SET);
-              fread(&tempArray[0], dbl_size, nvar, fin);
-            } else {
-              // indices on the given block
-              iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;            
-              jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;            
-              kLoc = (kGlob - (coord.x3 * upscale.x3 * bs3)) / upscale.x3;
-
-              // convert to 1D index to read in binary data
-              index_3D = (((iGlob / lowRes.x1) - i_min) * isize +
-                          ((jGlob / lowRes.x2) - j_min) * jsize +
-                          ((kGlob / lowRes.x3) - k_min));
-                                  
-              fseek(fin, ((iLoc * bs2 * bs3 + jLoc * bs3 + kLoc) * 
-                nvar * dbl_size), SEEK_SET);
-              fread(&tempArray[0], dbl_size, nvar, fin);
-            } 	
+            readIn.readGridData(fin, tempArray, index_3D, gridsize_3D,
+              n, iGlob, jGlob, kGlob, *this);
 
             // if export_raytracing = 1 then average by the volume
             // low_res is down-sampling (skipping data) NOT averaging
@@ -603,61 +611,15 @@ void Read::readGrid(float* x1, float* x2, float* x3,
 
     if (read_file) {
       if (axisym) {
-        setMetricLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, 
-                       bs1, coord.x1, upscale.x1, lowRes.x1);
-        setMetricLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, 
-                       bs2, coord.x2, upscale.x2, lowRes.x2);
+        readIn.setMetricLoops2D(iStrt, iEnd, iStp, *this);
 
         for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
           for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
-            if (by_block) {
-              read_data = 1;
-            } else {
-              // if not by block, check data range
-              iInRange = (iGlob / lowRes.x1 >= i_min && 
-                iGlob / lowRes.x1 < i_max);
-              
-              jInRange = (jGlob / lowRes.x2 >= j_min && 
-                jGlob / lowRes.x2 < j_max);
-              
-              if (iInRange && jInRange) {
-                read_data = 1;
-              }
-            }
-
+            read_data = checkIndexInRange(n, iGlob, jGlob, levelArray, 
+              index_2D, iInRange, jInRange);
             if (read_data) {
-              if (by_block) {
-                // convert to 1D index to read in binary data
-                bsLR.x1 = bs1 / lowRes.x1;
-                bsLR.x2 = bs2 / lowRes.x2;
-                bsLR.x3 = bs3 / lowRes.x3;
-
-                index_2D = ((n * bsLR.x1 * bsLR.x2) + 
-                            (iGlob * bsLR.x2) + jGlob);
-                // gridsize is only modified if by block
-                gridsize_2D = nb * bsLR.x1 * bsLR.x2;
-
-                fseek(fin, 
-                (nvar * bs1 * bs2 * bs3 + 
-                 (iGlob * lowRes.x1) * bs2 * (nmtc * 16 + 1) + 
-                 (jGlob * lowRes.x2) * (nmtc * 16 + 1)) * dbl_size, 
-                 SEEK_SET);
-                fread(&tempArray[0], dbl_size, (nmtc * 16 + 1), fin);
-              } else {                    
-                // indices on the given block
-                iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;
-                jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;
-
-                index_2D = (((iGlob / lowRes.x1) - i_min) * (j_max - j_min) + 
-                  ((jGlob / lowRes.x2) - j_min));      
-
-                fseek(fin, 
-                (nvar * bs1 * bs2 * bs3 + 
-                 iLoc * bs2 * (nmtc * 16 + 1) +
-                 jLoc * (nmtc * 16 + 1)) * dbl_size, SEEK_SET);
-                fread(&tempArray[0], dbl_size, (nmtc * 16 + 1), fin);
-              }              
-
+              readIn.readMetricData2D(fin, tempArray, index_2D, gridsize_2D, 
+                n, iGlob, jGlob, *this);
               for (ii = 0; ii < 16; ii++) {
                 gcov[ii * gridsize_2D + index_2D] = tempArray[ii];
               }
@@ -678,72 +640,16 @@ void Read::readGrid(float* x1, float* x2, float* x3,
           }  // jGlob
         } // iGlob
       } else {
-        setMetricLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, 
-                       bs1, coord.x1, upscale.x1, lowRes.x1);
-        setMetricLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, 
-                       bs2, coord.x2, upscale.x2, lowRes.x2);
-        setMetricLoops(iStrt.x3, iEnd.x3, iStp.x3, offset.x3, 
-                       bs3, coord.x3, upscale.x3, lowRes.x3);
+        readIn.setMetricLoops2D(iStrt, iEnd, iStp, *this);
 
         for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
           for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
             for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-              if (by_block) {
-                read_data = 1;
-              } else {
-                // if not by block, check data range
-                iInRange = (iGlob / lowRes.x1 >= i_min && 
-                  iGlob / lowRes.x1 < i_max);
-              
-                jInRange = (jGlob / lowRes.x2 >= j_min && 
-                  jGlob / lowRes.x2 < j_max);
-              
-                kInRange = (kGlob / lowRes.x3 >= k_min && 
-                  kGlob / lowRes.x3 < k_max);
-
-                if (iInRange && jInRange && kInRange) {
-                  read_data = 1;
-                }
-              }
-
+              read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+                iInRange, jInRange, kInRange);
               if (read_data) {
-                if (by_block) {
-                  // convert to 1D index to read in binary data
-                  bsLR.x1 = bs1 / lowRes.x1;
-                  bsLR.x2 = bs2 / lowRes.x2;
-                  bsLR.x3 = bs3 / lowRes.x3;
-
-                  index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                              (iGlob * bsLR.x2 * bsLR.x3) + 
-                              (jGlob * bsLR.x3) + kGlob);
-                  // gridsize is only modified if by block
-                  gridsize_3D = nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-
-                  fseek(fin, 
-                  (nvar * bs1 * bs2 * bs3 + 
-                   (iGlob * lowRes.x1) * bs2 * bs3 * (nmtc * 16 + 1) + 
-                   (jGlob * lowRes.x2) * bs3 * (nmtc * 16 + 1) +
-                   (kGlob * lowRes.x3) * (nmtc * 16 + 1)) * dbl_size, 
-                   SEEK_SET);
-                  fread(&tempArray[0], dbl_size, (nmtc * 16 + 1), fin);
-                } else {
-                  // indices on the given block
-                  iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;
-                  jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;
-                  kLoc = (kGlob - (coord.x3 * upscale.x3 * bs3)) / upscale.x3;
-
-                  // convert to 1D index to read in binary data
-                  index_3D = (((iGlob / lowRes.x1) - i_min) * isize +
-                              ((jGlob / lowRes.x2) - j_min) * jsize +
-                              ((kGlob / lowRes.x3) - k_min));
-                  fseek(fin, 
-                  (nvar * bs1 * bs2 * bs3 +
-                   iLoc * bs2 * bs3 * (nmtc * 16 + 1) +
-                   jLoc * bs3 * (nmtc * 16 + 1) +
-                   kLoc * (nmtc * 16 + 1)) * dbl_size, SEEK_SET);
-                  fread(&tempArray[0], dbl_size, (nmtc * 16 + 1), fin);
-                }                
-
+                readIn.readMetricData3D(fin, tempArray, index_3D, gridsize_3D, 
+                  n, iGlob, jGlob, kGlob, *this);
                 for (ii = 0; ii < 16; ii++) {
                   gcov[ii * gridsize_3D + index_3D] = tempArray[ii];
                 }
@@ -767,34 +673,39 @@ void Read::readGrid(float* x1, float* x2, float* x3,
 }
 
 void Read::readGridCoords(float* x1, float* x2, float* x3, 
-    float* r, float* theta, float* phi) {
+  float* r, float* theta, float* phi) {
+
   // variables (nvar): x1, x2, x3, 
   // r, theta, phi, i (global), j (global), k (global)
   // metrics (nmtc): gcov, gcon, 
   // dxdxp (Jacobian from x1, x2, x3 -> r, theta, phi)
   nvar = 9; 
   nmtc = 3;
-      
+    
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
 
+  long int gridsize_3D, index_3D;
+  int n; // index over blocks
+  int iGlob, jGlob, kGlob; // global indices
+  AMRVar iStrt, iEnd, iStp; // loop variables
+  bool iInRange, jInRange, kInRange;
+  std::string filename;
+  FILE* fin;
+  int read_data, read_file;
+  ReadIn readIn; 
+
   #pragma omp parallel for private(n, iGlob, jGlob, kGlob, \
-  fin, filename, bsLR, coord, exponent, offset, upscale, \
-  iLoc, jLoc, kLoc, iStrt, iEnd, iStp, \
-  iInRange, jInRange, kInRange, ii, read_data, \
-  index_3D, index_2D, gridsize_3D, gridsize_2D)
+    iStrt, iEnd, iStp, index_3D, gridsize_3D, iInRange, jInRange, kInRange, \
+    filename, fin, read_data, read_file) firstprivate(readIn)
   for (n = 0; n < nb; n++) {
-    gridsize_2D = (i_max - i_min) * (j_max - j_min);
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
     std::vector<double> tempArray(58);
-    std::vector<int> levelArray(gridsize_2D);
-    exponent.x1 = maxLevel.x1 - amrLevel.x1[n_ord[n]];
-    exponent.x2 = maxLevel.x2 - amrLevel.x2[n_ord[n]];
-    exponent.x3 = maxLevel.x3 - amrLevel.x3[n_ord[n]];
-    coord.x1    = amrCoord.x1[n_ord[n]];
-    coord.x2    = amrCoord.x2[n_ord[n]];
-    coord.x3    = amrCoord.x3[n_ord[n]];
 
+    iInRange = false;
+    jInRange = false;
+    kInRange = false;
+  
     filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
 
     if (omp_get_thread_num() == 0) {
@@ -802,79 +713,26 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
     }
 
     checkFileExists(filename);
-    checkGridFileSize(filename, nvar, nmtc);
+    checkGridFileSize(filename);
     fin = fopen(filename.c_str(), "rb");
-    
+  
+    read_file = 0;
     read_data = 0;
-
-    // either 2^n or 1 (not used if by_block == 1)
-    upscale.x1 = pow(2, exponent.x1); 
-    upscale.x2 = pow(2, exponent.x2);
-    upscale.x3 = pow(2, exponent.x3);
-
-    // allow data to be read into 4D arrays (organized by block) 
-    // or as a 3D unigrid array
-    setLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, 
-             bs1, coord.x1, upscale.x1, lowRes.x1);
-    setLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, 
-             bs2, coord.x2, upscale.x2, lowRes.x2);
-    setLoops(iStrt.x3, iEnd.x3, iStp.x3, offset.x3, 
-             bs3, coord.x3, upscale.x3, lowRes.x3);
-
+ 
+    readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+  
     for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
       for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
         for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-          if (by_block) {
-            read_data = 1;
-          } else {
-            // if not by block, check data range
-            iInRange = (iGlob / lowRes.x1 >= i_min && 
-              iGlob / lowRes.x1 < i_max);
-              
-            jInRange = (jGlob / lowRes.x2 >= j_min && 
-              jGlob / lowRes.x2 < j_max);
-              
-            kInRange = (kGlob / lowRes.x3 >= k_min && 
-              kGlob / lowRes.x3 < k_max);
-
-            if (iInRange && jInRange && kInRange) {
-              read_data = 1;
-            }
+          read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+            iInRange, jInRange, kInRange);
+          if (read_file == 0 && read_data == 1) {
+            read_file = 1;
           }
-
           if (read_data) {
-            if (by_block) {
-              // convert to 1D index to read in binary data
-              bsLR.x1 = bs1 / lowRes.x1;
-              bsLR.x2 = bs2 / lowRes.x2;
-              bsLR.x3 = bs3 / lowRes.x3;
+            readIn.readGridData(fin, tempArray, index_3D, gridsize_3D,
+              n, iGlob, jGlob, kGlob, *this);
 
-              index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                          (iGlob * bsLR.x2 * bsLR.x3) + 
-                          (jGlob * bsLR.x3) + kGlob);
-              // gridsize is only modified if by block
-              gridsize_3D = nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-                  
-              fseek(fin, ((iGlob * lowRes.x1) * bs2 * bs3 + 
-                (jGlob * lowRes.x2) * bs3 + 
-                (kGlob * lowRes.x3)) * nvar * dbl_size, SEEK_SET);
-              fread(&tempArray[0], dbl_size, nvar, fin);
-            } else {
-              // indices on the given block
-              iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;            
-              jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;            
-              kLoc = (kGlob - (coord.x3 * upscale.x3 * bs3)) / upscale.x3;
-
-              // convert to 1D index to read in binary data
-              index_3D = (((iGlob / lowRes.x1) - i_min) * isize +
-                          ((jGlob / lowRes.x2) - j_min) * jsize +
-                          ((kGlob / lowRes.x3) - k_min));
-                                  
-              fseek(fin, ((iLoc * bs2 * bs3 + jLoc * bs3 + kLoc) * 
-                nvar * dbl_size), SEEK_SET);
-              fread(&tempArray[0], dbl_size, nvar, fin);
-            } 	
-		
             // if export_raytracing = 1 then average by the volume
             // low_res is down-sampling (skipping data) NOT averaging
             // export_raytracing = 1: averaging while down-sampling
@@ -901,6 +759,7 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
         } // kGlob
       } // jGlob
     } // iGlob
+    fclose(fin);
   } // loop over n
 }
 
@@ -912,11 +771,23 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     float* uuNu1, float* uuNu2, float* uuNu3,
     float* nuNum1, float* nuNum2, float* nuNum3, float* tr1, float* tr2) {
   
-  nvar = nPrim + RADM1*nRadM1 + RES*nRes + TWOT*nTwoT + 
-    PNUM*nPnum + DOYE*nYe + DONUC*nNUC + NUM1*nNuM1 + DOTR*nTr;
+  nvar = nPrim + RADM1 * nRadM1 + RES * nRes + TWOT * nTwoT + 
+    PNUM * nPnum + DOYE * nYe + DONUC * nNUC + NUM1 * nNuM1 + DOTR * nTr;
 
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
+
+  long int gridsize_3D, index_3D;
+  int n, nStrt, nEnd; // variables for looping over blocks
+  int iFile, vStrt, ii; // file index and variable start index (vStrt)
+  int iGlob, jGlob, kGlob; // global indices
+  AMRVar iStrt, iEnd, iStp; // loop variables
+  bool iInRange, jInRange, kInRange;
+  BoolVar iNotInBlock; // is data in selection box/ on block?
+  std::string filename;
+  FILE* fin;
+  int read_data;
+  ReadIn readIn; 
 
   // count the number of output files that need to be read (fileCount)
   // this corresponds to the number of GPUs used in computation
@@ -937,14 +808,26 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     "/new_dump" + std::to_string(fileCount);
   }
 
+  // check if the number of blocks in all files equals nb
+  nbInFiles = std::accumulate(blocksInFile.begin(),
+                              blocksInFile.begin() + fileCount + 1, 0);
+  if (nbInFiles != nb) {
+    std::cout << "Error: number of total blocks != nb" << std::endl;
+    std::cout << "Number of blocks: " << nbInFiles << std::endl;
+    std::cout << "Expected number of blocks: " << nb << std::endl;
+  }
+
   #pragma omp parallel for private(iFile, n, nStrt, nEnd, vStrt, \
-  iGlob, jGlob, kGlob, iLoc, jLoc, kLoc, iStrt, iEnd, iStp, \
-  fin, filename, bsLR, coord, exponent, offset, upscale, ii, \
-  index_3D, index_2D, gridsize_3D, gridsize_2D, iNotInBlock, \
-  iInRange, jInRange, kInRange, read_data)
+    iGlob, jGlob, kGlob, ii, iStrt, iEnd, iStp, index_3D, gridsize_3D, \
+    iInRange, jInRange, kInRange, iNotInBlock, \
+    filename, fin, read_data) firstprivate(readIn)
   for (iFile = 0; iFile < fileCount; iFile++) {
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
     std::vector<float> tempArray(nvar);
+
+    iInRange = false;
+    jInRange = false;
+    kInRange = false;
 
     filename = dir + "/dumps" + std::to_string(fnum) + 
     "/new_dump" + std::to_string(iFile);
@@ -961,91 +844,23 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     nEnd = nStrt + blocksInFile[iFile + 1];
 
     for (n = nStrt; n < nEnd; n++) {
-      exponent.x1 = maxLevel.x1 - amrLevel.x1[n_ord[n]];
-      exponent.x2 = maxLevel.x2 - amrLevel.x2[n_ord[n]];
-      exponent.x3 = maxLevel.x3 - amrLevel.x3[n_ord[n]];
-      coord.x1    = amrCoord.x1[n_ord[n]];
-      coord.x2    = amrCoord.x2[n_ord[n]];
-      coord.x3    = amrCoord.x3[n_ord[n]];
+      readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
 
-      // either 2^n or 1 (not used if by_block == 1)
-      upscale.x1  = pow(2, exponent.x1); 
-      upscale.x2  = pow(2, exponent.x2);
-      upscale.x3  = pow(2, exponent.x3);
-
-      // allow data to be read into 4D arrays (organized by block) 
-      // or as a 3D unigrid array
-      setLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, 
-               bs1, coord.x1, upscale.x1, lowRes.x1);
-      setLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, 
-               bs2, coord.x2, upscale.x2, lowRes.x2);
-      setLoops(iStrt.x3, iEnd.x3, iStp.x3, offset.x3, 
-               bs3, coord.x3, upscale.x3, lowRes.x3);
-    
       // do not loop through block if block not in data set
       // still loop through if low_res > bs
-      if (checkNotInBlock(iStrt, iEnd)) {
+      if (checkNotInBlock(iStrt, iEnd, iNotInBlock)) {
         continue;
       }
 
       for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
         for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
           for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-            if (by_block) {
-              read_data = 1;
-            } else {
-              // if not by block, check data range
-              iInRange = (iGlob / lowRes.x1 >= i_min && 
-                iGlob / lowRes.x1 < i_max);
-              
-              jInRange = (jGlob / lowRes.x2 >= j_min && 
-                jGlob / lowRes.x2 < j_max);
-              
-              kInRange = (kGlob / lowRes.x3 >= k_min && 
-                kGlob / lowRes.x3 < k_max);
-
-              if (iInRange && jInRange && kInRange) {
-                read_data = 1;
-              }
-            }
-            
+            read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+              iInRange, jInRange, kInRange);
             if (read_data) {
-              if (by_block) {
-                // convert to 1D index to read in binary data
-                bsLR.x1 = bs1 / lowRes.x1;
-                bsLR.x2 = bs2 / lowRes.x2;
-                bsLR.x3 = bs3 / lowRes.x3;
+              readIn.readPrimsData(fin, tempArray, index_3D, gridsize_3D, 
+                n, nStrt, iGlob, jGlob, kGlob, *this);
 
-                index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                            (iGlob * bsLR.x2 * bsLR.x3) + 
-                            (jGlob * bsLR.x3) + kGlob);
-                // gridsize is only modified if by block
-                gridsize_3D = nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-                  
-                fseek(fin, 
-                (((n - nStrt) * bs1 * bs2 * bs3) +
-                 (iGlob * lowRes.x1) * bs2 * bs3 + 
-                 (jGlob * lowRes.x2) * bs3 + 
-                 (kGlob * lowRes.x3)) * nvar * float_size, SEEK_SET);
-                fread(&tempArray[0], float_size, nvar, fin);
-
-              } else {
-                // indices on the given block
-                iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;            
-                jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;            
-                kLoc = (kGlob - (coord.x3 * upscale.x3 * bs3)) / upscale.x3;
-
-                // convert to 1D index to read in binary data
-                index_3D = (((iGlob / lowRes.x1) - i_min) * isize +
-                            ((jGlob / lowRes.x2) - j_min) * jsize +
-                            ((kGlob / lowRes.x3) - k_min));
-
-                fseek(fin, ((n - nStrt) * bs1 * bs2 * bs3 + 
-                (iLoc * bs2 * bs3) + 
-                (jLoc * bs3) + kLoc) * nvar * float_size, SEEK_SET);
-                fread(&tempArray[0], float_size, nvar, fin);
-              }
-		  	  
               if (export_raytracing) {
                 std::cout << "Raytracing not implemented." << std::endl;
               } else {
@@ -1148,7 +963,7 @@ void Read::checkFileExists(std::string filename) {
   }
 }
 
-void Read::checkGridFileSize(std::string filename, int nvar, int nmtc) {
+void Read::checkGridFileSize(std::string filename) {
   int expected_filesize;
   expected_filesize = (nvar * bs1 * bs2 * bs3 + 
     (bs1 * bs2 * (nmtc * 16 + 1)) * (axisym)  + 
@@ -1160,8 +975,88 @@ void Read::checkGridFileSize(std::string filename, int nvar, int nmtc) {
   }
 }
 
-void Read::setLoops(int &iStrt, int &iEnd, int &iStp, int &offset, 
-    int bs, int coord, int upscale, int low_res) {
+bool Read::checkNotInBlock(AMRVar iStrt, AMRVar iEnd, BoolVar iNotInBlock) {
+  // do not loop through block if block not in data set
+  // still loop through if low_res > bs
+  iNotInBlock.x1 = iStrt.x1/ lowRes.x1 > i_max || iEnd.x1/ lowRes.x1 <= i_min;
+  iNotInBlock.x2 = iStrt.x2/ lowRes.x2 > j_max || iEnd.x2/ lowRes.x2 <= j_min;
+  iNotInBlock.x3 = iStrt.x3/ lowRes.x3 > k_max || iEnd.x3/ lowRes.x3 <= k_min;
+  if ((iNotInBlock.x1 && lowRes.x1 < bs1) || 
+      (iNotInBlock.x2 && lowRes.x2 < bs2) || 
+      (iNotInBlock.x3 && lowRes.x3 < bs3)) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+int Read::checkIndexInRange(int iGlob, int jGlob, int kGlob,
+    bool iInRange, bool jInRange, bool kInRange) {
+  if (by_block) {
+    return 1;
+  } else {
+    // if not by block, check data range
+    iInRange = (iGlob / lowRes.x1 >= i_min && iGlob / lowRes.x1 < i_max);
+    jInRange = (jGlob / lowRes.x2 >= j_min && jGlob / lowRes.x2 < j_max);
+    kInRange = (kGlob / lowRes.x3 >= k_min && kGlob / lowRes.x3 < k_max);
+    if (iInRange && jInRange && kInRange) {
+      return 1;
+    } else {
+      return 0;
+    }
+  }
+}
+
+int Read::checkIndexInRange(int n, int iGlob, int jGlob, 
+    const std::vector<int>& levelArray, int index_2D, 
+    bool iInRange, bool jInRange) {
+  if (by_block) {
+    return 1;
+  } else {
+    // if not by block, check data range
+    iInRange = (iGlob / lowRes.x1 >= i_min && iGlob / lowRes.x1 < i_max);
+    jInRange = (jGlob / lowRes.x2 >= j_min && jGlob / lowRes.x2 < j_max);
+
+    if (iInRange && jInRange) {
+      // convert to 1D index to read in binary data
+      index_2D = (((iGlob / lowRes.x1) - i_min) * (j_max - j_min) + 
+                  ((jGlob / lowRes.x2) - j_min));
+
+      // if you have an axisymmetric metric then take the
+      // coordinates from the highest refinement level
+      if (MAX(amrLevel.x1[n_ord[n]],
+          MAX(amrLevel.x2[n_ord[n]],
+              amrLevel.x3[n_ord[n]])) >= levelArray[index_2D]) {
+        return 1;
+      } else {
+        return 0;
+      }
+    } else {
+      return 0;
+    }
+  }
+}
+
+Read::~Read() {};
+
+ReadIn::ReadIn() {};
+
+ReadIn::ReadIn (ReadIn& readIn) {
+  iLoc = readIn.iLoc;
+  jLoc = readIn.jLoc;
+  kLoc = readIn.kLoc;
+
+  bsLR     = readIn.bsLR;
+  coord    = readIn.coord;
+  exponent = readIn.exponent;
+  offset   = readIn.offset;
+  upscale  = readIn.upscale;
+
+};
+
+void ReadIn::setLoops(int &iStrt, int &iEnd, int &iStp, int &offset, 
+    int bs, int coord, int upscale, int low_res, int by_block, 
+    int export_raytracing) {
   if (by_block) {
     iStrt = 0;
     iEnd  = bs / low_res;
@@ -1171,17 +1066,54 @@ void Read::setLoops(int &iStrt, int &iEnd, int &iStp, int &offset,
     offset = (low_res - (coord * upscale * bs) % low_res) % low_res;
     iStrt  = coord * (upscale * bs) + offset;
     iEnd   = (coord + 1) * (upscale * bs);
-
-    // if export_raytracing = 1: then you're averaging over the 
-    // blocks set by low_res 
-    // if export_raytracing = 0: go up by low_res, which may be 1
-    // the 1*flag + (1-flag) logic is good on GPUs since it avoids an "if" 
-    iStp  = 1 * export_raytracing + low_res * (1 - export_raytracing);
+    iStp   = 1 * export_raytracing + low_res * (1 - export_raytracing);
   }
 }
 
-void Read::setMetricLoops(int &iStrt, int &iEnd, int &iStp, int &offset, 
-    int bs, int coord, int upscale, int low_res) {
+void ReadIn::setLoops3D(int n, AMRVar &iStrt, AMRVar &iEnd, AMRVar &iStp, 
+    const Read &read) {
+  exponent.x1 = read.maxLevel.x1 - read.amrLevel.x1[read.n_ord[n]];
+  exponent.x2 = read.maxLevel.x2 - read.amrLevel.x2[read.n_ord[n]];
+  exponent.x3 = read.maxLevel.x3 - read.amrLevel.x3[read.n_ord[n]];
+  coord.x1    = read.amrCoord.x1[read.n_ord[n]];
+  coord.x2    = read.amrCoord.x2[read.n_ord[n]];
+  coord.x3    = read.amrCoord.x3[read.n_ord[n]];
+
+  // either 2^n or 1 (not used if by_block == 1)
+  upscale.x1 = pow(2, exponent.x1); 
+  upscale.x2 = pow(2, exponent.x2);
+  upscale.x3 = pow(2, exponent.x3);
+
+  // allow data to be read into 4D arrays (organized by block) 
+  // or as a 3D unigrid array
+  setLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, read.bs1, coord.x1, 
+    upscale.x1, read.lowRes.x1, read.by_block, read.export_raytracing);
+  setLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, read.bs2, coord.x2, 
+    upscale.x2, read.lowRes.x2, read.by_block, read.export_raytracing);
+  setLoops(iStrt.x3, iEnd.x3, iStp.x3, offset.x3, read.bs3, coord.x3, 
+    upscale.x3, read.lowRes.x3, read.by_block, read.export_raytracing);
+}
+
+void ReadIn::setMetricLoops2D(AMRVar &iStrt, AMRVar &iEnd, AMRVar &iStp, 
+    const Read &read) {
+  setMetricLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, 
+    read.bs1, coord.x1, upscale.x1, read.lowRes.x1, read.by_block);
+  setMetricLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, 
+    read.bs2, coord.x2, upscale.x2, read.lowRes.x2, read.by_block);
+}
+
+void ReadIn::setMetricLoops3D(AMRVar &iStrt, AMRVar &iEnd, AMRVar &iStp, 
+  const Read &read) {
+  setMetricLoops(iStrt.x1, iEnd.x1, iStp.x1, offset.x1, 
+    read.bs1, coord.x1, upscale.x1, read.lowRes.x1, read.by_block);
+  setMetricLoops(iStrt.x2, iEnd.x2, iStp.x2, offset.x2, 
+    read.bs2, coord.x2, upscale.x2, read.lowRes.x2, read.by_block);
+  setMetricLoops(iStrt.x3, iEnd.x3, iStp.x3, offset.x3, 
+    read.bs3, coord.x3, upscale.x3, read.lowRes.x3, read.by_block);
+}
+
+void ReadIn::setMetricLoops(int &iStrt, int &iEnd, int &iStp, 
+    int &offset, int bs, int coord, int upscale, int low_res, int by_block) {
   if (by_block) {
     iStrt = 0;
     iEnd  = bs / low_res;
@@ -1195,26 +1127,156 @@ void Read::setMetricLoops(int &iStrt, int &iEnd, int &iStp, int &offset,
   }
 }
 
-bool Read::checkNotInBlock(AMRVar iStrt, AMRVar iEnd) {
-  // do not loop through block if block not in data set
-  // still loop through if low_res > bs
-  iNotInBlock.x1 = iStrt.x1 / lowRes.x1 > i_max || 
-                   iEnd.x1 / lowRes.x1 <= i_min;
-  iNotInBlock.x2 = iStrt.x2 / lowRes.x2 > j_max || 
-                   iEnd.x2 / lowRes.x2 <= j_min;
-  iNotInBlock.x3 = iStrt.x3 / lowRes.x3 > k_max || 
-                   iEnd.x3 / lowRes.x3 <= k_min;
-  if ((iNotInBlock.x1 && lowRes.x1 < bs1) || 
-      (iNotInBlock.x2 && lowRes.x2 < bs2) || 
-      (iNotInBlock.x3 && lowRes.x3 < bs3)) {
-    return true;
+void ReadIn::readGridData(FILE* fin, std::vector<double>& tempArray,
+    long int &index_3D, long int &gridsize_3D, 
+    int n, int iGlob, int jGlob, int kGlob, const Read &read) {
+  if (read.by_block) {
+    // convert to 1D index to read in binary data
+    bsLR.x1 = read.bs1 / read.lowRes.x1;
+    bsLR.x2 = read.bs2 / read.lowRes.x2;
+    bsLR.x3 = read.bs3 / read.lowRes.x3;
+    
+    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
+      (iGlob * bsLR.x2 * bsLR.x3) + (jGlob * bsLR.x3) + kGlob);
+      
+    // gridsize is only modified if by block
+    gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
+                      
+    fseek(fin, ((iGlob * read.lowRes.x1) * read.bs2 * read.bs3 + 
+                (jGlob * read.lowRes.x2) * read.bs3 + 
+                (kGlob * read.lowRes.x3)) * read.nvar * read.dbl_size, 
+                SEEK_SET);
+    fread(&tempArray[0], read.dbl_size, read.nvar, fin);
   } else {
-    return false;
+    // indices on the given block
+    iLoc = (iGlob - (coord.x1 * upscale.x1 * read.bs1)) / upscale.x1;            
+    jLoc = (jGlob - (coord.x2 * upscale.x2 * read.bs2)) / upscale.x2;            
+    kLoc = (kGlob - (coord.x3 * upscale.x3 * read.bs3)) / upscale.x3;
+    
+    // convert to 1D index to read in binary data
+    index_3D = (((iGlob / read.lowRes.x1) - read.i_min) * read.isize +
+                ((jGlob / read.lowRes.x2) - read.j_min) * read.jsize +
+                ((kGlob / read.lowRes.x3) - read.k_min));
+                                      
+    fseek(fin, ((iLoc * read.bs2 * read.bs3 + 
+      jLoc * read.bs3 + kLoc) * read.nvar * read.dbl_size), SEEK_SET);
+    fread(&tempArray[0], read.dbl_size, read.nvar, fin);
+  }  
+}
+
+void ReadIn::readMetricData2D(FILE* fin, std::vector<double>& tempArray,
+    long int &index_2D, long int &gridsize_2D, 
+    int n, int iGlob, int jGlob, const Read &read) {
+  if (read.by_block) {
+    // convert to 1D index to read in binary data
+    bsLR.x1 = read.bs1 / read.lowRes.x1;
+    bsLR.x2 = read.bs2 / read.lowRes.x2;
+    bsLR.x3 = read.bs3 / read.lowRes.x3;
+
+    index_2D = ((n * bsLR.x1 * bsLR.x2) + (iGlob * bsLR.x2) + jGlob);
+  
+    // gridsize is only modified if by block
+    gridsize_2D = read.nb * bsLR.x1 * bsLR.x2;
+
+    fseek(fin, (read.nvar * read.bs1 * read.bs2 * read.bs3 + 
+      (iGlob * read.lowRes.x1) * read.bs2 * (read.nmtc * 16 + 1) + 
+      (jGlob * read.lowRes.x2) * (read.nmtc * 16+1)) * read.dbl_size, 
+      SEEK_SET);
+    fread(&tempArray[0], read.dbl_size, (read.nmtc * 16 + 1), fin);
+  } else {
+    // indices on the given block
+    iLoc = (iGlob - (coord.x1 * upscale.x1 * read.bs1)) / upscale.x1;            
+    jLoc = (jGlob - (coord.x2 * upscale.x2 * read.bs2)) / upscale.x2; 
+
+    index_2D = (
+      ((iGlob / read.lowRes.x1) - read.i_min) *  (read.j_max - read.j_min) + 
+      ((jGlob / read.lowRes.x2) - read.j_min));           
+
+    fseek(fin, (read.nvar * read.bs1 * read.bs2 * read.bs3 + 
+      iLoc * read.bs2 * (read.nmtc * 16 + 1) +
+      jLoc * (read.nmtc * 16 + 1)) * read.dbl_size, SEEK_SET);
+    fread(&tempArray[0], read.dbl_size, (read.nmtc * 16 + 1), fin);
   }
 }
 
-// default destructor
-Read::~Read() {};
+void ReadIn::readMetricData3D(FILE* fin, std::vector<double>& tempArray,
+    long int &index_3D, long int &gridsize_3D, 
+    int n, int iGlob, int jGlob, int kGlob, const Read &read) {
+  if (read.by_block) {
+    // convert to 1D index to read in binary data
+    bsLR.x1 = read.bs1 / read.lowRes.x1;
+    bsLR.x2 = read.bs2 / read.lowRes.x2;
+    bsLR.x3 = read.bs3 / read.lowRes.x3;
+
+    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
+                (iGlob * bsLR.x2 * bsLR.x3) + 
+                (jGlob * bsLR.x3) + kGlob);
+    // gridsize is only modified if by block
+    gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
+
+    fseek(fin, (read.nvar * read.bs1 * read.bs2 * read.bs3 + 
+      (iGlob * read.lowRes.x1) * read.bs2 * read.bs3 * (read.nmtc * 16 + 1) + 
+      (jGlob * read.lowRes.x2) * read.bs3 * (read.nmtc * 16 + 1) +
+      (kGlob * read.lowRes.x3) * (read.nmtc * 16+1)) * read.dbl_size, 
+      SEEK_SET);
+    fread(&tempArray[0], read.dbl_size, (read.nmtc * 16 + 1), fin);
+  } else {
+    // indices on the given block
+    iLoc = (iGlob - (coord.x1 * upscale.x1 * read.bs1)) / upscale.x1;            
+    jLoc = (jGlob - (coord.x2 * upscale.x2 * read.bs2)) / upscale.x2;            
+    kLoc = (kGlob - (coord.x3 * upscale.x3 * read.bs3)) / upscale.x3;
+  
+    // convert to 1D index to read in binary data
+    index_3D = (((iGlob / read.lowRes.x1) - read.i_min) * read.isize +
+                ((jGlob / read.lowRes.x2) - read.j_min) * read.jsize +
+                ((kGlob / read.lowRes.x3) - read.k_min));
+    fseek(fin, (read.nvar * read.bs1 * read.bs2 * read.bs3 +
+      iLoc * read.bs2 * read.bs3 * (read.nmtc * 16 + 1) +
+      jLoc * read.bs3 * (read.nmtc * 16 + 1) +
+      kLoc * (read.nmtc * 16 + 1)) * read.dbl_size, SEEK_SET);
+    fread(&tempArray[0], read.dbl_size, (read.nmtc * 16 + 1), fin);
+  }
+}
+
+void ReadIn::readPrimsData(FILE* fin, std::vector<float>& tempArray,
+    long int &index_3D, long int &gridsize_3D, int n, int nStrt, 
+    int iGlob, int jGlob, int kGlob, const Read &read) {
+  if (read.by_block) {
+    // convert to 1D index to read in binary data
+    bsLR.x1 = read.bs1 / read.lowRes.x1;
+    bsLR.x2 = read.bs2 / read.lowRes.x2;
+    bsLR.x3 = read.bs3 / read.lowRes.x3;
+
+    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
+      (iGlob * bsLR.x2 * bsLR.x3) + (jGlob * bsLR.x3) + kGlob);
+
+    // gridsize is only modified if by block
+    gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
+                
+    fseek(fin, (((n - nStrt) * read.bs1 * read.bs2 * read.bs3) +
+      (iGlob * read.lowRes.x1) * read.bs2 * read.bs3 + 
+      (jGlob * read.lowRes.x2) * read.bs3 + 
+      (kGlob * read.lowRes.x3)) * read.nvar * read.float_size, 
+      SEEK_SET);
+    fread(&tempArray[0], read.float_size, read.nvar, fin);
+  } else {
+    // indices on the given block
+    iLoc = (iGlob - (coord.x1 * upscale.x1 * read.bs1)) / upscale.x1;            
+    jLoc = (jGlob - (coord.x2 * upscale.x2 * read.bs2)) / upscale.x2;            
+    kLoc = (kGlob - (coord.x3 * upscale.x3 * read.bs3)) / upscale.x3;
+
+    // convert to 1D index to read in binary data
+    index_3D = (((iGlob / read.lowRes.x1) - read.i_min) * read.isize +
+                ((jGlob / read.lowRes.x2) - read.j_min) * read.jsize +
+                ((kGlob / read.lowRes.x3) - read.k_min));                
+    fseek(fin, ((n - nStrt) * read.bs1 * read.bs2 * read.bs3 + 
+      (iLoc * read.bs2 * read.bs3) + (jLoc * read.bs3) + kLoc) * (
+      read.nvar * read.float_size), SEEK_SET);
+    fread(&tempArray[0], read.float_size, read.nvar, fin);  
+  }
+}
+
+ReadIn::~ReadIn() {};
 
 // default constructor
 Tools::Tools() {};
@@ -1460,199 +1522,3 @@ int main() {
   std::cout << "Executing hamr_read.cpp" << std::endl;
   return 0;
 }
-
-/*
-int Read::checkIndexInRange(int n, int iGlob, int jGlob, 
-    const std::vector<int>& levelArray, AMRVec amrLevel,
-    const std::vector<int> n_ord) {
-  if (by_block) {
-    return 1;
-  } else {
-    // if not by block, check data range
-    iInRange = (iGlob / lowRes.x1 >= i_min && iGlob / lowRes.x1 < i_max);
-    jInRange = (jGlob / lowRes.x2 >= j_min && jGlob / lowRes.x2 < j_max);
-
-    if (iInRange && jInRange) {
-      // convert to 1D index to read in binary data
-      index_2D = (((iGlob / lowRes.x1) - i_min) * (j_max - j_min) + 
-                  ((jGlob / lowRes.x2) - j_min));
-
-      // if you have an axisymmetric metric then take the
-      // coordinates from the highest refinement level
-      if (MAX(amrLevel.x1[n_ord[n]],
-          MAX(amrLevel.x2[n_ord[n]],
-              amrLevel.x3[n_ord[n]])) >= levelArray[index_2D]) {
-        return 1;
-      } else {
-        return 0;
-      }
-    } else {
-      return 0;
-    }
-  }
-}
-
-int Read::checkIndexInRange(int iGlob, int jGlob, int kGlob) {
-  if (by_block) {
-    return 1;
-  } else {
-    // if not by block, check data range
-    iInRange = (iGlob / lowRes.x1 >= i_min && iGlob / lowRes.x1 < i_max);
-    jInRange = (jGlob / lowRes.x2 >= j_min && jGlob / lowRes.x2 < j_max);
-    kInRange = (kGlob / lowRes.x3 >= k_min && kGlob / lowRes.x3 < k_max);
-    if (iInRange && jInRange && kInRange) {
-      return 1;
-    } else {
-      return 0;
-    }
-  }
-}
-
-void Read::readGridData(std::vector<double>& tempArray,
-    long int &index_3D, long int &gridsize_3D,
-    int n, int iGlob, int jGlob, int kGlob,
-    AMRVar coord, AMRVar upscale, FILE* fin) {
-  if (by_block) {
-    // convert to 1D index to read in binary data
-    bsLR.x1 = bs1 / lowRes.x1;
-    bsLR.x2 = bs2 / lowRes.x2;
-    bsLR.x3 = bs3 / lowRes.x3;
-
-    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                      (iGlob * bsLR.x2 * bsLR.x3) + 
-                      (jGlob * bsLR.x3) + kGlob);
-    // gridsize is only modified if by block
-    gridsize_3D = nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-                  
-    fseek(fin, ((iGlob * lowRes.x1) * bs2 * bs3 + 
-                (jGlob * lowRes.x2) * bs3 + 
-                (kGlob * lowRes.x3)) * this->nvar * dbl_size, SEEK_SET);
-    fread(&tempArray[0], dbl_size, this->nvar, fin);
-  } else {
-    // indices on the given block
-    iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;            
-    jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;            
-    kLoc = (kGlob - (coord.x3 * upscale.x3 * bs3)) / upscale.x3;
-
-    // convert to 1D index to read in binary data
-    index_3D = (((iGlob / lowRes.x1) - i_min) * this->isize +
-                ((jGlob / lowRes.x2) - j_min) * this->jsize +
-                ((kGlob / lowRes.x3) - k_min));
-                                  
-    fseek(fin, 
-      ((iLoc * bs2 * bs3 + jLoc * bs3 + kLoc) * this->nvar * dbl_size), 
-      SEEK_SET);
-    fread(&tempArray[0], dbl_size, this->nvar, fin);
-  }
-}
-
-void Read::readMetricData2D(std::vector<double>& tempArray,
-    long int &index_2D, long int &gridsize_2D,
-    int n, int iGlob, int jGlob, AMRVar coord, AMRVar upscale, FILE* fin) {
-  if (by_block) {
-    // convert to 1D index to read in binary data
-    bsLR.x1 = bs1 / lowRes.x1;
-    bsLR.x2 = bs2 / lowRes.x2;
-    bsLR.x3 = bs3 / lowRes.x3;
-
-    index_2D = ((n * bsLR.x1 * bsLR.x2) + (iGlob * bsLR.x2) + jGlob);
-    // gridsize is only modified if by block
-    gridsize_2D = nb * bsLR.x1 * bsLR.x2;
-
-    fseek(fin, (this->nvar * bs1 * bs2 * bs3 + 
-      (iGlob * lowRes.x1) * bs2 * (this->nmtc * 16 + 1) + 
-      (jGlob * lowRes.x2) * (this->nmtc * 16 + 1)) * dbl_size, SEEK_SET);
-    fread(&tempArray[0], dbl_size, (this->nmtc * 16 + 1), fin);
-  } else {
-    // indices on the given block
-    iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;            
-    jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2; 
-
-    index_2D = (((iGlob / lowRes.x1) - i_min) * (j_max - j_min) + 
-      ((jGlob / lowRes.x2) - j_min));           
-
-    fseek(fin, (this->nvar * bs1 * bs2 * bs3 + 
-      iLoc * bs2 * (this->nmtc * 16 + 1) +
-      jLoc * (this->nmtc * 16 + 1)) * dbl_size, SEEK_SET);
-    fread(&tempArray[0], dbl_size, (this->nmtc * 16 + 1), fin);
-  }
-}
-
-void Read::readMetricData3D(std::vector<double>& tempArray,
-    long int &index_3D, long int &gridsize_3D,
-    int n, int iGlob, int jGlob, int kGlob,
-    AMRVar coord, AMRVar upscale, FILE* fin) {
-  if (by_block) {
-    // convert to 1D index to read in binary data
-    bsLR.x1 = bs1 / lowRes.x1;
-    bsLR.x2 = bs2 / lowRes.x2;
-    bsLR.x3 = bs3 / lowRes.x3;
-
-    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                (iGlob * bsLR.x2 * bsLR.x3) + 
-                (jGlob * bsLR.x3) + kGlob);
-    // gridsize is only modified if by block
-    gridsize_3D = nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-
-    fseek(fin, (nvar * bs1 * bs2 * bs3 + 
-       (iGlob * lowRes.x1) * bs2 * bs3 * (this->nmtc * 16 + 1) + 
-       (jGlob * lowRes.x2) * bs3 * (this->nmtc * 16 + 1) +
-       (kGlob * lowRes.x3) * (this->nmtc * 16 + 1)) * dbl_size, SEEK_SET);
-    fread(&tempArray[0], dbl_size, (this->nmtc * 16 + 1), fin);
-  } else {
-    // indices on the given block
-    iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;            
-    jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;            
-    kLoc = (kGlob - (coord.x3 * upscale.x3 * bs3)) / upscale.x3;
-    
-    // convert to 1D index to read in binary data
-    index_3D = (((iGlob / lowRes.x1) - i_min) * this->isize +
-                ((jGlob / lowRes.x2) - j_min) * this->jsize +
-                ((kGlob / lowRes.x3) - k_min));
-    fseek(fin, (nvar * bs1 * bs2 * bs3 +
-                      iLoc * bs2 * bs3 * (this->nmtc * 16 + 1) +
-                      jLoc * bs3 * (this->nmtc * 16 + 1) +
-                      kLoc * (this->nmtc * 16 + 1)) * dbl_size, SEEK_SET);
-    fread(&tempArray[0], dbl_size, (this->nmtc * 16 + 1), fin);
-  }
-}
-
-void Read::readPrimsData(std::vector<float>& tempArray, 
-    long int &index_3D, long int &gridsize_3D,
-    int n, int nStrt, int iGlob, int jGlob, int kGlob,
-    AMRVar coord, AMRVar upscale, FILE* fin) {
-  if (by_block) {
-    // convert to 1D index to read in binary data
-    bsLR.x1 = bs1 / lowRes.x1;
-    bsLR.x2 = bs2 / lowRes.x2;
-    bsLR.x3 = bs3 / lowRes.x3;
-
-    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                (iGlob * bsLR.x2 * bsLR.x3) + 
-                (jGlob * bsLR.x3) + kGlob);
-    // gridsize is only modified if by block
-    gridsize_3D = nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-                  
-    fseek(fin, (((n - nStrt) * bs1 * bs2 * bs3) +
-      (iGlob * lowRes.x1) * bs2 * bs3 + 
-      (jGlob * lowRes.x2) * bs3 + 
-      (kGlob * lowRes.x3)) * this->nvar * float_size, SEEK_SET);
-    fread(&tempArray[0], float_size, this->nvar, fin);
-  } else {
-    // indices on the given block
-    iLoc = (iGlob - (coord.x1 * upscale.x1 * bs1)) / upscale.x1;            
-    jLoc = (jGlob - (coord.x2 * upscale.x2 * bs2)) / upscale.x2;            
-    kLoc = (kGlob - (coord.x3 * upscale.x3 * bs3)) / upscale.x3;
-
-    // convert to 1D index to read in binary data
-    index_3D = (((iGlob / lowRes.x1) - i_min) * this->isize +
-                ((jGlob / lowRes.x2) - j_min) * this->jsize +
-                ((kGlob / lowRes.x3) - k_min));
-
-    fseek(fin, ((n - nStrt) * bs1 * bs2 * bs3 + 
-      (iLoc * bs2 * bs3) + 
-      (jLoc * bs3) + kLoc) * this->nvar * float_size, SEEK_SET);
-    fread(&tempArray[0], float_size, this->nvar, fin);  
-  }
-}
-*/

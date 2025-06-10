@@ -11,70 +11,82 @@
 #include <omp.h> // omp parallel for
 #include <numeric> // accumulate
 
+// Fluid class
 class Fluid {
   public:
-    // default constructor
     Fluid();
 
-    // parameterized constructor
     Fluid(const std::unordered_map<std::string, double>& params,
         const std::unordered_map<std::string, double>& CONSTANTS);
 
     void calcQie(double* qie, float *rho, float *Te, float *Ti,
         int nb, int nx1, int nx2, int nx3);
 
-    // default destructor
     ~Fluid();
   
   private:
     double rho0, c, kB, mu_i, mu_e, mp, mi, me, sigT, ThetaMin, xAB, yAB;
-    double Thetae, Thetai, Thetam, nAvg, ne, Thetasum, cksigmaT, me_mi;
-    double k2k2, k1, k0;
-    int n, index_3D, gridsize_3D;
-
-    double CoulombLog(double ne, float Te);
-    double BesselTerms(double Thetae, double Thetai, 
-        double Thetam, double Thetasum, double k2k2, double k1, double k0);
-    double coldEcoldI(double Thetae, double Thetai, 
-        double Thetam, double Thetasum, double k2k2, double k1, double k0);
-    double hotEcoldI(double Thetae, double Thetai, 
-        double Thetam, double Thetasum, double k2k2, double k1, double k0);
-    double coldEhotI(double Thetae, double Thetai, 
-        double Thetam, double Thetasum, double k2k2, double k1, double k0);
-    double hotEhotI(double Thetae, double Thetai, 
-        double Thetam, double Thetasum, double k2k2, double k1, double k0);
+    double cksigmaT, me_mi;
+    int index_3D, gridsize_3D;
 
 };
 
+// Two-temperature class
+class TwoTemperature {
+  public:
+    TwoTemperature();
+    
+    TwoTemperature(double ThetaMin);
+    
+    TwoTemperature(TwoTemperature& twoT);
+    
+    double CoulombLog(double ne, float Te);
+    double BesselTerms(double Thetae, double Thetai);
+    
+    ~TwoTemperature();
+  
+  private:
+    double ThetaMin, Thetam, Thetasum, k0, k1, k2k2;  
+
+    double coldEcoldI(double Thetae, double Thetai);
+    double hotEcoldI(double Thetae, double Thetai);
+    double coldEhotI(double Thetae, double Thetai);
+    double hotEhotI(double Thetae, double Thetai);
+
+};
+
+// Opacity class
 class Opacity {
   public:
     Opacity();
 
     Opacity(const std::unordered_map<std::string, double>& params,
         const std::unordered_map<std::string, double>& CONSTANTS);
-
-    void kappaSynchrotron(double* kappa, float* rho, float* Te, 
-        float* Tr, float* b2, int emi, int XRB, 
-        int nb, int nx1, int nx2, int nx3);
     
+    Opacity (Opacity& opac);
+    
+    double kappaAbsTotal(float rho, float Te, float Tr, float b2, int XRB); 
+    
+    double kappaEmiTotal(float rho, float Te, float Tr, float b2, int XRB); 
+
     void kappaAbsTotal(double* kappa, float* rho, float* Te, 
       float* Tr, float *b2, int XRB, int nb, int nx1, int nx2, int nx3);
 
     void kappaEmiTotal(double* kappa, float* rho, float* Te, 
       float* Tr, float *b2, int XRB, int nb, int nx1, int nx2, int nx3);
-
-    double kappaAbsTotal(float rho, float Te, float Tr, float b2, int XRB); 
     
-    double kappaEmiTotal(float rho, float Te, float Tr, float b2, int XRB); 
+    void kappaSynchrotron(double* kappa, float* rho, float* Te, 
+        float* Tr, float* b2, int emi, int XRB, 
+        int nb, int nx1, int nx2, int nx3);
     
     ~Opacity();
 
   private:
     double rho0, c, kB, aRAD, mu_i, mu_e, mp, mi, me, sigT; 
-    double xAB, yAB, zAB, eStatC, kappaMol;
-    double ne, e_2pimc, h, nu_mu, Thetae, phi, g, kappaGInv;
+    double xAB, yAB, zAB, eStatC, h, kappaMol;
+    double e_2pimc, ne, Thetae, nu_mu, phi, g, kappaGInv;
     double async, bsync, csync, dsync, esync;
-    int n, index_3D, gridsize_3D;
+    int index_3D, gridsize_3D;
 
     double kappaBoundFreeAbs(float rho, float Te, float Tr);
     double kappaBoundFreeEmi(float rho, float Te, float Tr);
@@ -91,9 +103,9 @@ class Opacity {
     void getABCDESynch(int XRB, double& a, double& b, double& c, 
         double& d, double& e);
     
-
 };
 
+// Radiation class
 class Radiation {
   public:
     Radiation();
@@ -112,19 +124,57 @@ class Radiation {
   private:
     double rho0, c, kB, aRAD, mu_i, mu_e, mp, mi, me, sigT; 
     double xAB, yAB, zAB, eStatC, kappaMol;
-    double async, bsync, csync, dsync, esync, kappaAbs, kappaEmi;
-    int n, index_3D, gridsize_3D;
+    double async, bsync, csync, dsync, esync;
+    int index_3D, gridsize_3D;
+    std::unordered_map<std::string, double> params, CONSTANTS; 
 
-    Opacity Opac;
     double kappaAbsTotal(float rho, float Te, float Tr, float b2, 
         double async, double bsync, double csync, double dsync, double esync); 
     double kappaEmiTotal(float rho, float Te, float Tr, float b2, 
         double async, double bysnc, double csync, double dsync, double esync);
+
 };
 
+struct AMRVar {
+  int x1;
+  int x2;
+  int x3;
+};
+
+struct AMRVec {
+  std::vector<int> x1;
+  std::vector<int> x2;
+  std::vector<int> x3;
+};
+
+struct BoolVar {
+  bool x1;
+  bool x2;
+  bool x3;
+}; 
 
 class Read {
-  public: 
+  public:
+    // number of variables (nvar), metric variables (nmtc)
+    int nvar, nmtc;
+    int isize, jsize, dbl_size, float_size; 
+
+    // block indices
+    int i_min, i_max, j_min, j_max, k_min, k_max;
+    // number of total active blocks and block sizes
+    int nb, bs1, bs2, bs3;
+    // number of blocks in all files
+    int nbInFiles;
+    int axisym, by_block, export_raytracing; 
+
+    // downsampling (lowRes) parameter and max refinement level 
+    AMRVar lowRes, maxLevel;
+    // refinement level of block
+    AMRVec amrLevel, amrCoord;
+
+    // information needed for AMR
+    std::vector<int> n_ord;
+
     // default constructor
     Read();
 
@@ -156,82 +206,71 @@ class Read {
     ~Read();
 
   private:
-    int isize, jsize, filesize, read_file, read_data;
-    int axisym, by_block, export_raytracing; 
-    struct AMRVar {
-      int x1;
-      int x2;
-      int x3;
-    };
-    struct AMRVec {
-      std::vector<int> x1;
-      std::vector<int> x2;
-      std::vector<int> x3;
-    };
-    struct BoolVar {
-      bool x1;
-      bool x2;
-      bool x3;
-    }; 
-    AMRVar coord, bsLR, exponent, lowRes, maxLevel, offset, upscale, 
-      iStrt, iEnd, iStp;
-    // refinement level of block
-    AMRVec amrLevel, amrCoord;
-    BoolVar iNotInBlock; // is data in selection box/ on block?
-    bool iInRange, jInRange, kInRange;
-    int dbl_size, float_size; 
-    long int gridsize_2D, gridsize_3D, index_2D, index_3D;
-    int iGlob, jGlob, kGlob; // global indices
-    int n, nStrt, nEnd, fileCount, iFile; // looping through prim files   
-    int iLoc,  jLoc,  kLoc, ii; // local indices on given block
+    std::string dir;
+    int filesize;
+    int fileCount; // number of prim files (GPUs for computation)   
     
-    // number of variables (nvar), metric variables (nmtc), and 
-    // variable start index (vStrt)
-    int nvar, nmtc, vStrt;
     // physics flags
     int RADM1, RES, TWOT, PNUM, DOYE, DONUC, NUM1, DOTR;
     // number of primitives for each physics flag
     int nPrim, nRadM1, nRes, nTwoT, nPnum, nYe, nNUC, nNuM1, nTr;
     std::vector<int> blocksInFile;
-    FILE* fin;
-    std::string filename, dir;
-
-    // information needed for AMR
-    std::vector<int> n_ord;
-    // block indices
-    int i_min, i_max, j_min, j_max, k_min, k_max;
-    // number of total active blocks and block sizes
-    int nb, bs1, bs2, bs3;
-
+    
     void checkFileExists(std::string filename);
-    void checkGridFileSize(std::string filename, int nvar, int nmtc);
-    void setLoops(int &iStrt, int &iEnd, int &iStp, int &offset, 
-        int bs, int coord, int upscale, int low_res);
+    void checkGridFileSize(std::string filename);
+    bool checkNotInBlock(AMRVar iStrt, AMRVar iEnd, BoolVar iNotInBlock);
+    int checkIndexInRange(int iGlob, int jGlob, int kGlob, 
+        bool iInRange, bool jInRange, bool kInRange);
+    int checkIndexInRange(int n, int iGlob, int jGlob, 
+        const std::vector<int>& levelArray, int index_2D, 
+        bool iInRange, bool jInRange);
+    
+};
+
+class ReadIn {
+  public:
+    ReadIn();
+
+    ReadIn(ReadIn& readIn);
+
+    void setLoops3D(int n, AMRVar &iStrt, AMRVar &iEnd, AMRVar &iStp, 
+        const Read &read);
+    
+    void setMetricLoops2D(AMRVar &iStrt, AMRVar &iEnd, AMRVar &iStp, 
+        const Read &read);
+
+    void setMetricLoops3D(AMRVar &iStrt, AMRVar &iEnd, AMRVar &iStp, 
+        const Read &read);
+
+    void readGridData(FILE* fin, std::vector<double>& tempArray,
+        long int &index_3D, long int &gridsize_3D, 
+        int n, int iGlob, int jGlob, int kGlob, const Read &read);
+
+    void readMetricData2D(FILE* fin, std::vector<double>& tempArray,
+        long int &index_2D, long int &gridsize_2D, 
+        int n, int iGlob, int jGlob, const Read &read);
+
+    void readMetricData3D(FILE* fin, std::vector<double>& tempArray,
+        long int &index_3D, long int &gridsize_3D, 
+        int n, int iGlob, int jGlob, int kGlob, const Read &read);
+
+    void readPrimsData(FILE* fin, std::vector<float>& tempArray,
+        long int &index_3D, long int &gridsize_3D, int n, int nStrt, 
+        int iGlob, int jGlob, int kGlob, const Read &read);
+
+    ~ReadIn();
+
+  private:
+    int iLoc, jLoc, kLoc; // local indices    
+    AMRVar bsLR, coord, exponent, offset, upscale;
+
+    void setLoops(int &iStrt, int &iEnd, int &iStp, int &offset, int bs, 
+      int coord, int upscale, int low_res, int by_block, 
+      int export_raytracing);
+
     void setMetricLoops(int &iStrt, int &iEnd, int &iStp, int &offset, 
-        int bs, int coord, int upscale, int low_res);
-    bool checkNotInBlock(AMRVar iStrt, AMRVar iEnd);
-      /*
-      int checkIndexInRange(int n, int iGlob, int jGlob, 
-          const std::vector<int>& levelArray, AMRVec amrLevel,
-          const std::vector<int> n_ord);
-      int checkIndexInRange(int iGlob, int jGlob, int kGlob);
-      void readGridData(std::vector<double>& tempArray,
-          long int &index_3D, long int &gridsize_3D,
-          int n, int iGlob, int jGlob, int kGlob,
-          AMRVar coord, AMRVar upscale, FILE* fin);
-      void readMetricData2D(std::vector<double>& tempArray, 
-          long int &index_2D, long int &gridsize_2D, 
-          int n, int iGlob, int jGlob, 
-          AMRVar coord, AMRVar upscale, FILE* fin);
-      void readMetricData3D(std::vector<double>& tempArray,
-          long int &index_3D, long int &gridsize_3D, 
-          int n, int iGlob, int jGlob, int kGlob,
-          AMRVar coord, AMRVar upscale, FILE* fin);
-      void readPrimsData(std::vector<float>& tempArray, 
-          long int &index_3D, long int &gridsize_3D,
-          int n, int nStrt, int iGlob, int jGlob, int kGlob,
-          AMRVar coord, AMRVar upscale, FILE* fin);
-      */
+        int bs, int coord, int upscale, int low_res, int by_block);
+    
 };
 
 class Tools {
