@@ -45,7 +45,7 @@ cdef extern from "hamr_read.h":
         void qEmi(double* qemi, float* rho, float* Te, 
             float* Tr, float *b2, int XRB, 
             int nb, int nx1, int nx2, int nx3)
-
+    
     cdef cppclass Read:
         Read() except +
         Read(string dir, int axisym, int by_block, 
@@ -204,7 +204,7 @@ cdef class PyRadiation:
         return self.c_radiation.qEmi(&qemi[0,0,0,0], 
             &rho[0,0,0,0], &Te[0,0,0,0], &Tr[0,0,0,0], &b2[0,0,0,0], 
             XRB, nb, nx1, nx2, nx3)
-         
+     
 # wrapper class for C++
 cdef class PyRead:
     cdef Read *c_read
