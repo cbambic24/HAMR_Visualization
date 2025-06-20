@@ -103,9 +103,23 @@ class Read():
         self.axisym      = kwargs.get('axisym', 1)
         self.coords1D    = kwargs.get('coords1D', 0)
 
+        if ('i_min' in kwargs or 'i_max' in kwargs or 
+            'j_min' in kwargs or 'j_max' in kwargs or 
+            'k_min' in kwargs or 'k_max' in kwargs):
+            self.do_box_by_index = 1
+            self.i_min  = kwargs.get('i_min', None)
+            self.i_max  = kwargs.get('i_max', None)
+            self.j_min  = kwargs.get('j_min', None)
+            self.j_max  = kwargs.get('j_max', None)
+            self.k_min  = kwargs.get('k_min', None)
+            self.k_max  = kwargs.get('k_max', None)
+        else:
+            self.do_box_by_index = 0
+
         if ('r_min'     in kwargs or 'r_max'     in kwargs or 
             'theta_min' in kwargs or 'theta_max' in kwargs or
-            'phi_min'   in kwargs or 'phi_max'   in kwargs):
+            'phi_min'   in kwargs or 'phi_max'   in kwargs or 
+            self.do_box_by_index):
             self.do_box    = 1
             self.r_min     = kwargs.get('r_min', None)
             self.r_max     = kwargs.get('r_max', None)
@@ -179,6 +193,11 @@ class Read():
         else:
             raise FileNotFoundError("Cannot find parameters file in %s." 
                 %(self.dir + "/dumps%d/parameters" % fnum))
+
+        if (os.path.isfile(self.dir + "/dumps%d/grid" % fnum)):
+            import warnings
+            warnings.warn("Warning: this may be a legacy data set. " + 
+                          "Please use Read_Legacy instead of Read.") 
 
         for par, par_type in zip(param_keys, param_types):
             params['%s' %par] = Tools.get_fromfile(fin, par_type)
@@ -311,7 +330,7 @@ class Read():
             # Calculate inner and outer boundaries of selection box
             # after upscaling and downscaling; 
             # Assumes uniform grid x1=log(r) etc
-            if (self.do_box):
+            if (self.do_box or self.do_box_by_index):
                 i_min, i_max = self.get_rbox_coords()
                 j_min, j_max = self.get_tbox_coords()
                 k_min, k_max = self.get_pbox_coords()
@@ -321,7 +340,7 @@ class Read():
                 self.gridsizex3 = k_max - k_min
 
                 if (i_max < i_min or j_max < j_min or k_max < k_min):
-                    raise ValueError("Bad box selection in read_grid.")
+                    raise ValueError("Bad box selection for file %d in read_grid." %fnum)
             else:
                 i_min, i_max = 0, self.gridsizex1
                 j_min, j_max = 0, self.gridsizex2
@@ -368,7 +387,7 @@ class Read():
             elif self.by_block:
                 x1, x2, x3, r, theta, phi = self.coords_directBK(x1, x2, x3,
                     r, theta, phi, [dim, nx, ny, nz])
-           
+            
             # Calculate gcov in internal coordinates and the transformation matrix
             # dxdxp to go from spherical Kerr-Schild to internal coordinates
             gcov, dxdxp = self.gcov_dxdxp_direct(dxdxp, r, theta, phi, nx, ny)
@@ -467,7 +486,7 @@ class Read():
             # Calculate inner and outer boundaries of selection box
             # after upscaling and downscaling; 
             # Assumes uniform grid x1=log(r) etc
-            if (self.do_box):
+            if (self.do_box or self.do_box_by_index):
                 i_min, i_max = self.get_rbox_coords()
                 j_min, j_max = self.get_tbox_coords()
                 k_min, k_max = self.get_pbox_coords()
@@ -769,27 +788,51 @@ class Read():
         return min(np.int32((box_max - (startx + 0.5*dx))/dx + 1), max_val)
 
     def get_rbox_coords(self):
-        i_min = self.get_min_index(np.log(self.r_min),
+        if (not self.do_box_by_index or 
+            (self.do_box_by_index and self.i_min is None)):
+            i_min = self.get_min_index(np.log(self.r_min),
                                    params['startx1'], params['dx1'])
-        i_max = self.get_max_index(np.log(self.r_max),
+        else:
+            i_min = self.i_min
+        if (not self.do_box_by_index or
+            (self.do_box_by_index and self.i_max is None)):
+            i_max = self.get_max_index(np.log(self.r_max),
                                    params['startx1'], params['dx1'],
                                    self.gridsizex1)
+        else:
+            i_max = self.i_max
         return i_min, i_max
 
     def get_tbox_coords(self):
-        j_min = self.get_min_index((2.0 / np.pi) * self.theta_min - 1.0,
+        if (not self.do_box_by_index or 
+            (self.do_box_by_index and self.j_min is None)):
+            j_min = self.get_min_index((2.0 / np.pi) * self.theta_min - 1.0,
                                    params['startx2'], params['dx2'])
-        j_max = self.get_max_index((2.0 / np.pi) * self.theta_max - 1.0,
+        else:
+            j_min = self.j_min
+        if (not self.do_box_by_index or
+            (self.do_box_by_index and self.j_max is None)):
+            j_max = self.get_max_index((2.0 / np.pi) * self.theta_max - 1.0,
                                    params['startx2'], params['dx2'],
                                    self.gridsizex2)
+        else:
+            j_max = self.j_max
         return j_min, j_max
 
     def get_pbox_coords(self):
-        k_min = self.get_min_index(self.phi_min,
+        if (not self.do_box_by_index or 
+            (self.do_box_by_index and self.k_min is None)):
+            k_min = self.get_min_index(self.phi_min,
                                    params['startx3'], params['dx3'])
-        k_max = self.get_max_index(self.phi_max,
+        else:
+            k_min = self.k_min
+        if (not self.do_box_by_index or 
+            (self.do_box_by_index and self.k_max is None)):
+            k_max = self.get_max_index(self.phi_max,
                                    params['startx3'], params['dx3'],
                                    self.gridsizex3)
+        else:
+            k_max = self.k_max
         return k_min, k_max
 
     ### Check settings ###
@@ -834,6 +877,128 @@ class Read():
             if (file_exists == 0):
                 raise FileExistsError(
                     "gdump file %d doesn't exist." % self.n_ord[n])
+
+class Read_Legacy(Read):
+    def __init__(self, dir, **kwargs):
+        super().__init__(dir, **kwargs)
+
+    def read_params(self, fnum):
+        # Read in AMR organizational data for every block
+        # In the legacy data format, grid file information is 
+        # spread across dumps folders. Thus, the block array
+        # that was produced is now invalid. 
+        # Each individual grid file contains nmax
+        if (os.path.isfile(self.dir + "/dumps%d/grid" % fnum)):
+            fin = open(self.dir + "/dumps%d/grid" % fnum, "rb")
+        else:
+            raise FileNotFoundError("Cannot find grid file in %s." 
+                %(self.dir + "/dumps%d/grid" % fnum))
+        
+        nmax = np.fromfile(fin, dtype=np.int32, count=1, sep='')[0]
+        nv = 36
+        self.block = np.zeros((nmax, 200), dtype=np.int32, order='C')
+        self.n_ord = np.zeros(nmax, dtype=np.int32, order='C')
+        gd = np.fromfile(fin, dtype=np.int32, count=nv * nmax, sep='')
+        i = 1
+        while (os.path.isfile(self.dir + "/gdumps/grid%d" % i)):
+            if (i == 1): fin.close()
+            fin = open(self.dir + "/gdumps/grid%d" % i, "rb")
+            gd  = np.concatenate((gd,
+                np.fromfile(fin,
+                dtype=np.int32, count=nv * nmax, sep='')), axis=0)
+            i += 1
+            fin.close()
+        # 'F' refers to Fortran order (first index changing fastest)
+        gd = gd.reshape((nv, nmax), order='F').T
+        self.block[:, 0:nv] = gd
+
+        self.block[:, amr['LEVEL1']] = gd[:, amr['LEVEL']]
+        self.block[:, amr['LEVEL2']] = gd[:, amr['LEVEL']]
+        self.block[:, amr['LEVEL3']] = gd[:, amr['LEVEL']]
+
+        fin.close()
+
+        # Read in parameters from parameters file.
+        print("Loading parameters file")
+        if (os.path.isfile(self.dir + "/dumps%d/parameters" % fnum)):
+            fin = open(self.dir + "/dumps%d/parameters" % fnum, "rb")
+        else:
+            raise FileNotFoundError("Cannot find parameters file in %s." 
+                %(self.dir + "/dumps%d/parameters" % fnum))
+        
+        for par, par_type in zip(param_keys, param_types):
+            params['%s' %par] = Tools.get_fromfile(fin, par_type)
+
+        del params['Dtl']  
+        del params['R0']
+
+        # There are 15 integers before the AMR information
+        for n in range(15):
+            trash = Tools.get_fromfile(fin, np.int32)
+        del trash
+
+        # In legacy data format, grid information is contained in the
+        # parameters file as well
+        grid_arr1 = np.fromfile(fin, dtype=np.int32, count=nmax, sep='')
+        grid_arr2 = np.fromfile(fin, dtype=np.int32, count=nmax, sep='')
+        for n in range(nmax):
+            self.block[n, amr['REFINED']] = grid_arr1[n]
+            self.block[n, amr['ACTIVE']]  = grid_arr2[n]
+
+        i = 0
+        for n in range(nmax):
+            if self.block[n, amr['ACTIVE']] == 1:
+                self.n_ord[i] = n
+                i += 1
+        
+        fin.close()
+
+        for key in phys_keys:
+            physics['%s' %key] = 0
+
+        # Set grid spacing
+        params['dx1'] = (np.log(params['Rout']) - np.log(params['Rin'])) / (
+            (params['bs1'] * params['nb1']))
+        fractheta     = -1.0 * params['startx2']
+        params['dx2'] = 2.0 * fractheta / (params['bs2'] * params['nb2'])
+        params['dx3'] = 2.0 * np.pi / (params['bs3'] * params['nb3'])
+        if (self.do_box):
+            if (self.r_min is None): self.r_min = params['Rin']
+            if (self.r_max is None): self.r_max = params['Rout']
+            self.r_min     = max(self.r_min, params['Rin'])
+            self.r_max     = min(self.r_max, params['Rout'])
+            self.theta_min = max(self.theta_min, 
+                                 (np.pi/2.0) * (params['startx2'] + 1.0))
+            self.phi_min   = max(self.phi_min, params['startx3'])
+
+        self.check_raytracing_settings()
+
+        amr['max_levelx1'] = np.max(self.block[self.n_ord, amr['LEVEL1']])
+        amr['max_levelx2'] = np.max(self.block[self.n_ord, amr['LEVEL2']])
+        amr['max_levelx3'] = np.max(self.block[self.n_ord, amr['LEVEL3']])
+
+        self.amr_info = {
+            'n_ord'   : self.n_ord,
+            'levelx1' : self.block[:, amr['LEVEL1']],
+            'levelx2' : self.block[:, amr['LEVEL2']],
+            'levelx3' : self.block[:, amr['LEVEL3']],
+            'coordx1' : self.block[:, amr['COORD1']],
+            'coordx2' : self.block[:, amr['COORD2']],
+            'coordx3' : self.block[:, amr['COORD3']]
+        }
+
+        self.upscalex1 = 2 ** amr['max_levelx1']
+        self.upscalex2 = 2 ** amr['max_levelx2']
+        self.upscalex3 = 2 ** amr['max_levelx3']
+
+        # downsample differentials with lowres and 
+        # upscale to highest AMR level
+        params['dx1'] *= self.lowres1 * (1.0 / self.upscalex1)
+        params['dx2'] *= self.lowres2 * (1.0 / self.upscalex2)
+        params['dx3'] *= self.lowres3 * (1.0 / self.upscalex3)
+
+        self.amr    = amr
+        self.params = params
 
 if __name__ == "__main__":
     print("Executing H-AMR Read")
