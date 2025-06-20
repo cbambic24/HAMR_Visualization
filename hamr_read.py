@@ -793,14 +793,14 @@ class Read():
             i_min = self.get_min_index(np.log(self.r_min),
                                    params['startx1'], params['dx1'])
         else:
-            i_min = self.i_min
+            i_min = int(self.i_min)
         if (not self.do_box_by_index or
             (self.do_box_by_index and self.i_max is None)):
             i_max = self.get_max_index(np.log(self.r_max),
                                    params['startx1'], params['dx1'],
                                    self.gridsizex1)
         else:
-            i_max = self.i_max
+            i_max = int(self.i_max)
         return i_min, i_max
 
     def get_tbox_coords(self):
@@ -809,14 +809,14 @@ class Read():
             j_min = self.get_min_index((2.0 / np.pi) * self.theta_min - 1.0,
                                    params['startx2'], params['dx2'])
         else:
-            j_min = self.j_min
+            j_min = int(self.j_min)
         if (not self.do_box_by_index or
             (self.do_box_by_index and self.j_max is None)):
             j_max = self.get_max_index((2.0 / np.pi) * self.theta_max - 1.0,
                                    params['startx2'], params['dx2'],
                                    self.gridsizex2)
         else:
-            j_max = self.j_max
+            j_max = int(self.j_max)
         return j_min, j_max
 
     def get_pbox_coords(self):
@@ -825,14 +825,14 @@ class Read():
             k_min = self.get_min_index(self.phi_min,
                                    params['startx3'], params['dx3'])
         else:
-            k_min = self.k_min
+            k_min = int(self.k_min)
         if (not self.do_box_by_index or 
             (self.do_box_by_index and self.k_max is None)):
             k_max = self.get_max_index(self.phi_max,
                                    params['startx3'], params['dx3'],
                                    self.gridsizex3)
         else:
-            k_max = self.k_max
+            k_max = int(self.k_max)
         return k_min, k_max
 
     ### Check settings ###
