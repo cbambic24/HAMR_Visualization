@@ -973,9 +973,13 @@ class Read_Legacy(Read):
 
         self.check_raytracing_settings()
 
-        amr['max_levelx1'] = np.max(self.block[self.n_ord, amr['LEVEL1']])
-        amr['max_levelx2'] = np.max(self.block[self.n_ord, amr['LEVEL2']])
-        amr['max_levelx3'] = np.max(self.block[self.n_ord, amr['LEVEL3']])
+        ref = self.get_ref_dir(params['nb2'], params['nb3'], params['bs3'])
+        amr['max_levelx1'] = ref[1] * np.max(
+            self.block[self.n_ord, amr['LEVEL1']])
+        amr['max_levelx2'] = ref[2] * np.max(
+            self.block[self.n_ord, amr['LEVEL2']])
+        amr['max_levelx3'] = ref[3] * np.max(
+            self.block[self.n_ord, amr['LEVEL3']])
 
         self.amr_info = {
             'n_ord'   : self.n_ord,
@@ -999,6 +1003,22 @@ class Read_Legacy(Read):
 
         self.amr    = amr
         self.params = params
+
+    def get_ref_dir(self, nb2, nb3, bs3):
+        ref_dir = 4 * [None]
+        nb2_arr = [3 * 2**i for i in range(1, 7)]
+        if nb2 in nb2_arr:
+            if (nb3 <= 2):
+                ref_dir[1], ref_dir[2] = 0, 0
+                if (bs3 > 1): ref_dir[3] = 1
+                else:         ref_dir[3] = 0
+        else:
+            ref_dir[1], ref_dir[2] = 1, 1
+            if (bs3 > 1): ref_dir[1] = 1
+            else:         ref_dir[1] = 0
+        if (nb3 > 2):
+            ref_dir[1], ref_dir[2], ref_dir[3] = 1, 1, 1
+        return ref_dir
 
 if __name__ == "__main__":
     print("Executing H-AMR Read")
