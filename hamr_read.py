@@ -985,6 +985,9 @@ class Read_Legacy(Read):
         amr['max_levelx3'] = ref[3] * np.max(
             self.block[self.n_ord, amr['LEVEL3']])
 
+        self.block[self.n_ord, amr['LEVEL1']] = ref[1]
+        self.block[self.n_ord, amr['LEVEL2']] = ref[2]
+
         self.amr_info = {
             'n_ord'   : self.n_ord,
             'levelx1' : self.block[:, amr['LEVEL1']],
