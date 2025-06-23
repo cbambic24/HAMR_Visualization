@@ -743,22 +743,26 @@ class Read():
             startx1 = np.log(self.r_min)
             startx2 = ((2.0/np.pi) * self.theta_min) - 1.0
             startx3 = self.phi_min
-            
-        for i in range(0, nx):
+        
+        i_min, i_max = self.block_info['i_min'], self.block_info['i_max']
+        j_min, j_max = self.block_info['j_min'], self.block_info['j_max']
+        k_min, k_max = self.block_info['k_min'], self.block_info['k_max']
+
+        for i, ii in enumerate(range(i_min, i_max)):
             if not self.coords1D:
-                x1[:, i, :, :] = startx1 + (i + 0.5) * params['dx1']
+                x1[:, i, :, :] = startx1 + (ii + 0.5) * params['dx1']
             else:
-                x1[i]          = startx1 + (i + 0.5) * params['dx1']
-        for j in range(0, ny):
+                x1[i]          = startx1 + (ii + 0.5) * params['dx1']
+        for j, jj in enumerate(range(j_min, j_max)):
             if not self.coords1D:
-                x2[:, :, j, :] = startx2 + (j + 0.5) * params['dx2']
+                x2[:, :, j, :] = startx2 + (jj + 0.5) * params['dx2']
             else:
-                x2[j]          = startx2 + (j + 0.5) * params['dx2']
-        for k in range(0, nz):
+                x2[j]          = startx2 + (jj + 0.5) * params['dx2']
+        for k, kk in enumerate(range(k_min, k_max)):
             if not self.coords1D:
-                x3[:, :, :, k] = startx3 + (k + 0.5) * params['dx3']
+                x3[:, :, :, k] = startx3 + (kk + 0.5) * params['dx3']
             else:
-                x3[k]          = startx3 + (k + 0.5) * params['dx3']
+                x3[k]          = startx3 + (kk + 0.5) * params['dx3']
  
         r     = np.exp(x1)
         theta = (x2 + 1.0) * (np.pi/2.0)
