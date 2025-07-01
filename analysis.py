@@ -136,7 +136,8 @@ class Accretion():
     
     # If optically_thin = True, return where tau < tau_cut
     def tau_cut(self, **kwargs):
-        if 'sigma_cut' not in kwargs and 'tau' not in kwargs:
+        if ('sigma_cut' not in kwargs and 'tau' not in kwargs and 
+            'tau_cut' in kwargs):
             import warnings
             warnings.warn("""Warning: integrating optical depth without
                           a cut on sigma...""")
@@ -281,7 +282,8 @@ class AccretionBK(Accretion):
 
 class Analytic():
     def __init__(self, CONSTANTS, **kwargs):
-        self.cgs = kwargs.get('cgs', False)
+        self.CONSTANTS = CONSTANTS
+        self.cgs = kwargs.get('cgs', True)
         if (self.cgs):
             self.c    = CONSTANTS['c'] # cm/s
         else:
@@ -295,6 +297,81 @@ class Analytic():
     def calc_Mdot_Edd(self, MBH, **kwargs):
         eta = kwargs.get('eta', 0.1)
         return self.calc_LEdd(MBH) / (eta * self.c * self.c)
+
+    # Calculate radius of (outer) event horizon for Kerr black hole 
+    # with spin parameter a
+    def calc_R_Horizon(self, a):
+        return 1. + np.sqrt(1 - a*a)
+    
+    # Radius of the innermost stable circular orbit (R_ISCO / R_g)
+    # Eq. 5.4.8a in Novikov & Thorne (1973)
+    # Sign correction shown in Eq. 15k of Page & Thorne (1974)
+    def calc_R_ISCO(self, a):
+        z1 = self.calc_Z1(a)
+        z2 = self.calc_Z2(a)
+        return (3. + z2 - 
+            np.sign(a) * ((3. - z1) * (3. + z1 + 2. * z2))**(1./2.))
+
+    # Eq. 5.4.8b in Novikov & Thorne (1973)
+    def calc_Z1(self, a):
+        return (1. + (1. - a * a)**(1./3.) * (
+            (1. + a)**(1./3.) + (1. - a)**(1./3.)))
+    
+    # Eq. 5.4.8b in Novikov & Thorne (1973)
+    def calc_Z2(self, a):
+        return (3. * a * a + (self.calc_Z1(a))**2.)**(1./2.)
+    
+    # Calculate Novikov & Thorne (1973) (with corrections from
+    # Page & Thorne 1974) efficiency of thin-disk accretion eta
+    # Expects dimensionless radius (units of R_g)
+    def calc_efficiency_NT73(self, r, a):
+        deta_dr = self.calc_dissipation_NT73(r, a)
+        dr      = np.append(np.diff(r), np.diff(r)[-1])
+        eta     = np.zeros(len(r))
+        eta     = np.cumsum(deta_dr * dr)
+        return eta
+
+    # Calculate Novikov & Thorne (1973) local dissipation rate
+    def calc_dissipation_NT73(self, r, a):
+        NT73    = Novikov_Thorne(self.CONSTANTS)
+        r_ISCO  = self.calc_R_ISCO(a)
+        r_NT    = r[r > r_ISCO]
+        deta_dr = np.zeros(len(r))
+        deta_dr[r > r_ISCO] = NT73.calc_dEdot_Mdot_dr(r_NT, a)
+        return deta_dr
+    
+class Novikov_Thorne(Analytic):
+    # Inherited class for Novikov-Thorne thin disk functions
+    # with corrections due to Page & Thorne (1974)
+    def __init__(self, CONSTANTS, **kwargs):
+        super().__init__(CONSTANTS, **kwargs)
+    
+    # Calculate d/dr (Edot/Mdot) given in Page & Thorne (1974)
+    # Eq. 15n (function called f)
+    # Expects r as dimensionless radius (units of R_g)
+    def calc_dEdot_Mdot_dr(self, r, a):
+        x    = np.sqrt(r)
+        x0   = np.sqrt(super().calc_R_ISCO(a))
+        x1   = 2. * np.cos( (1./3.) * np.acos(a) - np.pi / 3. )
+        x2   = 2. * np.cos( (1./3.) * np.acos(a) + np.pi / 3. )
+        x3   = -2. * np.cos( (1. / 3.) * np.acos(a) )
+        xarr = [x, x1, x2, x3, x0]
+        return ((3./2.) * (1. / (x ** 2. * (x ** 3. - 3. * x + 2. * a))) * (
+            x - x0 - (3./2.) * a * np.log(x / x0) 
+            - self.get_log_term(xarr, a, 1)
+            - self.get_log_term(xarr, a, 2)
+            - self.get_log_term(xarr, a, 3)
+
+        ))
+    
+    def get_log_term(self, xarr, a, n):
+        x  = xarr[0]
+        x0 = xarr[-1]
+        xc = xarr[:-1] + xarr[1:-1] # "x cyclic" simplifies cyclic pattern
+        return (3. * ((xarr[n] - a) ** 2.) * (
+            np.log((x - xarr[n])/(x0 - xarr[n])) * (
+            1. / (xarr[n] * (xarr[n] - xc[n + 1]) * (xarr[n] - xc[n + 2])))
+        ))
 
 class Coordinates():
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
@@ -320,7 +397,7 @@ class Coordinates():
     def sph_to_cart_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=np.float32)
+        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
 
         # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
         drdx[0, 0] = 1.0
@@ -343,11 +420,11 @@ class Coordinates():
         return self.cart_to_sph_vec(one_form, **kwargs)
     
     # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_tnsr(self, tnsr):
+    def sph_to_cart_tnsr(self, tnsr, **kwargs):
         shape = list(self.r.shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=np.float32)
+        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
         
         # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
         drdx[0, 0] = 1.0
@@ -363,14 +440,14 @@ class Coordinates():
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, drdx, drdx)
 
     # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_cotnsr(self, cotnsr):
-        return self.cart_to_sph_tnsr(cotnsr)
+    def sph_to_cart_cotnsr(self, cotnsr, **kwargs):
+        return self.cart_to_sph_tnsr(cotnsr, **kwargs)
  
     # (t, x, y, z) -> (t, r, theta, phi)
     def cart_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=np.float32)
+        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
 
         # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
         dxdr[0, 0] = 1.0
@@ -393,11 +470,11 @@ class Coordinates():
         return self.sph_to_cart_vec(one_form, **kwargs)
 
     # (t, x, y, z) -> (t, r, theta, phi)
-    def cart_to_sph_tnsr(self, tnsr):
+    def cart_to_sph_tnsr(self, tnsr, **kwargs):
         shape = list(self.r.shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=np.float32)
+        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
 
         # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
         dxdr[0, 0] = 1.0
@@ -412,14 +489,14 @@ class Coordinates():
         
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxdr, dxdr)
     
-    def cart_to_sph_cotnsr(self, cotnsr):
-        return self.sph_to_cart_tnsr(cotnsr)
+    def cart_to_sph_cotnsr(self, cotnsr, **kwargs):
+        return self.sph_to_cart_tnsr(cotnsr, **kwargs)
 
     # (t, r, theta, phi) -> (t, R, phi, z)
     def sph_to_cyl_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=np.float32)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
 
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         drdz[0, 0] = 1.
@@ -439,11 +516,11 @@ class Coordinates():
         return self.cyl_to_sph_vec(one_form, **kwargs)
 
     # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_tnsr(self, tnsr):
+    def sph_to_cyl_tnsr(self, tnsr, **kwargs):
         shape = list(self.r.shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=np.float32)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
         
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         drdz[0, 0] = 1.
@@ -456,14 +533,14 @@ class Coordinates():
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, drdz, drdz)
 
     # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_cotnsr(self, cotnsr):
-        return self.cyl_to_sph_tnsr(cotnsr)
+    def sph_to_cyl_cotnsr(self, cotnsr, **kwargs):
+        return self.cyl_to_sph_tnsr(cotnsr, **kwargs)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=np.float32)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
         
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         dzdr[0, 0] = 1.
@@ -484,11 +561,11 @@ class Coordinates():
         return self.sph_to_cyl_vec(one_form, **kwargs)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_tnsr(self, tnsr):
+    def cyl_to_sph_tnsr(self, tnsr, **kwargs):
         shape = list(self.r.shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=np.float32)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
         
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         dzdr[0, 0] = 1.
@@ -502,14 +579,14 @@ class Coordinates():
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dzdr, dzdr)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_cotnsr(self, cotnsr):
-        return self.sph_to_cyl_tnsr(cotnsr)
+    def cyl_to_sph_cotnsr(self, cotnsr, **kwargs):
+        return self.sph_to_cyl_tnsr(cotnsr, **kwargs)
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=np.float32)
+        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
 
         # Transformation to Spherical Kerr Schild from internal coordinates
         dxdxp[0, 0] = 1.0
@@ -527,11 +604,11 @@ class Coordinates():
         return self.sph_to_int_vec(one_form, **kwargs)
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_tnsr(self, tnsr):
+    def int_to_sph_tnsr(self, tnsr, **kwargs):
         shape = list(self.r.shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=np.float32)
+        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
 
         # Transformation to Spherical Kerr Schild from internal coordinates
         dxdxp[0, 0] = 1.0
@@ -542,14 +619,14 @@ class Coordinates():
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxdxp, dxdxp)
     
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_cotnsr(self, cotnsr):
-        return self.sph_to_int_tnsr(cotnsr)
+    def int_to_sph_cotnsr(self, cotnsr, **kwargs):
+        return self.sph_to_int_tnsr(cotnsr, **kwargs)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
     def sph_to_int_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=np.float32)
+        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
 
         # Transformation to internal coordinates from Spherical Kerr Schild
         dxpdx[0, 0] = 1.0
@@ -567,11 +644,11 @@ class Coordinates():
         return self.int_to_sph_vec(one_form, **kwargs)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_tnsr(self, tnsr):
+    def sph_to_int_tnsr(self, tnsr, **kwargs):
         shape = list(self.r.shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=np.float32)
+        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
         
         # Transformation to internal coordinates from Spherical Kerr Schild
         dxpdx[0, 0] = 1.0
@@ -582,8 +659,8 @@ class Coordinates():
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxpdx, dxpdx)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_cotnsr(self, cotnsr):
-        return self.int_to_sph_tnsr(cotnsr)
+    def sph_to_int_cotnsr(self, cotnsr, **kwargs):
+        return self.int_to_sph_tnsr(cotnsr, **kwargs)
 
     # (t, x1, x2, x3) -> (t, x, y, z) 
     def int_to_cart_vec(self, vec, **kwargs):
@@ -594,14 +671,16 @@ class Coordinates():
     def int_to_cart_one_form(self, one_form, **kwargs):
         return self.sph_to_cart_one_form(
             self.int_to_sph_one_form(one_form, **kwargs), **kwargs)
-    
-    # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_tnsr(self, tnsr):
-        return self.sph_to_cart_tnsr(self.int_to_sph_tnsr(tnsr))
 
     # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_cotnsr(self, cotnsr):
-        return self.sph_to_cart_cotnsr(self.int_to_sph_cotnsr(cotnsr))
+    def int_to_cart_tnsr(self, tnsr, **kwargs):
+        return self.sph_to_cart_tnsr(
+            self.int_to_sph_tnsr(tnsr, **kwargs), **kwargs)
+
+    # (t, x1, x2, x3) -> (t, x, y, z) 
+    def int_to_cart_cotnsr(self, cotnsr, **kwargs):
+        return self.sph_to_cart_cotnsr(
+            self.int_to_sph_cotnsr(cotnsr, **kwargs), **kwargs)
 
     # (t, x1, x2, x3) -> (t, R, phi, z) 
     def int_to_cyl_vec(self, vec, **kwargs):
@@ -614,12 +693,14 @@ class Coordinates():
             self.int_to_sph_one_form(one_form, **kwargs), **kwargs)
     
     # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_tnsr(self, tnsr):
-        return self.sph_to_cyl_tnsr(self.int_to_sph_tnsr(tnsr))
+    def int_to_cyl_tnsr(self, tnsr, **kwargs):
+        return self.sph_to_cyl_tnsr(
+            self.int_to_sph_tnsr(tnsr, **kwargs), **kwargs)
     
     # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_cotnsr(self, cotnsr):
-        return self.sph_to_cyl_cotnsr(self.int_to_sph_cotnsr(cotnsr))
+    def int_to_cyl_cotnsr(self, cotnsr, **kwargs):
+        return self.sph_to_cyl_cotnsr(
+            self.int_to_sph_cotnsr(cotnsr, **kwargs), **kwargs)
 
     # Compute dot product between two vectors in the desired
     # coordinate system. Assumes vec_a, vec_b, and gcov are in
@@ -694,12 +775,12 @@ class Coordinates():
                 qdth[:, :, ith0:, :][:, :, ::-1, :], axis=2)[:, :, ::-1, :]
         return int_qdth
 
-    def cum_integrate_z(self, q, gcov22, **kwargs):
+    def cum_integrate_z(self, q, gcovZZ, **kwargs):
         # note that this only works with a 2D array
         int_qdz = np.zeros(q.shape)
         z       = self.r * np.cos(self.th)
-        dz      = (np.abs(np.sqrt(gcov22) * self.dx1 * np.cos(self.th)) +
-            np.abs(np.sqrt(gcov22) * (np.pi/2.) * self.dx2 * np.sin(self.th)))
+        dz      = (np.abs(np.sqrt(gcovZZ) * self.dx1 * np.cos(self.th)) +
+            np.abs(np.sqrt(gcovZZ) * (np.pi/2.) * self.dx2 * np.sin(self.th)))
         R_cyl   = self.r * np.sin(self.th)
         dR_cyl  = self.r * self.dx1 * np.sin(self.th) 
         Rcyl_min= R_cyl - 0.5 * dR_cyl
@@ -788,7 +869,7 @@ class Field():
             if (kwargs.get('uu') is None):
                 raise TypeError("Must specify uu to use from_B.")
             else:
-                uu = kwargs.get('uu')
+                uu = kwargs.pop('uu')
                 b  = self.calc_b(B, uu, gcov, **kwargs)
         return Tools.dot(b, b, gcov, **kwargs)
     
@@ -844,6 +925,33 @@ class Field():
         return ( (b2 / B02) * uu_tnsr + 
             0.5 *(b2 / B02) * g_tnsr - bb_tnsr) * rho0c2
     
+    def calc_vA(self, rho, uu, B, u_gas, gcov, **kwargs):
+        c = self.c
+        if 'b' not in kwargs and 'b2' not in kwargs:
+            b  = self.calc_b(B, uu, gcov, **kwargs)
+            b2 = self.calc_b2(b, b, gcov)
+        elif 'b' in kwargs and 'b2' not in kwargs:
+            b  = kwargs.get('b')
+            b2 = self.calc_b2(b, b, gcov)
+        elif 'b' not in kwargs and 'b2' in kwargs:
+            b  = self.calc_b(B, uu, gcov, **kwargs)
+            b2 = kwargs.get('b2')
+        elif 'b' in kwargs and 'b2' in kwargs:
+            b  = kwargs.get('b')
+            b2 = kwargs.get('b2')
+        
+        if 'pgas' not in kwargs:
+            gamma_adi = 5./3.
+            pgas = (gamma_adi - 1.) * u_gas
+        else:
+            pgas = kwargs.get('pgas')
+
+        u_rad = kwargs.get('u_rad', 0.0) 
+
+        return b / np.sqrt(
+            rho * c * c +  u_gas + pgas + b2 / (8. * np.pi) + u_rad)
+
+
 class Fluid():
     def __init__(self, pars, CONSTANTS, **kwargs):
         self.cgs = kwargs.get('cgs', False)
