@@ -7,7 +7,7 @@ from libcpp.unordered_map cimport unordered_map
 from libcpp.string cimport string
 from libcpp.vector cimport vector
 
-cdef extern from "hamr_read.h":
+cdef extern from "hamr_analysis.h":
     cdef cppclass Fluid:
         Fluid() except + 
         Fluid(unordered_map[string, double] params,
@@ -45,7 +45,8 @@ cdef extern from "hamr_read.h":
         void qEmi(double* qemi, float* rho, float* Te, 
             float* Tr, float *b2, int XRB, 
             int nb, int nx1, int nx2, int nx3)
-    
+
+cdef extern from "hamr_read.h":
     cdef cppclass Read:
         Read() except +
         Read(string dir, int axisym, int by_block, 
@@ -63,6 +64,9 @@ cdef extern from "hamr_read.h":
 
         void readGridCoords(float* x1, float* x2, float* x3, 
             float* r, float* theta, float* phi)
+
+        void readGridResolution(int* res_level_x1, int* res_level_x2, 
+            int* res_level_x3)
 
         void readPrims(int fnum, 
             float* rho, float* uGas, float* uu, float* B, 
@@ -250,6 +254,14 @@ cdef class PyRead:
             &x1[0,0,0,0], &x2[0,0,0,0], &x3[0,0,0,0],
             &r[0,0,0,0], &theta[0,0,0,0], &phi[0,0,0,0])
 
+    def read_grid_resolution(self, 
+        np.ndarray[int, ndim=4, mode="c"] res_level_x1,
+        np.ndarray[int, ndim=4, mode="c"] res_level_x2,
+        np.ndarray[int, ndim=4, mode="c"] res_level_x3):
+        return self.c_read.readGridResolution(
+            &res_level_x1[0,0,0,0], &res_level_x2[0,0,0,0], 
+            &res_level_x3[0,0,0,0])
+
     def read_prims(self, fnum,    
         np.ndarray[np.float32_t, ndim=4, mode="c"] rho,
         np.ndarray[np.float32_t, ndim=4, mode="c"] uGas,
@@ -316,7 +328,3 @@ cdef class PyTools:
         nb, nx1, nx2, nx3, axisym):
         return self.c_tools.lowerIndex(&u[0,0,0,0,0], &u_mu[0,0,0,0],
             &gcov[0,0,0,0,0,0], nb, nx1, nx2, nx3, axisym, mu)
-    
-
-
-
