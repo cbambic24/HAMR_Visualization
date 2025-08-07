@@ -51,11 +51,51 @@ class Accretion():
         return self.upscale64(Mdot, self.Rg * self.Rg)
     
     # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
+    # Factor of sqrt(4 pi) accounts for conversion to Gaussian units in 
+    # Tchekhovskoy et al. (2011)
     def calc_PhiBH(self, **kwargs):
-        return (0.5 * np.abs(self.B[1]) * (self.Rg * self.Rg) * (
+        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        return (0.5 * norm * np.abs(self.B[1]) * (self.Rg * self.Rg) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
     
+    # Calculate Phi_sph (Equation 1 in Begelman, Scepi & Dexter 2022)
+    def calc_PhiSph(self, **kwargs):
+        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        if (kwargs.get('hemisphere', 'upper') == 'upper'):
+            norm = (self.th < np.pi/2.) * norm
+            return (norm * self.B[1] * (self.Rg * self.Rg) * (
+                self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+        else:
+            norm = (self.th > np.pi/2.) * norm
+            return -(norm * self.B[1] * (self.Rg * self.Rg) * (
+                self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+        
+    # Calculate Phi_mid (Equation 2 in Begelman, Scepi & Dexter 2022)
+    def calc_PhiMid(self, **kwargs):
+        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        ith0 = int(len(self.th[0, 0, :, 0])/2 - 1)
+        return (0.5 * norm * (
+            (self.B[2] * self.gdet)[:, :, ith0, :] + 
+            (self.B[2] * self.gdet)[:, :, ith0+1, :]) * (
+            (self.Rg * self.Rg) * self.dx3)).sum(-1)
+
+    # Calculate Phi_max (Equation 8 in Liska et al. 2019)
+    def calc_PhiMax(self, **kwargs):
+        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        len_2 = len(self.th[0, 0, :, 0]) / 2.
+        if (kwargs.get('hemisphere', 'upper') == 'upper'):
+            norm = ((self.th < np.pi/2.) * norm * len_2)
+            return (norm * np.amax(
+                np.abs(self.B[1] * self.gdet), axis=2, keepdims=True) * (
+                (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(-1).sum(-1)
+        else:
+            norm = ((self.th > np.pi/2.) * norm * len_2)
+            return -(norm * np.amax(
+                np.abs(self.B[1] * self.gdet), axis=2, keepdims=True) * (
+                (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(-1).sum(-1)
+    
     # Calculate energy accretion rate as a function of radius
+    # Note that T^{mu}_{nu} > 0 implies inward accretion.
     def calc_Edot(self, **kwargs):
         rho0c2 = self.rho0 * self.c * self.c
         if 'TMHD' not in kwargs:
@@ -156,8 +196,27 @@ class Accretion():
         else:
             return 1.0
 
-    # Calculate optical depth if required for tau_cut        
+    # Calculate optical depth if required for tau_cut  
+    # Returns optical depth to electron scattering 
+    # if opacities = ['electron_scattering']
+    # otherwise, returns effective absorption+scattering opacity
     def calc_tau(self, **kwargs):
+        c, Rg = self.c, self.Rg
+        
+        kappa = self.calc_kappa(**kwargs)
+        
+        if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
+            sigma = self.b2 / (4. * np.pi * self.rho * c * c)
+            kwargs['sigma'] = sigma
+        elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
+            sigma = kwargs.get('sigma')
+
+        return self.integrate_kappa(kappa, **kwargs)
+
+    # Returns opacity used for optical depth integration 
+    # if opacities = ['electron_scattering']
+    # otherwise, returns sqrt(kappa_a * (kappa_a + kappa_es))
+    def calc_kappa(self, **kwargs):
         c, Rg = self.c, self.Rg
         if self.kwargs.get('radiation'):
             import radiation
@@ -178,46 +237,90 @@ class Accretion():
             if 'b2' not in kwargs:
                 Fld = Field(self.pars, self.CONSTANTS, 
                             cgs=self.kwargs.get('cgs'))
-                b2  = Fld.calc_b2(self.B, self.B, self.gcov,
-                        from_B=True, uu=self.uu)
+                self.b2 = Fld.calc_b2(self.B, self.B, self.gcov,
+                                      from_B=True, uu=self.uu)
             else:
-                b2  = kwargs.get('b2')
-            Opac  = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
-                self.pars, self.CONSTANTS, b2 = b2, XRB = True)
+                self.b2 = kwargs.get('b2')
+            Opac = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
+                self.pars, self.CONSTANTS, b2 = self.b2, XRB = True)
         else:
-            Opac  = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
+            Opac = radiation.Opacity(opacities, self.rho, self.Te, self.urad,
                 self.pars, self.CONSTANTS, XRB = True)
-        
-        if 'sigma' not in kwargs:
-            if 'b2' not in kwargs and 'synchrotron' not in opacities:
-                Fld = Field(self.pars, self.CONSTANTS, 
-                            cgs=self.kwargs.get('cgs'))
-                b2  = Fld.calc_b2(self.B, self.B, self.gcov,
-                        from_B=True, uu=self.uu)
-            else:
-                b2  = kwargs.get('b2')
-            sigma = b2 / (4. * np.pi * self.rho * c * c)
-        else:
-            sigma = kwargs.get('sigma')
-            
 
         if (len(Opac.opacities) == 1 and 'electron_scattering' in opacities):
             kappa = Opac.opacities['electron_scattering']
         else:
-            kappa = Opac.opacities['absorption_total']
-            
-        Coords = Coordinates(self.r / Rg, self.th, self.phi, self.pars, 
-                             self.CONSTANTS)
-        
-        if kwargs.get('integral', 'theta') == 'z':
-            return Rg * Coords.cum_integrate_z(kappa * self.rho, 
-                self.gcov[2, 2], theta_cut = kwargs.get('theta_cut', np.pi/6.), 
-				**kwargs)
-        else:
-            return Rg * Coords.cum_integrate_th(kappa * self.rho, 
-                self.gcov[2, 2], theta_cut = kwargs.get('theta_cut', np.pi/6.), 
-				**kwargs)
+            kappa_abs = Opac.opacities['absorption_total']
+            kappa_es  = Opac.opacities['electron_scattering']
+            kappa     = np.sqrt(kappa_abs * (kappa_abs + kappa_es))
+        return kappa
 
+    # Determine how to integrate kappa ds (s = z, r, theta)
+    def integrate_kappa(self, kappa, **kwargs):
+        import coordinates
+        if kwargs.get('integral', 'theta') == 'z':
+            return self.integrate_in_z(kappa, **kwargs)
+        elif kwargs.get('integral', 'theta') == 'r':
+            return self.integrate_in_r(kappa, **kwargs)
+        else:
+            return self.integrate_in_theta(kappa, **kwargs)
+
+    def integrate_in_z(self, kappa, **kwargs):
+        if not kwargs.get('interpolate', False):
+            return self.integrate_in_z_direct(kappa, **kwargs)
+        elif kwargs.get('interpolate', False):
+            return self.integrate_in_z_interpolate(kappa, **kwargs)
+
+    def integrate_in_z_direct(self, kappa, **kwargs):
+        import coordinates
+        c, Rg = self.c, self.Rg
+        Coords = coordinates.Coordinates(self.r / Rg, self.th, self.phi, 
+                                         self.pars, self.CONSTANTS)            
+        gcov_cart = Coords.int_to_cart_cotnsr(self.gcov)
+        if (len(list(self.rho.shape)) > 2 and self.rho.shape[0] == 1):
+            print("z integration without interpolation may be " + 
+                  "very slow on 3D arrays. Consider using interpolate=True.")
+            tau   = np.zeros(self.rho.shape)
+            sigma = kwargs.pop('sigma')
+            for k in range(tau.shape[-1]):
+                Integrals = coordinates.Integrals(self.r[0, :, :, k] / self.Rg, 
+                    self.th[0, :, :, k], self.phi[0, :, :, k], 
+                    self.pars, self.CONSTANTS)
+                kwargs['sigma'] = sigma[0, :, :, k]
+                tau[0, :, :, k] = self.Rg * Integrals.cum_integrate_z(
+                    (kappa * self.rho)[0, :, :, k], 
+                    gcov_cart[3, 3, 0, :, :, k], **kwargs)
+        else:
+            Integrals = coordinates.Integrals(self.r / self.Rg, 
+                self.th, self.phi, self.pars, self.CONSTANTS)
+            tau = self.Rg * Integrals.cum_integrate_z(kappa * self.rho, 
+                                                      gcov_cart[3, 3], **kwargs)
+        return tau
+
+    def integrate_in_z_interpolate(self, kappa, **kwargs):
+        import coordinates
+        c, Rg = self.c, self.Rg
+        Coords = coordinates.Coordinates(self.r / Rg, self.th, self.phi, 
+                                         self.pars, self.CONSTANTS)            
+        gcov_cart = Coords.int_to_cart_cotnsr(self.gcov)
+        Integrals = coordinates.Integrals(self.r / self.Rg, self.th, self.phi, 
+                                          self.pars, self.CONSTANTS)
+        pass
+
+    def integrate_in_r(self, kappa, **kwargs):
+        import coordinates
+        Integrals = coordinates.Integrals(self.r / self.Rg, self.th, self.phi, 
+                                          self.pars, self.CONSTANTS)
+        return self.Rg * Integrals.cum_integrate_r(kappa * self.rho, 
+            self.gcov[1, 1], **kwargs)
+    
+    def integrate_in_theta(self, kappa, **kwargs):
+        import coordinates
+        Integrals = coordinates.Integrals(self.r / self.Rg, self.th, self.phi, 
+                                          self.pars, self.CONSTANTS)
+        return self.Rg * Integrals.cum_integrate_th(kappa * self.rho, 
+            self.gcov[2, 2], **kwargs)
+    
     # Upscale q to 64-bit precision and apply units
     def upscale64(self, q, units):
         q_dbl  = np.float64(q.copy())
@@ -254,7 +357,7 @@ class AccretionBK(Accretion):
         Mdot = super().calc_Mdot(**kwargs)
         return self.fold(Mdot)
     
-    def calc_PhiBHBK(self):
+    def calc_PhiBHBK(self, **kwargs):
         PhiBH = super().calc_PhiBH(**kwargs)
         return self.fold(PhiBH)
     
@@ -262,7 +365,7 @@ class AccretionBK(Accretion):
         Edot = super().calc_Edot(**kwargs)
         return self.fold(Edot)
 
-    def calc_LdotBK(self):
+    def calc_LdotBK(self, **kwargs):
         Ldot = super().calc_Ldot(**kwargs)
         return self.fold(Ldot)
 
@@ -280,557 +383,6 @@ class AccretionBK(Accretion):
     def fold(self, q):
         return q
 
-class Analytic():
-    def __init__(self, CONSTANTS, **kwargs):
-        self.CONSTANTS = CONSTANTS
-        self.cgs = kwargs.get('cgs', True)
-        if (self.cgs):
-            self.c    = CONSTANTS['c'] # cm/s
-        else:
-            self.c    = 1.0
-
-    # Calculate Eddington luminosity for black hole of mass MBH (solar masses)
-    def calc_LEdd(self, MBH):
-        return 1.26e38*MBH # erg/s
-
-    # Calculate Eddington accretion rate for black hole of mass MBH
-    def calc_Mdot_Edd(self, MBH, **kwargs):
-        eta = kwargs.get('eta', 0.1)
-        return self.calc_LEdd(MBH) / (eta * self.c * self.c)
-
-    # Calculate radius of (outer) event horizon for Kerr black hole 
-    # with spin parameter a
-    def calc_R_Horizon(self, a):
-        return 1. + np.sqrt(1 - a*a)
-    
-    # Radius of the innermost stable circular orbit (R_ISCO / R_g)
-    # Eq. 5.4.8a in Novikov & Thorne (1973)
-    # Sign correction shown in Eq. 15k of Page & Thorne (1974)
-    def calc_R_ISCO(self, a):
-        z1 = self.calc_Z1(a)
-        z2 = self.calc_Z2(a)
-        return (3. + z2 - 
-            np.sign(a) * ((3. - z1) * (3. + z1 + 2. * z2))**(1./2.))
-
-    # Eq. 5.4.8b in Novikov & Thorne (1973)
-    def calc_Z1(self, a):
-        return (1. + (1. - a * a)**(1./3.) * (
-            (1. + a)**(1./3.) + (1. - a)**(1./3.)))
-    
-    # Eq. 5.4.8b in Novikov & Thorne (1973)
-    def calc_Z2(self, a):
-        return (3. * a * a + (self.calc_Z1(a))**2.)**(1./2.)
-    
-    # Calculate Novikov & Thorne (1973) (with corrections from
-    # Page & Thorne 1974) efficiency of thin-disk accretion eta
-    # Expects dimensionless radius (units of R_g)
-    def calc_efficiency_NT73(self, r, a):
-        deta_dr = self.calc_dissipation_NT73(r, a)
-        dr      = np.append(np.diff(r), np.diff(r)[-1])
-        eta     = np.zeros(len(r))
-        eta     = np.cumsum(deta_dr * dr)
-        return eta
-
-    # Calculate Novikov & Thorne (1973) local dissipation rate
-    def calc_dissipation_NT73(self, r, a):
-        NT73    = Novikov_Thorne(self.CONSTANTS)
-        r_ISCO  = self.calc_R_ISCO(a)
-        r_NT    = r[r > r_ISCO]
-        deta_dr = np.zeros(len(r))
-        deta_dr[r > r_ISCO] = NT73.calc_dEdot_Mdot_dr(r_NT, a)
-        return deta_dr
-    
-class Novikov_Thorne(Analytic):
-    # Inherited class for Novikov-Thorne thin disk functions
-    # with corrections due to Page & Thorne (1974)
-    def __init__(self, CONSTANTS, **kwargs):
-        super().__init__(CONSTANTS, **kwargs)
-    
-    # Calculate d/dr (Edot/Mdot) given in Page & Thorne (1974)
-    # Eq. 15n (function called f)
-    # Expects r as dimensionless radius (units of R_g)
-    def calc_dEdot_Mdot_dr(self, r, a):
-        x    = np.sqrt(r)
-        x0   = np.sqrt(super().calc_R_ISCO(a))
-        x1   = 2. * np.cos( (1./3.) * np.acos(a) - np.pi / 3. )
-        x2   = 2. * np.cos( (1./3.) * np.acos(a) + np.pi / 3. )
-        x3   = -2. * np.cos( (1. / 3.) * np.acos(a) )
-        xarr = [x, x1, x2, x3, x0]
-        return ((3./2.) * (1. / (x ** 2. * (x ** 3. - 3. * x + 2. * a))) * (
-            x - x0 - (3./2.) * a * np.log(x / x0) 
-            - self.get_log_term(xarr, a, 1)
-            - self.get_log_term(xarr, a, 2)
-            - self.get_log_term(xarr, a, 3)
-
-        ))
-    
-    def get_log_term(self, xarr, a, n):
-        x  = xarr[0]
-        x0 = xarr[-1]
-        xc = xarr[:-1] + xarr[1:-1] # "x cyclic" simplifies cyclic pattern
-        return (3. * ((xarr[n] - a) ** 2.) * (
-            np.log((x - xarr[n])/(x0 - xarr[n])) * (
-            1. / (xarr[n] * (xarr[n] - xc[n + 1]) * (xarr[n] - xc[n + 2])))
-        ))
-
-class Coordinates():
-    def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
-        self.MBH = kwargs.get('MBH', 1.0)
-        self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
-        if (kwargs.get('cgs', False)):
-            self.c    = CONSTANTS['c']        # cm/s
-            self.G    = CONSTANTS['G']        # cm^3/g s^2
-            self.Msun = CONSTANTS['Msun']     # g
-        else:
-            self.c    = 1.0
-            self.G    = 1.0
-            self.Msun = 1.0
-            self.MBH  = 1.0
-
-        Rg = (self.G * self.MBH * self.Msun) / (self.c * self.c)
-
-        self.r  = r / Rg
-        self.th = theta
-        self.ph = phi
-
-    # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_vec(self, vec, **kwargs):
-        shape = list(vec.shape)
-        shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-
-        # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
-        drdx[0, 0] = 1.0
-        drdx[1, 1] = (np.sin(self.th) * np.cos(self.ph))
-        drdx[1, 2] = (self.r * np.cos(self.th) * np.cos(self.ph))
-        drdx[1, 3] = (-self.r * np.sin(self.th) * np.sin(self.ph))
-        drdx[2, 1] = (np.sin(self.th) * np.sin(self.ph))
-        drdx[2, 2] = (self.r * np.cos(self.th) * np.sin(self.ph))
-        drdx[2, 3] = (self.r * np.sin(self.th) * np.cos(self.ph))
-        drdx[3, 1] = (np.cos(self.th))
-        drdx[3, 2] = (-self.r * np.sin(self.th))
-
-        if not kwargs.get('cpp', False):
-            return np.einsum('ij...,j...->i...', drdx, vec)
-        else:
-            return Tools.contract_vector_cpp(vec, drdx)
-
-    # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_one_form(self, one_form, **kwargs):
-        return self.cart_to_sph_vec(one_form, **kwargs)
-    
-    # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
-        shape.insert(0, 4)
-        shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-        
-        # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
-        drdx[0, 0] = 1.0
-        drdx[1, 1] = (np.sin(self.th) * np.cos(self.ph))
-        drdx[1, 2] = (self.r * np.cos(self.th) * np.cos(self.ph))
-        drdx[1, 3] = (-self.r * np.sin(self.th) * np.sin(self.ph))
-        drdx[2, 1] = (np.sin(self.th) * np.sin(self.ph))
-        drdx[2, 2] = (self.r * np.cos(self.th) * np.sin(self.ph))
-        drdx[2, 3] = (self.r * np.sin(self.th) * np.cos(self.ph))
-        drdx[3, 1] = (np.cos(self.th))
-        drdx[3, 2] = (-self.r * np.sin(self.th))
-
-        return np.einsum('kl...,ki...,lj...->ij...', tnsr, drdx, drdx)
-
-    # (t, r, theta, phi) -> (t, x, y, z)
-    def sph_to_cart_cotnsr(self, cotnsr, **kwargs):
-        return self.cart_to_sph_tnsr(cotnsr, **kwargs)
- 
-    # (t, x, y, z) -> (t, r, theta, phi)
-    def cart_to_sph_vec(self, vec, **kwargs):
-        shape = list(vec.shape)
-        shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-
-        # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
-        dxdr[0, 0] = 1.0
-        dxdr[1, 1] = (np.sin(self.th) * np.cos(self.ph))
-        dxdr[1, 2] = (np.sin(self.th) * np.sin(self.ph))
-        dxdr[1, 3] = (np.cos(self.th))
-        dxdr[2, 1] = ((1. / self.r) * (np.cos(self.th) * np.cos(self.ph)))
-        dxdr[2, 2] = ((1. / self.r) * (np.cos(self.th) * np.sin(self.ph)))
-        dxdr[2, 3] = (-(1. / self.r) * np.sin(self.th))
-        dxdr[3, 1] = (-(1. / self.r) * np.sin(self.ph) / np.sin(self.th))
-        dxdr[3, 2] = ((1. / self.r) * np.cos(self.ph) / np.sin(self.th))
-
-        if not kwargs.get('cpp', False):
-            return np.einsum('ij...,j...->i...', dxdr, vec)
-        else:
-            return Tools.contract_vector_cpp(vec, dxdr)
-    
-    # (t, x, y, z) -> (t, r, theta, phi)
-    def cart_to_sph_one_form(self, one_form, **kwargs):
-        return self.sph_to_cart_vec(one_form, **kwargs)
-
-    # (t, x, y, z) -> (t, r, theta, phi)
-    def cart_to_sph_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
-        shape.insert(0, 4)
-        shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-
-        # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
-        dxdr[0, 0] = 1.0
-        dxdr[1, 1] = (np.sin(self.th) * np.cos(self.ph))
-        dxdr[1, 2] = (np.sin(self.th) * np.sin(self.ph))
-        dxdr[1, 3] = (np.cos(self.th))
-        dxdr[2, 1] = ((1. / self.r) * (np.cos(self.th) * np.cos(self.ph)))
-        dxdr[2, 2] = ((1. / self.r) * (np.cos(self.th) * np.sin(self.ph)))
-        dxdr[2, 3] = (-(1. / self.r) * np.sin(self.th))
-        dxdr[3, 1] = (-(1. / self.r) * np.sin(self.ph) / np.sin(self.th))
-        dxdr[3, 2] = ((1. / self.r) * np.cos(self.ph) / np.sin(self.th))
-        
-        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxdr, dxdr)
-    
-    def cart_to_sph_cotnsr(self, cotnsr, **kwargs):
-        return self.sph_to_cart_tnsr(cotnsr, **kwargs)
-
-    # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_vec(self, vec, **kwargs):
-        shape = list(vec.shape)
-        shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-
-        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
-        drdz[0, 0] = 1.
-        drdz[1, 1] = np.sin(self.th)
-        drdz[1, 2] = self.r * np.cos(self.th)
-        drdz[2, 3] = self.r * np.sin(self.th)
-        drdz[3, 1] = np.cos(self.th)
-        drdz[3, 2] = -self.r * np.sin(self.th)
-
-        if not kwargs.get('cpp', False):
-            return np.einsum('ij...,j...->i...', drdz, vec)
-        else:
-            return Tools.contract_vector_cpp(vec, drdz)
-    
-    # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_one_form(self, one_form, **kwargs):
-        return self.cyl_to_sph_vec(one_form, **kwargs)
-
-    # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
-        shape.insert(0, 4)
-        shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-        
-        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
-        drdz[0, 0] = 1.
-        drdz[1, 1] = np.sin(self.th)
-        drdz[1, 2] = self.r * np.cos(self.th)
-        drdz[2, 3] = self.r * np.sin(self.th)
-        drdz[3, 1] = np.cos(self.th)
-        drdz[3, 2] = -self.r * np.sin(self.th)
-        
-        return np.einsum('kl...,ki...,lj...->ij...', tnsr, drdz, drdz)
-
-    # (t, r, theta, phi) -> (t, R, phi, z)
-    def sph_to_cyl_cotnsr(self, cotnsr, **kwargs):
-        return self.cyl_to_sph_tnsr(cotnsr, **kwargs)
-
-    # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_vec(self, vec, **kwargs):
-        shape = list(vec.shape)
-        shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-        
-        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
-        dzdr[0, 0] = 1.
-        dzdr[1, 1] = np.sin(self.th)
-        dzdr[1, 2] = 0.
-        dzdr[1, 3] = np.cos(self.th)
-        dzdr[2, 1] = (1. / self.r) * np.cos(self.th)
-        dzdr[2, 3] = -(1. / self.r) * np.sin(self.th)
-        dzdr[3, 2] = (1. / self.r) * (1. / np.sin(self.th))
-
-        if not kwargs.get('cpp', False):
-            return np.einsum('ij...,j...->i...', dzdr, vec)
-        else:
-            return Tools.contract_vector_cpp(vec, dzdr)
-
-    # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_one_form(self, one_form, **kwargs):
-        return self.sph_to_cyl_vec(one_form, **kwargs)
-
-    # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
-        shape.insert(0, 4)
-        shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-        
-        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
-        dzdr[0, 0] = 1.
-        dzdr[1, 1] = np.sin(self.th)
-        dzdr[1, 2] = 0.
-        dzdr[1, 3] = np.cos(self.th)
-        dzdr[2, 1] = (1. / self.r) * np.cos(self.th)
-        dzdr[2, 3] = -(1. / self.r) * np.sin(self.th)
-        dzdr[3, 2] = (1. / self.r) * (1. / np.sin(self.th))
-        
-        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dzdr, dzdr)
-
-    # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_cotnsr(self, cotnsr, **kwargs):
-        return self.sph_to_cyl_tnsr(cotnsr, **kwargs)
-
-    # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_vec(self, vec, **kwargs):
-        shape = list(vec.shape)
-        shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-
-        # Transformation to Spherical Kerr Schild from internal coordinates
-        dxdxp[0, 0] = 1.0
-        dxdxp[1, 1] = self.r
-        dxdxp[2, 2] = np.pi / 2.0
-        dxdxp[3, 3] = 1.0
-
-        if not kwargs.get('cpp', False):
-            return np.einsum('ij...,j...->i...', dxdxp, vec)
-        else:
-            return Tools.contract_vector_cpp(vec, dxdxp)
-
-    # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_one_form(self, one_form, **kwargs):
-        return self.sph_to_int_vec(one_form, **kwargs)
-
-    # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
-        shape.insert(0, 4)
-        shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-
-        # Transformation to Spherical Kerr Schild from internal coordinates
-        dxdxp[0, 0] = 1.0
-        dxdxp[1, 1] = self.r
-        dxdxp[2, 2] = np.pi / 2.0
-        dxdxp[3, 3] = 1.0
-
-        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxdxp, dxdxp)
-    
-    # (t, x1, x2, x3) -> (t, r, theta, phi) 
-    def int_to_sph_cotnsr(self, cotnsr, **kwargs):
-        return self.sph_to_int_tnsr(cotnsr, **kwargs)
-
-    # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_vec(self, vec, **kwargs):
-        shape = list(vec.shape)
-        shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-
-        # Transformation to internal coordinates from Spherical Kerr Schild
-        dxpdx[0, 0] = 1.0
-        dxpdx[1, 1] = 1. / self.r
-        dxpdx[2, 2] = 2.0 / np.pi
-        dxpdx[3, 3] = 1.0
-
-        if not kwargs.get('cpp', False):
-            return np.einsum('ij...,j...->i...', dxpdx, vec)
-        else:
-            return Tools.contract_vector_cpp(vec, dxpdx)
-
-    # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_one_form(self, one_form, **kwargs):
-        return self.int_to_sph_vec(one_form, **kwargs)
-
-    # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
-        shape.insert(0, 4)
-        shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-        
-        # Transformation to internal coordinates from Spherical Kerr Schild
-        dxpdx[0, 0] = 1.0
-        dxpdx[1, 1] = 1. / self.r
-        dxpdx[2, 2] = 2.0 / np.pi
-        dxpdx[3, 3] = 1.0
-        
-        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxpdx, dxpdx)
-
-    # (t, r, theta, phi) -> (t, x1, x2, x3) 
-    def sph_to_int_cotnsr(self, cotnsr, **kwargs):
-        return self.int_to_sph_tnsr(cotnsr, **kwargs)
-
-    # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_vec(self, vec, **kwargs):
-        return self.sph_to_cart_vec(
-            self.int_to_sph_vec(vec, **kwargs), **kwargs)
-
-    # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_one_form(self, one_form, **kwargs):
-        return self.sph_to_cart_one_form(
-            self.int_to_sph_one_form(one_form, **kwargs), **kwargs)
-
-    # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_tnsr(self, tnsr, **kwargs):
-        return self.sph_to_cart_tnsr(
-            self.int_to_sph_tnsr(tnsr, **kwargs), **kwargs)
-
-    # (t, x1, x2, x3) -> (t, x, y, z) 
-    def int_to_cart_cotnsr(self, cotnsr, **kwargs):
-        return self.sph_to_cart_cotnsr(
-            self.int_to_sph_cotnsr(cotnsr, **kwargs), **kwargs)
-
-    # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_vec(self, vec, **kwargs):
-        return self.sph_to_cyl_vec(
-            self.int_to_sph_vec(vec, **kwargs), **kwargs)
-    
-    # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_one_form(self, one_form, **kwargs):
-        return self.sph_to_cyl_one_form(
-            self.int_to_sph_one_form(one_form, **kwargs), **kwargs)
-    
-    # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_tnsr(self, tnsr, **kwargs):
-        return self.sph_to_cyl_tnsr(
-            self.int_to_sph_tnsr(tnsr, **kwargs), **kwargs)
-    
-    # (t, x1, x2, x3) -> (t, R, phi, z) 
-    def int_to_cyl_cotnsr(self, cotnsr, **kwargs):
-        return self.sph_to_cyl_cotnsr(
-            self.int_to_sph_cotnsr(cotnsr, **kwargs), **kwargs)
-
-    # Compute dot product between two vectors in the desired
-    # coordinate system. Assumes vec_a, vec_b, and gcov are in
-    # internal coordinates. Memory intensive on 3D arrays.
-    # As an alternative, one could compute the one-form of the vector a,
-    # and then convert to the desired coordinate system; however, this
-    # requires computing the inverse of the coordinate transformation matrix.
-    def dot(self, vec_a_in, vec_b_in, gcov, coord_system, **kwargs):
-        vec_a = np.copy(vec_a_in)
-        vec_b = np.copy(vec_b_in)
-        if (coord_system == 'internal'):
-            if 'component' in kwargs:
-                vec_a, vec_b = self.isolate_component(vec_a, vec_b, **kwargs)
-            return Tools.dot(vec_a, vec_b, gcov, **kwargs)
-        elif (coord_system == 'spherical'):
-            gcov_sph  = self.int_to_sph_cotnsr(gcov)
-            vec_a_sph = self.int_to_sph_vec(vec_a)
-            vec_b_sph = self.int_to_sph_vec(vec_b)
-            if 'component' in kwargs:
-                vec_a_sph, vec_b_sph = self.isolate_component(
-                    vec_a_sph, vec_b_sph, **kwargs)
-            return Tools.dot(vec_a_sph, vec_b_sph, gcov_sph, **kwargs)
-        elif (coord_system == 'cylindrical'):
-            gcov_cyl  = self.int_to_cyl_cotnsr(gcov)
-            vec_a_cyl = self.int_to_cyl_vec(vec_a)
-            vec_b_cyl = self.int_to_cyl_vec(vec_b)
-            if 'component' in kwargs:
-                vec_a_cyl, vec_b_cyl = self.isolate_component(
-                    vec_a_cyl, vec_b_cyl, **kwargs)
-            return Tools.dot(vec_a_cyl, vec_b_cyl, gcov_cyl, **kwargs)
-        elif (coord_system == 'Cartesian'):
-            gcov_cart  = self.int_to_cart_cotnsr(gcov)
-            vec_a_cart = self.int_to_cart_vec(vec_a)
-            vec_b_cart = self.int_to_cart_vec(vec_b)
-            if 'component' in kwargs:
-                vec_a_cart, vec_b_cart = self.isolate_component(
-                    vec_a_cart, vec_b_cart, **kwargs)
-            return Tools.dot(vec_a_cart, vec_b_cart, gcov_cart, **kwargs)
-
-    # Zero all components other than kwargs.get('component')
-    def isolate_component(self, vec_a, vec_b, **kwargs):
-        indices_to_zero = [1, 2, 3]
-        for i in range(0, 4):
-            if (kwargs.get('component') == int(i)):
-                if (int(i) != 0):
-                    indices_to_zero.remove(int(i))
-        for index in indices_to_zero:
-            vec_a[index] = 0.
-            vec_b[index] = 0.
-        return vec_a, vec_b
-
-    # symmetric \int_{0}^{\theta} dth q(r, th)
-    def cum_integrate_th(self, q, gcov22, **kwargs):
-        int_qdth = np.zeros(q.shape)
-        qdth = q * np.sqrt(gcov22) * self.dx2 * (
-            self.sigma_cut(**kwargs) * self.theta_cut(**kwargs))
-        shape = list(q.shape)
-        if (len(shape) == 2):
-            ith0 = np.argwhere(self.th[0, :] < np.pi/2)[-1][0] + 1
-            int_qdth[:, :ith0] = np.cumsum(qdth[:, :ith0], axis=-1)
-            int_qdth[:, ith0:] = np.cumsum(qdth[:, ith0:][:, ::-1],
-                                           axis=-1)[:, ::-1]
-        elif (len(shape) == 3):
-            ith0 = np.argwhere(self.th[0, :, 0] < np.pi/2)[-1][0] + 1
-            int_qdth[:, :ith0, :] = np.cumsum(qdth[:, :ith0, :], axis=1)
-            int_qdth[:, ith0:, :] = np.cumsum(qdth[:, ith0:, :][:, ::-1, :],
-                                              axis=1)[:, ::-1, :]
-        elif (len(shape) == 4):
-            ith0 = np.argwhere(self.th[0, :, 0, 0] < np.pi/2)[-1][0] + 1
-            int_qdth[:, :, :ith0, :] = np.cumsum(qdth[:, :, :ith0, :], axis=2)
-            int_qdth[:, :, ith0:, :] = np.cumsum(
-                qdth[:, :, ith0:, :][:, :, ::-1, :], axis=2)[:, :, ::-1, :]
-        return int_qdth
-
-    def cum_integrate_z(self, q, gcovZZ, **kwargs):
-        # note that this only works with a 2D array
-        int_qdz = np.zeros(q.shape)
-        z       = self.r * np.cos(self.th)
-        dz      = (np.abs(np.sqrt(gcovZZ) * self.dx1 * np.cos(self.th)) +
-            np.abs(np.sqrt(gcovZZ) * (np.pi/2.) * self.dx2 * np.sin(self.th)))
-        R_cyl   = self.r * np.sin(self.th)
-        dR_cyl  = self.r * self.dx1 * np.sin(self.th) 
-        Rcyl_min= R_cyl - 0.5 * dR_cyl
-        Rcyl_max= R_cyl + 0.5 * dR_cyl
-
-        qdz = q * dz * self.sigma_cut(**kwargs) * self.theta_cut(**kwargs)
-        int_qdz = self.int_dz_loop(int_qdz, qdz, self.r, self.th, z, 
-                                   R_cyl, Rcyl_min, Rcyl_max)
-        
-        return int_qdz
-
-    @staticmethod
-    @jit(nopython=True, parallel=True)
-    def int_dz_loop(int_qdz, qdz, r, th, z, R_cyl, Rcyl_min, Rcyl_max):
-        for ir in prange(len(r[:, 0])):
-            for ith in range(len(th[0, :])):
-                temp_sum = 0.0
-                for jr in range(len(r[:, 0])):
-                    for jth in range(len(th[0, :])):
-                        if ((R_cyl[jr, jth] < Rcyl_max[ir, ith]) and
-                            (R_cyl[jr, jth] > Rcyl_min[ir, ith])):
-                            if (z[ir, ith] >= 0.):
-                                if (z[jr, jth] > z[ir, ith]):
-                                    temp_sum += qdz[jr, jth]
-                            else:
-                                if (z[jr, jth] < z[ir, ith]):
-                                    temp_sum += qdz[jr, jth]
-
-                int_qdz[ir, ith] = temp_sum
-        return int_qdz
-    
-    # Return where sigma < sigma_cut
-    def sigma_cut(self, **kwargs):
-        if 'sigma_cut' in kwargs and 'sigma' in kwargs:
-            sigma = kwargs.get('sigma')
-            return (sigma < kwargs.get('sigma_cut'))
-        elif 'sigma_cut' in kwargs and 'sigma' not in kwargs:
-            raise TypeError("Missing sigma in kwargs.")
-        elif 'sigma_cut' not in kwargs and 'sigma' in kwargs:
-            raise TypeError("Must specify value of sigma_cut.")
-        else:
-            return 1.0
-
-    def theta_cut(self, **kwargs):
-        if 'theta_cut' in kwargs:
-            return ((self.th > kwargs.get('theta_cut')) & 
-                    (self.th < np.pi - kwargs.get('theta_cut')))
-        else:
-            return 1.0
-
 class Field():
     def __init__(self, pars, CONSTANTS, **kwargs):
         self.cgs = kwargs.get('cgs', False)
@@ -842,6 +394,8 @@ class Field():
             self.rho0 = 1.0
             self.c    = 1.0
             self.B0   = 1.0
+
+        self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
 
     # Compute b from B
     # Assumes B has units and returns b with units
@@ -866,13 +420,12 @@ class Field():
     # Assumes B and uu have units
     def calc_b2(self, b, B, gcov, **kwargs):
         if (kwargs.get('from_B')):
-            if (kwargs.get('uu') is None):
+            if 'uu' in kwargs:
+                b = self.calc_b(B=B, gcov=gcov, **kwargs)
+            else: 
                 raise TypeError("Must specify uu to use from_B.")
-            else:
-                uu = kwargs.pop('uu')
-                b  = self.calc_b(B, uu, gcov, **kwargs)
         return Tools.dot(b, b, gcov, **kwargs)
-    
+        
     # Compute the electromagnetic stress-energy tensor
     # Default TEM^{mu, nu}
     # "upper_lower": TEM^{mu}_{nu} 
@@ -925,8 +478,121 @@ class Field():
         return ( (b2 / B02) * uu_tnsr + 
             0.5 *(b2 / B02) * g_tnsr - bb_tnsr) * rho0c2
     
+    # Compute the electromagnetic field-strength tensor
+    # Referred to as the Faraday tensor in MTW
+    # Default FEM^{mu, nu}
+    # "upper_lower": FEM^{mu}_{nu} 
+    # "lower_lower": FEM_{mu, nu}
+    # Assumes uu and B have units
+    # If frame = generic, assumes B is measured in frame uu,
+    # where uu = n would be frame of normal observer, etc.
+    # If frame = generic, electric field must be supplied as kwarg.
+    # Similarly, if non-ideal MHD, electric field must be supplied.
+    def calc_FEM(self, uu, B, gcov, gdet, **kwargs):
+        if (kwargs.get('frame', 'fluid') == 'fluid'):
+            if 'b' not in kwargs:
+                b = self.calc_b(B, uu, gcov, **kwargs)
+            elif 'b' in kwargs:
+                b = kwargs.get('b')
+            b  *= 1. / self.B0
+            uu *= 1. / self.c
+            uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
+            b_cov  = np.einsum('ij...,j...->i...', gcov, b)
+            levi_civita = Tools.calc_Levi_Civita(4, gdet)
+            FEM = -np.einsum(
+                'ijkl...,k...,l...->ij...', levi_civita, uu_cov, b_cov)
+            uu *= self.c
+        elif (kwargs.get('frame', 'fluid') == 'generic'):
+            if 'E' not in kwargs:
+                raise ValueError("Must supply E kwarg to use generic frame.")
+            E  *= 1. / np.sqrt(self.rho0) * self.c
+            B  *= 1. / self.B0
+            uu *= 1. / self.c
+            uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
+            b_cov  = np.einsum('ij...,j...->i...', gcov, b)
+            levi_civita = Tools.calc_Levi_Civita(4, gdet)
+            FEM = (np.einsum('i...,j...->ij...', uu, E) + 
+                   np.einsum('j...,i...->ij...', uu, E) -
+                   np.einsum('ijkl...,k...,l...->ij...', 
+                    levi_civita, uu_cov, b_cov))
+            uu *= self.c
+            B  *= self.B0
+            E  *= np.sqrt(self.rho0) * self.c
+        if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+            return FEM * (self.c * self.B0)
+        elif ('upper_lower' in kwargs and 'lower_lower' not in kwargs):
+            return (self.c * self.B0) * np.einsum(
+                'ij...,jk...->ik...', gcov, FEM) 
+        elif ('upper_lower' not in kwargs and 'lower_lower' in kwargs):
+            return (self.c * self.B0) * np.einsum(
+                'ij...,kl...,jl...->ik...', gcov, gcov, FEM)
+        else:
+            raise ValueError(
+                "Please select a valid frame for the Faraday tensor. " + 
+                "Options are frame=fluid or frame=generic."
+            )
+    
+    # Compute the dual of the electromagnetic field-strength tensor
+    # Referred to as the Maxwell tensor in MTW
+    # Default *FEM^{mu, nu}
+    # "upper_lower": *FEM^{mu}_{nu} 
+    # "lower_lower": *FEM_{mu, nu}
+    # Assumes uu and B have units
+    # If frame = generic, assumes B is measured in frame uu,
+    # where uu = n would be frame of normal observer, etc.
+    # If frame = generic, electric field must be supplied as kwarg.
+    # Similarly, if non-ideal MHD, electric field must be supplied.
+    def calc_dual_FEM(self, uu, B, gcov, gdet, **kwargs):
+        if (kwargs.get('frame', 'fluid') == 'fluid'):
+            if 'b' not in kwargs:
+                b = self.calc_b(B, uu, gcov, **kwargs)
+            elif 'b' in kwargs:
+                b = kwargs.get('b')
+            b  *= 1. / self.B0
+            uu *= 1. / self.c
+            dual_FEM = (np.einsum('i...,j...->ij...', b, uu) - 
+                        np.einsum('j...,i...->ij...', b, uu))
+            uu *= self.c
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                return dual_FEM * (self.c * self.B0)
+            elif ('upper_lower' in kwargs and 'lower_lower' not in kwargs):
+                return (self.c * self.B0) * np.einsum(
+                    'ij...,jk...->ik...', gcov, dual_FEM)
+            elif ('upper_lower' not in kwargs and 'lower_lower' in kwargs):
+                return (self.c * self.B0) * np.einsum(
+                    'ij...,kl...,jl...->ik...', gcov, gcov, dual_FEM)
+        elif (kwargs.get('frame', 'fluid') == 'generic'):
+            pass
+        else:
+            raise ValueError(
+                "Please select a valid frame for the Maxwell tensor. " + 
+                "Options are frame=fluid or frame=generic."
+            )
+        
+    # Calculate the 4-current by taking the divergence of the 
+    # field-strength (Faraday) tensor
+    def calc_J(self, uu, B, gcov, gdet, **kwargs):
+        faraday = self.calc_FEM(uu, B, gcov, gdet, **kwargs)
+        return Tools.div_tnsr(faraday, gdet, self.dx1, self.dx2, self.dx3)
+    
+    # Calculate J^2 = J_mu J^mu
+    # If from_FEM = True, calculate J first
+    def calc_J2(self, J, gcov, **kwargs):
+        if kwargs.get('from_FEM', False):
+            if ('uu' in kwargs and 'B' in kwargs and 'gdet' in kwargs):
+                J = self.calc_J(gcov=gcov, **kwargs)
+            else:
+                raise ValueError("Must specify uu, B, and gdet " + 
+                                 "to use from_FEM=True.")
+        return Tools.dot(J, J, gcov, **kwargs)
+
+    # Relativistic Alfvén velocity (vA)
     def calc_vA(self, rho, uu, B, u_gas, gcov, **kwargs):
-        c = self.c
+        rho0   = self.rho0
+        c      = self.c
+        rho0c2 = rho0 * c * c
+        B0     = self.B0
+        B02    = self.B0 * self.B0
         if 'b' not in kwargs and 'b2' not in kwargs:
             b  = self.calc_b(B, uu, gcov, **kwargs)
             b2 = self.calc_b2(b, b, gcov)
@@ -948,9 +614,10 @@ class Field():
 
         u_rad = kwargs.get('u_rad', 0.0) 
 
-        return b / np.sqrt(
-            rho * c * c +  u_gas + pgas + b2 / (8. * np.pi) + u_rad)
-
+        return c * (b / B0) / np.sqrt(
+            (rho / rho0)  +  (u_gas / rho0c2)  + (pgas / rho0c2) + 
+            (b2 / B02) + (4./3.) * (u_rad / rho0c2)
+        )
 
 class Fluid():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -1236,10 +903,65 @@ class Tools():
             if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
                 g_tnsr = gcon
             elif ('upper_lower' in kwargs):
-                g_tnsr = np.identity(4)
+                g_tnsr = Tools.get_identity(gcov, **kwargs)
             elif ('lower_lower' in kwargs):
                 g_tnsr = gcov
         return g_tnsr
+
+    def get_identity(gcov, **kwargs):
+        shape     = list(gcov.shape)
+        id_matrix = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        for mu in range(4):
+            for nu in range(4):
+                id_matrix[mu, nu] = (mu == nu) 
+        return id_matrix
+    
+    @staticmethod
+    def antisymmetric_symbol3(i, j, k):
+        if not all(n in (i, j, k) for n in range(3)):
+            return 0
+        if ((i, j, k) == (0, 1, 2) or
+            (i, j, k) == (1, 2, 0) or 
+            (i, j, k) == (2, 0, 1)):
+            return 1
+        return -1
+    
+    @staticmethod
+    def antisymmetric_symbol4(i, j, k, l):
+        if not all(n in (i, j, k, l) for n in range(4)):
+            return 0
+        if ((i, j, k, l) == (0, 1, 2, 3) or
+            (i, j, k, l) == (1, 2, 3, 0) or 
+            (i, j, k, l) == (2, 3, 0, 1) or
+            (i, j, k, l) == (3, 0, 1, 2)):
+            return 1
+        return -1
+    
+    def calc_Levi_Civita(n, gdet, **kwargs):
+        if (n == 3):
+            shape   = [3, 3, 3] + list(gdet.shape)
+            epsilon = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+            for i in range(3):
+                for j in range(3):
+                    for k in range(3):
+                        epsilon[i, j, k] = Tools.antisymmetric_symbol3(i, j,k)
+        elif (n == 4):
+            shape   = [4, 4, 4, 4] + list(gdet.shape)
+            epsilon = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+            for i in range(4):
+                for j in range(4):
+                    for k in range(4):
+                        for l in range(4):
+                            epsilon[i, j, k, l] = (
+                                Tools.antisymmetric_symbol4(i, j, k, l))
+        return (1. / gdet) * epsilon
+        
+    def div_tnsr(tnsr, gdet, dx1, dx2, dx3, **kwargs):
+        return (1. / gdet) * (
+            np.gradient((gdet * tnsr[:, 1]), axis=2) / (2. * dx1) + 
+            np.gradient((gdet * tnsr[:, 2]), axis=3) / (2. * dx2) + 
+            np.gradient((gdet * tnsr[:, 3]), axis=4) / (2. * dx3)
+        )
     
     def dot_cpp(a, b, gcov, **kwargs):
         import hamr_readc
@@ -1318,204 +1040,22 @@ class Tools():
                     'i...,j...->ij...', uu_mu, uu_nu, optimize=True)
         return uu_tnsr
 
+    # Smooth out function using convolution
+    def smooth(y, Lsmth, Lx, **kwargs): 
+        Nsmth = Lx/Lsmth
+        window = int(len(y)/Nsmth)
+        avg_mask = np.ones(window)/window
+        if (kwargs.get('edge') == 'periodic'):
+            # periodic edges
+            y = np.concatenate((y[-window:], y, y[:window]))
+        elif (kwargs.get('edge') == 'constant'):
+            # constant edges
+            y = np.concatenate((y[0]*np.ones(window), y, y[-1]*np.ones(window)))
+        else:
+            # reflective edges
+            y = np.concatenate((y[:window][::-1], y, y[-window:][::-1]))
+        yout = np.convolve(y, avg_mask, 'same')[window:-window]
+        return yout
+
 if __name__ == "__main__":
     print("Executing analysis.")
-
-
-'''
-    def integrate_th(self, q, gcov, **kwargs):
-        shape = list(q.shape)
-        if (len(shape) == 2): axis = -1
-        else: axis = 2
-        qdth = np.zeros(q.shape)
-        qdth[self.theta < np.pi/2.] 
-        np.cumsum((q * gcov[2, 2] * self.dx2 * (
-            self.sigma_cut(**kwargs))[self.theta < np.pi/2.]), axis=axis)
-        qdth[self.theta > np.pi/2.] np.cumsum((q * gcov[2, 2] * self.dx2 * (
-            self.sigma_cut(**kwargs))[self.theta > np.pi/2.][:, ::-1]), axis=axis)
-        return qdth
-
-
-                theta_max = np.asin(Rcyl_max[ir, ith] / r[-1, 0])
-                r_min     = Rcyl_min[ir, ith]
-                if (np.any(r[:, 0] < r_min)):
-                    ir_min  = np.where(r[:, 0] < r_min)[0][-1]
-                else:
-                    ir_min = 0
-                ir_max    = len(r[:, 0])
-                if (z[ir, ith] > 0):
-                    it_min    = 0
-                    it_max    = np.where(th[0, :] > theta_max)[0][0]
-                else:
-                    it_min = len(th[0, :]) / 2
-                    it_max = np.where(th[0, :] > theta_max)[0][0] + it_min
-                temp_sum  = 0.0
-                for jr in range(ir_min, ir_max):
-                    for jth in range(it_min, it_max):
-                        temp_sum += (q * dz)[jr, jth]
-                int_qdz[ir, ith] = temp_sum
-                
-                #in_R_range = (
-                #    (R_cyl < Rcyl_max[ir, ith]) &
-                #    (R_cyl > Rcyl_min[ir, ith]))
-                #if (z[ir, ith] >= 0.):
-                #    in_z_range = (z > z[ir, ith])
-                #elif (z[ir, ith] < 0.):
-                #    in_z_range = (z < z[ir, ith])
-                #int_qdz[ir, ith] = np.sum(
-                #    q * dz * in_R_range * in_z_range)
-
-
-# Calculate precession period
-def calc_PrecPeriod(angle_tilt):
-    gam,a,precperiod
-    uu_proj = project_vector(uu)
-    L = rho * r * uu_proj[3]
-    tilt=np.zeros((nb,bs1new,1,1),dtype=np.float32)
-    tilt[0,:,0,0]=(np.nan_to_num(angle_tilt)+0.1)/360.0*2.0*np.pi
-    Z1 = 1.0 + (1.0 - a ** 2.0) ** (1.0 / 3.0) * ((1.0 + a) ** (1.0 / 3.0) + (1.0 - a) ** (1.0 / 3.0))
-    Z2 = np.sqrt(3.0 * a ** 2.0 + Z1 ** 2.0)
-    r_isco = (3.0 + Z2 - np.sqrt((3.0 - Z1) * (3.0 + Z1 + 2.0 * Z2)))
-    L_tot = np.nan_to_num(L * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
-    vnod=1.0/(r**1.5+a)*(1.0-np.sqrt(1.0-4.0*a/r**1.5+3.0*a*a/r**2))
-    tau_tot = np.nan_to_num(L * vnod * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
-    precperiod = 2 * np.pi * L_tot / tau_tot
-
-# Calculate mass accretion rate as function of radius
-def calc_Mdot():
-    global Mdot
-    Mdot = (-gdet * rho * uu[1] * _dx2 * _dx3).sum(-1).sum(-1)
-
-def calc_profiles(cutoff):
-    global pgas_avg, rho_avg, pb_avg, Q_avg1_1,Q_avg1_2,Q_avg1_3, Q_avg2_1,Q_avg2_2,Q_avg2_3
-    calc_Q()
-    norm1 = (gdet * rho * (rho > cutoff)).sum(-1).sum(-1)
-    norm2 = (gdet * rho * (rho > cutoff)).sum(-1).sum(-1)
-    norm3 = (gdet * np.sqrt(np.abs(rho * bsq)) * (rho > cutoff)).sum(-1).sum(-1)
-    fact1 = gdet * rho * (rho > cutoff)
-    fact2 = gdet * np.sqrt(np.abs(rho * bsq)) * (rho > cutoff)
-    pgas_avg = (fact1 * (gam - 1.0) * ug).sum(-1).sum(-1) / norm1
-    pb_avg = (fact1 * bsq / 2.0).sum(-1).sum(-1) / norm1
-    rho_avg = (gdet * (rho > cutoff) * rho * rho)[:, :, :, :].sum(-1).sum(-1) / (gdet * rho* (rho > cutoff)).sum(-1).sum(-1)
-    Q_avg1_1 = (fact1 * Q[1]).sum(-1).sum(-1) / norm2
-    Q_avg1_2 = (fact1 * Q[2]).sum(-1).sum(-1) / norm2
-    Q_avg1_3 = (fact1 * Q[3]).sum(-1).sum(-1) / norm2
-    Q_avg2_1 = (fact2 * Q[1]).sum(-1).sum(-1) / norm3
-    Q_avg2_2 = (fact2 * Q[2]).sum(-1).sum(-1) / norm3
-    Q_avg2_3 = (fact2 * Q[3]).sum(-1).sum(-1) / norm3
-
-def calc_profiles_M1(scaleheight, cutoff=1.0e-5):
-    global rho, bsq, Te, Ti, TE, TI, kappa_es, kappa_abs, kappa_emmit, kappa_sy2, density_scale, gcov, _dx1, _dx2, _dx3
-    global Mdot, M_EDD_RAT, bs1new, bs2new, bs3new, gcov, gcon, gdet, R_G_CGS
-    global tau_es_tot, tau_em_tot, tau_abs_tot, cool_frac, rho_filtered, emmission_tot, emmission_hard, Mdot_rad, Rdot_rad
-    global prad_tot, pe_tot, pi_tot, rho_tot, pb_tot
-    global t_diff, t_emmit_disk, t_abs_disk, t_compton_disk
-    global t_emmit_corona, t_abs_corona, t_compton_corona
-    global tau_es
-
-    # Calculate vertically and azimuthally integrated optical depths; exclude poles
-    tau_es_int = ((kappa_es) * rho * density_scale * R_G_CGS * np.sqrt(gcov[2, 2]) * _dx2)[0, :, 10:bs2new - 10, :].sum(1)
-    tau_abs_int = ((kappa_abs) * rho * density_scale * R_G_CGS * np.sqrt(gcov[2, 2]) * _dx2)[0, :, 10:bs2new - 10, :].sum(1)
-    tau_em_int = ((kappa_emmit) * rho * density_scale * R_G_CGS * np.sqrt(gcov[2, 2]) * _dx2)[0, :, 10:bs2new - 10, :].sum(1)
-
-    # Set the filter for the cool thin disk
-    rho_filtered = rho * (Ti > 10 ** 8.0) * (Te > 10 ** 8.0)
-    cold_filtered = rho * (Ti < 10 ** 8.0) * (Te < 10 ** 8.0)
-
-    # Calculate Mdot normalize to eddington ratio
-    Mdot_rad = (Mdot * (M_EDD_RAT / Mdot[0, 5]))[0]
-
-    #Calculate Rdot in code units
-    ud_rad = gcov[:, 0] * uu_rad[0] + gcov[:, 1] * uu_rad[1] + gcov[:, 2] * uu_rad[2] + gcov[:, 3] * uu_rad[3]
-    Rdot_rad =((4.0/3.0)*E_rad*uu_rad[1]*ud_rad[0]*gdet*_dx2*_dx3).sum(-1).sum(-1)[0]
-
-    # Calculate filtered rho
-    rho_max = np.zeros((bs1new, bs3new), dtype=np.float64)
-    for i in range(0, bs1new):
-        for z in range(0, bs3new):
-            rho_max[i, z] = np.max(cold_filtered[0, i, :, z]) * (tau_es_int[i, z] > 1.0)
-
-    # Allocate arrays
-    rho_frac = np.zeros((bs1new), dtype=np.float64)
-    tau_es_tot = np.zeros((bs1new), dtype=np.float64)
-    tau_abs_tot = np.zeros((bs1new), dtype=np.float64)
-    tau_em_tot = np.zeros((bs1new), dtype=np.float64)
-    cool_frac = np.zeros((bs1new), dtype=np.float64)
-
-    # Compute hard fraction of emmission
-    for i in range(0, bs1new):
-        for z in range(0, bs3new):
-            if (rho_max[i, z] > 0.0):
-                cool_frac[i] = cool_frac[i] + 1.0 / bs3new
-            tau_es_tot[i] = tau_es_tot[i] + tau_es_int[i, z]/bs3new
-            tau_abs_tot[i] = tau_abs_tot[i] + tau_abs_int[i, z]/bs3new
-            tau_em_tot[i] = tau_em_tot[i] + tau_em_int[i, z]/bs3new
-    # emmission_tot=((4.0/3.0)*E_rad*uu_rad[1]*ud_rad[0]*_dx2*_dx3*gdet).sum(-1).sum(-1)
-    emmission_tot = ((kappa_emmit) * rho * R_G_CGS * density_scale * 2.2714380625235033e+21 * (TE ** 4) * _dx1 * _dx2 * _dx3 * gdet).sum(-1).sum(-1).cumsum(axis=1)[0]
-    emmission_hard = ((kappa_emmit) * rho_filtered * R_G_CGS * density_scale * 2.2714380625235033e+21 * (TE ** 4) * _dx1 * _dx2 * _dx3 * gdet).sum(-1).sum(-1).cumsum(axis=1)[0]
-
-    # Set normalizations
-    norm1 = (gdet * rho * (rho > cutoff) * _dx1 * _dx2 * _dx3).sum(-1).sum(-1)[0]
-    fact1 = rho * (rho > cutoff)[0]
-
-    # Calculate total radiation pressure as function of radius
-    prad_tot = (E_rad * (4.0 / 3.0 - 1.0) * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
-
-    # Calculate electron and ion pressures
-    pe_tot = (TE * rho * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
-    pi_tot = (TI * rho * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
-
-    # Calculate gas mass in radial shell
-    rho_tot = (rho * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
-
-    # Calculate total magnetic pressure
-    pb_tot = (bsq / 2.0 * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
-
-    # Calculate optical depth integrated from pole
-    tau_es = (kappa_es * rho * density_scale * R_G_CGS * _dx2 * np.sqrt(gcov[2, 2]))[:, :, ::-1, :].cumsum(axis=2)[:, :, ::-1, :]
-    tau_es2 = (kappa_es * rho * density_scale * R_G_CGS * _dx2 * np.sqrt(gcov[2, 2])).cumsum(axis=2)
-    tau_es[tau_es > tau_es2] = tau_es2[tau_es > tau_es2]
-
-
-def calc_lum():
-    global lum
-    p = (gam - 1.0) * ug
-    lum = np.sum((rho ** 3.0 * p ** (-2.0) * np.exp(-0.2 * (rho ** 2.0 / (np.sqrt(bsq) * p ** 2.0)) ** (1.0 / 3.0)) * (h > np.pi / 3.0) * (h < 2.0 / 3.0 * np.pi) * (r < 50.) * gdet * _dx1 * _dx2 * _dx3))
-
-# Calculate energy accretion rate as function of radius
-def calc_Edot():
-    global Edot, Edotj, beta_gamma_sq, beta_gamma_cut, Mdotj
-    temp=Tcalcud_new(1, 0)* gdet * _dx2 * _dx3
-    beta_gamma_sq = np.power(Tcalcud_new(1, 0)/(rho*uu[1]),2)-1 # Equation (11) paper V EHT 2017
-    Edot = (temp).sum(-1).sum(-1)
-    Edotj = (temp*(bsq/rho>3)).sum(-1).sum(-1)
-    Mdotj = (-gdet * rho * uu[1] *(beta_gamma_sq>beta_gamma_cut) * _dx2 * _dx3).sum(-1).sum(-1)
-    
-def calc_Ldot():
-    global Ldot
-    Ldot = (Tcalcud_new(1, 3)* gdet * _dx2 * _dx3).sum(-1).sum(-1)
-
-# Calculate the Q resolution paramters and their average Q_avg in the disk
-def calc_Q():
-    global Q, Q_avg, lowres1, lowres2, lowres3
-    Q = np.zeros((4, 1, bs1new, bs2new, bs3new), dtype=np.float32, order='C')
-    Q_avg = np.zeros((4), dtype=np.float32, order='C')
-    dx = np.zeros((4, nb, bs1new, bs2new, 1), dtype=np.float32, order='C')
-
-    dx[1] = _dx1 / lowres1 * np.sqrt(gcov[1, 1, :, :, :, :])
-    dx[2] = _dx2 / lowres2 * np.sqrt(gcov[2, 2, :, :, :, :])
-    dx[3] = _dx3 / lowres3 * np.sqrt(gcov[3, 3, :, :, :, :])
-    bu_proj = project_vector(bu)
-
-    for dir in range(1, 4):
-        alf_speed = np.sqrt(np.abs(bu_proj[dir] * bu_proj[dir]) / (rho + bsq + (gam) * ug))
-        vrot = np.sqrt((uu[3] * uu[3] * gcov[3][3] + uu[2] * uu[2] * gcov[2][2] + uu[1] * uu[1] * gcov[1][1])) / uu[0]
-        wavelength = 2 * 3.14 * alf_speed * r / vrot
-        if (dir == 1):
-            Q[dir] = wavelength / dx[dir]
-        if (dir == 2):
-            Q[dir] = wavelength / (dx[2]*theta_to_theta+dx[3]*np.abs(phi_to_theta))
-        if (dir == 3):
-            Q[dir] = wavelength / (dx[2]*np.abs(theta_to_phi) + dx[3] * phi_to_phi)
-        Q[dir] = np.nan_to_num(Q[dir])
-'''
