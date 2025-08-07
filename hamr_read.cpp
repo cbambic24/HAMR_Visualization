@@ -11,425 +11,6 @@
 #define MIN(X,Y) ((X) < (Y) ?  (X) : (Y))
 #define MAX(X,Y) ((X) > (Y) ?  (X) : (Y))
 
-// Fluid class 
-Fluid::Fluid() {};
-
-Fluid::Fluid(const std::unordered_map<std::string, double>& params,
-    const std::unordered_map<std::string, double>& CONSTANTS) {
-  rho0 = params.at("density_scale");
-  c    = CONSTANTS.at("c");
-  kB   = CONSTANTS.at("kB");
-  xAB  = CONSTANTS.at("X_AB");
-  yAB  = CONSTANTS.at("Y_AB");
-  mu_i = 4.0 / (4.0 * xAB + yAB);
-  mu_e = 2.0 / (1.0 + xAB);
-  mp   = CONSTANTS.at("mp");
-  mi   = (xAB + yAB) * mp;
-  me   = CONSTANTS.at("me");
-  sigT = CONSTANTS.at("sigmaT");
-  ThetaMin = 1.0e-2;
-};
-
-void Fluid::calcQie(double* qie, float* rho, float* Te, float* Ti, 
-    int nb, int nx1, int nx2, int nx3) {
-
-  cksigmaT = c * kB * sigT;
-  me_mi    = me / mi;
-
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  int n;
-  double ne, nAvg, Thetae, Thetai; 
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  TwoTemperature twoT(ThetaMin); 
-  #pragma omp parallel for private(n, ne, nAvg, \
-    Thetae, Thetai) firstprivate(twoT)
-  for (n = 0; n < gridsize_3D; n++) {
-    ne     = rho[n] / (mu_e * mp);
-    nAvg   = (xAB + yAB) * rho[n] / mp;
-    Thetae = kB * Te[n] / (me * c * c);
-    Thetai = kB * Ti[n] / (mi * c * c);
-    qie[n] = ((3./2.) * me_mi * cksigmaT * ne * nAvg * (Ti[n] - Te[n]) * (
-      twoT.CoulombLog(ne, Te[n]) * twoT.BesselTerms(Thetae, Thetai)));
-  }
-}
-
-Fluid::~Fluid() {};
-
-// Two-temperature class 
-TwoTemperature::TwoTemperature() {};
-
-TwoTemperature::TwoTemperature(double ThetaMin) {
-  this->ThetaMin = ThetaMin;
-  Thetam   = 0.0;
-  Thetasum = 0.0;
-  k0       = 0.0;
-  k1       = 0.0;
-  k2k2     = 0.0;
-};
-
-TwoTemperature::TwoTemperature (TwoTemperature& twoT) {
-  ThetaMin = twoT.ThetaMin;
-  Thetam   = twoT.Thetam;
-  Thetasum = twoT.Thetasum;
-  k0       = twoT.k0;
-  k1       = twoT.k1;
-  k2k2     = twoT.k2k2;
-};
-
-double TwoTemperature::CoulombLog(double ne, float Te) {
-  return 35.4 + std::log((Te / 1.e7) * std::sqrt(1.0e-3 / ne));
-}
-
-double TwoTemperature::BesselTerms(double Thetae, double Thetai) {
-  if ((Thetae < ThetaMin) && (Thetai < ThetaMin)) {
-    return coldEcoldI(Thetae, Thetai);
-  } else if ((Thetae >= ThetaMin) && (Thetai < ThetaMin)) {
-    return hotEcoldI(Thetae, Thetai);
-  } else if ((Thetae < ThetaMin) && (Thetai >= ThetaMin)) {
-    return coldEhotI(Thetae, Thetai);
-  } else {
-    return hotEhotI(Thetae, Thetai);
-  }
-}
-
-double TwoTemperature::coldEcoldI(double Thetae, double Thetai) {
-  Thetasum = Thetae + Thetai;
-  return ((2. * Thetasum * Thetasum + 2.0 * Thetasum + 1.0) / (
-    std::sqrt(0.5 * M_PI * std::pow(Thetasum, 3.0))));
-}
-
-double TwoTemperature::hotEcoldI(double Thetae, double Thetai) { 
-  Thetasum  = Thetae + Thetai;
-  return (((2. * (Thetasum * Thetasum) + 2.0 * Thetasum + 1.0) * (
-    std::sqrt(Thetae))) / (std::cyl_bessel_k(2, 1.0 / Thetae) * (
-    std::exp(1.0 / Thetae) * std::sqrt(std::pow(Thetasum, 3.0)))));
-}
-
-double TwoTemperature::coldEhotI(double Thetae, double Thetai) {
-  Thetasum  = Thetae + Thetai;
-  return (((2. * (Thetasum * Thetasum) + 2.0 * Thetasum + 1.0) * (
-    std::sqrt(Thetai))) / (std::cyl_bessel_k(2, 1.0 / Thetai) * (
-    std::exp(1.0 / Thetai) * std::sqrt(std::pow(Thetasum, 3.0)))));
-}
-
-double TwoTemperature::hotEhotI(double Thetae, double Thetai) {
-  Thetasum = Thetae + Thetai;
-  Thetam   = (Thetae * Thetai) / Thetasum;
-  k2k2     = ((1.0 / std::cyl_bessel_k(2, 1.0 / Thetai)) * 
-              (1.0 / std::cyl_bessel_k(2, 1.0 / Thetae)));
-  k1       = ((2.0 * Thetasum * Thetasum + 1.0) / Thetasum) * (
-              std::cyl_bessel_k(1, 1.0 / Thetam));
-  k0       = 2.0 * std::cyl_bessel_k(0, 1.0 / Thetam);
-  return k2k2 * (k1 + k0);
-}
-
-TwoTemperature::~TwoTemperature() {};
-
-// Opacity class
-Opacity::Opacity() {};
-
-Opacity::Opacity(const std::unordered_map<std::string, double>& params,
-    const std::unordered_map<std::string, double>& CONSTANTS) {
-  rho0 = params.at("density_scale");
-  c    = CONSTANTS.at("c");
-  kB   = CONSTANTS.at("kB");
-  aRAD = CONSTANTS.at("aRAD");
-  xAB  = CONSTANTS.at("X_AB");
-  yAB  = CONSTANTS.at("Y_AB");
-  zAB  = CONSTANTS.at("Z_AB");
-  mu_i = 4.0 / (4.0 * xAB + yAB);
-  mu_e = 2.0 / (1.0 + xAB);
-  mp   = CONSTANTS.at("mp");
-  mi   = (xAB + yAB) * mp;
-  me   = CONSTANTS.at("me");
-  sigT = CONSTANTS.at("sigmaT");
-  eStatC = CONSTANTS.at("e");
-  h    = CONSTANTS.at("h");
-  kappaMol = 3.0 * zAB;
-};
-
-Opacity::Opacity (Opacity& opac) {
-  rho0 = opac.rho0;
-  c    = opac.c;
-  kB   = opac.kB;
-  aRAD = opac.aRAD;
-  xAB  = opac.xAB;
-  yAB  = opac.yAB;
-  zAB  = opac.zAB;
-  mu_i = opac.mu_i;
-  mu_e = opac.mu_e;
-  mp   = opac.mp;
-  mi   = opac.mi;
-  me   = opac.me;
-  sigT = opac.sigT;
-  eStatC = opac.eStatC;
-  h    = opac.h; 
-  kappaMol = opac.kappaMol;
-  
-  // copy variables used within member functions
-  e_2pimc   = opac.e_2pimc;
-  ne        = opac.ne;
-  Thetae    = opac.Thetae;
-  nu_mu     = opac.nu_mu;
-  phi       = opac.phi;
-  g         = opac.g;
-  kappaGInv = opac.kappaGInv;
-};
-
-// Bound-free opacities
-double Opacity::kappaBoundFreeAbs(float rho, float Te, float Tr) {
-  return (9.0e26 * (zAB * (1.0 + xAB + 0.75 * yAB) * (
-    rho * (1.0 / std::sqrt(Te)) * (1.0 / (Tr * Tr * Tr)) * (
-    std::log(1.0 + 1.6 * (Tr / Te))))));
-}
-
-double Opacity::kappaBoundFreeEmi(float rho, float Te, float Tr) {
-  return (9.0e26 * (zAB * (1.0 + xAB + 0.75 * yAB) * (
-    rho * std::pow(Te, -3.5) * std::log(1.0 + 1.6))));
-}
-
-// CHIANTI opacities
-double Opacity::kappaCHIANTIAbs(float rho, float Te, float Tr) {
-  return (3.0e34 * rho * (0.1 + (zAB / 0.02)) * ( 
-    (std::pow(Te, -1.7) * (1.0 / (Tr * Tr * Tr)))));
-}
-
-double Opacity::kappaCHIANTIEmi(float rho, float Te, float Tr) {
-  return (3.0e34 * rho * ((0.1 + (zAB / 0.02)) * std::pow(Te, -4.7)));
-}
-
-// Free-free opacities
-double Opacity::kappaFreeFreeAbs(float rho, float Te, float Tr) {
-  return (1.2e24 * (1.0 + xAB) * (1.0 - zAB) * rho * ( 
-    (1.0 / std::sqrt(Te)) * (1.0 / (Tr * Tr * Tr)) * (
-    std::log(1.0 + 1.6 * (Tr / Te)) * (1.0 + 4.4e-10 * Te))));
-}
-
-double Opacity::kappaFreeFreeEmi(float rho, float Te, float Tr) {
-  return (1.2e24 * (1.0 + xAB) * (1.0 - zAB) * rho * (
-    std::pow(Te, -3.5) * std::log(1.0 + 1.6) * (1.0 + 4.4e-10 * Te)));
-}
-
-// Hydrogen opacity
-double Opacity::kappaH(float rho, float Te, float Tr) {
-  return 33.0 * 1.e-25 * std::sqrt(zAB) * std::sqrt(rho) * std::pow(Te, 7.7);
-}
-
-// Iron-line opacity
-double Opacity::kappaFe(float rho, float Te, float Tr) {
-  return (0.3 * (zAB / 0.02) * (
-    std::exp(-6.0 * (std::pow((-12.0 + std::log(Te)), 2)))));
-}
-
-// Synchrotron opacities
-double Opacity::kappaSyncAbs(float rho, float Te, 
-    float Tr, float b2, double async, double bsync,
-    double csync, double dsync, double esync) {
-  e_2pimc = eStatC / (2.0 * M_PI * me * c);
-  ne     = rho / (mu_e * mp);
-  Thetae = (kB * Te) / (me * c * c);
-  nu_mu  = (3.0/2.0) * e_2pimc * std::sqrt(b2) * Thetae * Thetae;
-  phi    = kB * Tr / (h * nu_mu);
-  g = 5.85374e-14 * ne * phi * (1.0 / (Thetae * Thetae * Thetae * Tr));
-  kappaGInv = (
-    1.0 / (async * std::pow(phi, -bsync) * std::log(1.0 + csync * phi)) + (
-    1.0 / (dsync * std::pow(phi, -esync))));
-  return (g / kappaGInv) / rho;
-}
-
-double Opacity::kappaSyncEmi(float rho, float Te, 
-    float Tr, float b2, double async, double bysnc, 
-    double csync, double dsync, double esync) {
-  e_2pimc = eStatC / (2.0 * M_PI * me * c);
-  ne     = rho / (mu_e * mp);
-  Thetae = (kB * Te) / (me * c * c);
-  nu_mu  = (3.0/2.0) * e_2pimc * std::sqrt(b2) * Thetae * Thetae;
-  phi    = kB * Te / (h * nu_mu);
-  g = 5.85374e-14 * ne * phi * (1.0 / (Thetae * Thetae * Thetae * Te));
-  kappaGInv = (
-    1.0 / (async * std::pow(phi, -bsync) * std::log(1.0 + csync * phi)) + (
-    1.0 / (dsync * std::pow(phi, -esync))));
-  return (g / kappaGInv) / rho;
-}
-
-void Opacity::getABCDESynch(int XRB, double& a, double& b, double& c, 
-    double& d, double& e) {
-  if (XRB) { // XRB synchrotron opacity coefficients
-    a = 1.27; 
-    b = 1.03; 
-    c = 0.000763;
-    d = 0.616;
-    e = 2.91;
-  } else { // AGN synchrotron opacity coefficients
-    a = 0.206; 
-    b = 2.59;
-    c = 3.44;
-    d = 9.33;
-    e = 3.09;
-  }
-}
-
-// Total absorption and emission opacities
-double Opacity::kappaAbsTotal(float rho, float Te, float Tr, 
-    float b2, int XRB) {
-  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  return kappaSyncAbs(rho, Te, Tr, b2, 
-    async, bsync, csync, dsync, esync) + ( 
-    (1.0 / ((1.0 / (kappaH(rho, Te, Tr) + kappaMol)) + 
-    (1.0 / (kappaBoundFreeAbs(rho, Te, Tr) + 
-	     kappaFreeFreeAbs(rho, Te, Tr) + 
-             kappaCHIANTIAbs( rho, Te, Tr)))))); 
-}
-
-double Opacity::kappaEmiTotal(float rho, float Te, float Tr, 
-    float b2, int XRB) {
-  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  return kappaSyncEmi(rho, Te, Tr, b2, 
-    async, bsync, csync, dsync, esync) + ( 
-    (1.0 / ((1.0 / (kappaH(rho, Te, Tr) + kappaMol)) + 
-    (1.0 / (kappaBoundFreeEmi(rho, Te, Tr) + 
-	     kappaFreeFreeEmi(rho, Te, Tr) + 
-             kappaCHIANTIEmi( rho, Te, Tr)))))); 
-}
-
-// Opacities exposed to Cython/Python
-// Total absorption and emission opacities
-void Opacity::kappaAbsTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  int n;
-  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  #pragma omp parallel for private(n)
-  for (n = 0; n < gridsize_3D; n++) {
-    kappa[n] = kappaSyncAbs(rho[n], Te[n], Tr[n], b2[n], 
-      async, bsync, csync, dsync, esync) + ( 
-      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
-      (1.0 / (kappaBoundFreeAbs(rho[n], Te[n], Tr[n]) + 
-	      kappaFreeFreeAbs( rho[n], Te[n], Tr[n]) + 
-      kappaCHIANTIAbs(rho[n], Te[n], Tr[n])))))); 
-  }
-}
-
-void Opacity::kappaEmiTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  int n;
-  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  #pragma omp parallel for private(n)
-  for (n = 0; n < gridsize_3D; n++) {
-    kappa[n] = kappaSyncEmi(rho[n], Te[n], Tr[n], b2[n], 
-      async, bsync, csync, dsync, esync) + ( 
-      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
-      (1.0 / (kappaBoundFreeEmi(rho[n], Te[n], Tr[n]) + 
-	      kappaFreeFreeEmi( rho[n], Te[n], Tr[n]) + 
-      kappaCHIANTIEmi(rho[n], Te[n], Tr[n])))))); 
-  }
-}
-
-// Synchrotron opacity exposed to Cython/Python
-void Opacity::kappaSynchrotron(double* kappa, float* rho, float* Te, 
-    float* Tr, float* b2, int emi, int XRB, 
-    int nb, int nx1, int nx2, int nx3) {
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  int n;
-  // Private (P) variables in OMP threads
-  double neP, ThetaeP, nu_muP, phiP, gP, kappaGInvP;
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  e_2pimc = eStatC / (2.0 * M_PI * me * c);
-  getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  if (emi) {
-    #pragma omp parallel for private(n, \
-      neP, ThetaeP, nu_muP, phiP, gP, kappaGInvP) 
-    for (n = 0; n < gridsize_3D; n++) {
-      neP     = rho[n] / (mu_e * mp);
-      ThetaeP = (kB * Te[n]) / (me * c * c);
-      nu_muP  = (3.0/2.0) * e_2pimc * std::sqrt(b2[n]) * ThetaeP * ThetaeP;
-      phiP    = kB * Te[n] / (h * nu_muP);
-      gP      = (5.85374e-14 * neP * phiP * (
-        1.0 / (ThetaeP * ThetaeP * ThetaeP * Te[n])));
-      kappaGInvP = (
-        1.0 / (async * std::pow(phiP, -bsync) * std::log(1.0 + csync * phiP)) 
-        + (1.0 / (dsync * std::pow(phiP, -esync))));
-      kappa[n] = (gP / kappaGInvP) / rho[n];
-    }
-  } else {
-    #pragma omp parallel for private(n, \
-      neP, ThetaeP, nu_muP, phiP, gP, kappaGInvP) 
-    for (n = 0; n < gridsize_3D; n++) {
-      neP     = rho[n] / (mu_e * mp);
-      ThetaeP = (kB * Te[n]) / (me * c * c);
-      nu_muP  = (3.0/2.0) * e_2pimc * std::sqrt(b2[n]) * ThetaeP * ThetaeP;
-      phiP    = kB * Tr[n] / (h * nu_muP);
-      gP      = (5.85374e-14 * neP * phiP * (
-        1.0 / (ThetaeP * ThetaeP * ThetaeP * Tr[n])));
-      kappaGInvP = (
-        1.0 / (async * std::pow(phiP, -bsync) * std::log(1.0 + csync * phiP)) 
-        + (1.0 / (dsync * std::pow(phiP, -esync))));
-      kappa[n] = (gP / kappaGInvP) / rho[n];
-    }
-  }
-}
-
-Opacity::~Opacity() {};
-
-// Radiation class
-Radiation::Radiation() {};
-
-Radiation::Radiation(const std::unordered_map<std::string, double>& params,
-    const std::unordered_map<std::string, double>& CONSTANTS) 
-{
-  rho0 = params.at("density_scale");
-  c    = CONSTANTS.at("c");
-  kB   = CONSTANTS.at("kB");
-  aRAD = CONSTANTS.at("aRAD");
-  xAB  = CONSTANTS.at("X_AB");
-  yAB  = CONSTANTS.at("Y_AB");
-  zAB  = CONSTANTS.at("Z_AB");
-  mu_i = 4.0 / (4.0 * xAB + yAB);
-  mu_e = 2.0 / (1.0 + xAB);
-  mp   = CONSTANTS.at("mp");
-  mi   = (xAB + yAB) * mp;
-  me   = CONSTANTS.at("me");
-  sigT = CONSTANTS.at("sigmaT");
-  eStatC = CONSTANTS.at("e");
-  kappaMol = 3.0 * zAB;
-  this->params = params;
-  this->CONSTANTS = CONSTANTS;
-};
-
-// Total absorption and emission rates
-void Radiation::qAbs(double* qabs, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  Opacity opac(this->params, this->CONSTANTS);
-  int n;
-  double kappaAbs;
-  #pragma omp parallel for private(n, kappaAbs) firstprivate(opac)
-  for (n = 0; n < gridsize_3D; n++) {
-    kappaAbs = opac.kappaAbsTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
-    qabs[n]  = kappaAbs * rho[n] * aRAD * Tr[n] * Tr[n] * Tr[n] * Tr[n] * c;  
-  }
-}
-
-void Radiation::qEmi(double* qemi, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
-  // Loop over each of nb * nx1 * nx2 * nx3 cells
-  gridsize_3D = nb * nx1 * nx2 * nx3;
-  Opacity opac(this->params, this->CONSTANTS);
-  int n;
-  double kappaEmi;
-  #pragma omp parallel for private(n, kappaEmi) firstprivate(opac)
-  for (n = 0; n < gridsize_3D; n++) {
-    kappaEmi = opac.kappaEmiTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
-    qemi[n]  = kappaEmi * rho[n] * aRAD * Te[n] * Te[n] * Te[n] * Te[n] * c;  
-  }
-}
-
-Radiation::~Radiation() {};
-
 Read::Read() {};
 
 Read::Read(std::string dir, int axisym, int by_block, int export_raytracing,
@@ -692,12 +273,12 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
   bool iInRange, jInRange, kInRange;
   std::string filename;
   FILE* fin;
-  int read_data, read_file;
+  int read_data;
   ReadIn readIn; 
 
   #pragma omp parallel for private(n, iGlob, jGlob, kGlob, \
     iStrt, iEnd, iStp, index_3D, gridsize_3D, iInRange, jInRange, kInRange, \
-    filename, fin, read_data, read_file) firstprivate(readIn)
+    filename, fin, read_data) firstprivate(readIn)
   for (n = 0; n < nb; n++) {
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
     std::vector<double> tempArray(58);
@@ -716,7 +297,6 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
     checkGridFileSize(filename);
     fin = fopen(filename.c_str(), "rb");
   
-    read_file = 0;
     read_data = 0;
  
     readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
@@ -726,9 +306,6 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
         for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
           read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
             iInRange, jInRange, kInRange);
-          if (read_file == 0 && read_data == 1) {
-            read_file = 1;
-          }
           if (read_data) {
             readIn.readGridData(fin, tempArray, index_3D, gridsize_3D,
               n, iGlob, jGlob, kGlob, *this);
@@ -760,6 +337,53 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
       } // jGlob
     } // iGlob
     fclose(fin);
+  } // loop over n
+}
+
+void Read::readGridResolution(int* res_level_x1, int* res_level_x2, 
+    int* res_level_x3) {
+    
+  isize = (k_max - k_min) * (j_max - j_min);
+  jsize = (k_max - k_min);
+
+  long int gridsize_3D, index_3D;
+  int n; // index over blocks
+  int iGlob, jGlob, kGlob; // global indices
+  AMRVar iStrt, iEnd, iStp; // loop variables
+  bool iInRange, jInRange, kInRange;
+  int read_data;
+  ReadIn readIn; 
+
+  #pragma omp parallel for private(n, iGlob, jGlob, kGlob, \
+    iStrt, iEnd, iStp, index_3D, gridsize_3D, iInRange, jInRange, kInRange, \
+    read_data) firstprivate(readIn)
+  for (n = 0; n < nb; n++) {
+    gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
+
+    iInRange = false;
+    jInRange = false;
+    kInRange = false;
+  
+    read_data = 0;
+ 
+    readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+  
+    for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
+      for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
+        for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
+          read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+            iInRange, jInRange, kInRange);
+          if (read_data) {
+            readIn.getIndex3D(index_3D, gridsize_3D, n, 
+              iGlob, jGlob, kGlob, *this);
+            res_level_x1[index_3D] = amrLevel.x1[n_ord[n]];
+            res_level_x2[index_3D] = amrLevel.x2[n_ord[n]];
+            res_level_x3[index_3D] = amrLevel.x3[n_ord[n]];
+          }
+          read_data = 0;
+        } // kGlob
+      } // jGlob
+    } // iGlob
   } // loop over n
 }
 
@@ -1125,6 +749,32 @@ void ReadIn::setMetricLoops(int &iStrt, int &iEnd, int &iStp,
     iEnd   = (coord + 1) * (upscale * bs);
     iStp  = low_res;
   }
+}
+
+void ReadIn::getIndex3D(long int &index_3D, long int &gridsize_3D, 
+    int n, int iGlob, int jGlob, int kGlob, const Read &read) {
+  if (read.by_block) {
+    // convert to 1D index to read in binary data
+    bsLR.x1 = read.bs1 / read.lowRes.x1;
+    bsLR.x2 = read.bs2 / read.lowRes.x2;
+    bsLR.x3 = read.bs3 / read.lowRes.x3;
+    
+    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
+      (iGlob * bsLR.x2 * bsLR.x3) + (jGlob * bsLR.x3) + kGlob);
+      
+    // gridsize is only modified if by block
+    gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
+  } else {
+    // indices on the given block
+    iLoc = (iGlob - (coord.x1 * upscale.x1 * read.bs1)) / upscale.x1;            
+    jLoc = (jGlob - (coord.x2 * upscale.x2 * read.bs2)) / upscale.x2;            
+    kLoc = (kGlob - (coord.x3 * upscale.x3 * read.bs3)) / upscale.x3;
+    
+    // convert to 1D index to read in binary data
+    index_3D = (((iGlob / read.lowRes.x1) - read.i_min) * read.isize +
+                ((jGlob / read.lowRes.x2) - read.j_min) * read.jsize +
+                ((kGlob / read.lowRes.x3) - read.k_min));
+  }  
 }
 
 void ReadIn::readGridData(FILE* fin, std::vector<double>& tempArray,
