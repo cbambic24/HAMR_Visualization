@@ -102,6 +102,7 @@ class Read():
         self.interpolate_var   = kwargs.get('interpolate_var', 0)
         self.axisym      = kwargs.get('axisym', 1)
         self.coords1D    = kwargs.get('coords1D', 0)
+        self.resolution  = kwargs.get('resolution', 0)
 
         if ('i_min' in kwargs or 'i_max' in kwargs or 
             'j_min' in kwargs or 'j_max' in kwargs or 
@@ -369,6 +370,10 @@ class Read():
             gcov, gcon, dxdxp = Tools.zeroNd([4, 4, dim, nx, ny, nz], 3)
             gdet = np.zeros([dim, nx, ny, nz], dtype=np.float32)
 
+        if self.resolution:
+            res_level_x1, res_level_x2, res_level_x3 = Tools.zeroNd(
+                [dim, nx, ny, nz], 3, dtype=np.int)
+
         self.block_info = {
             'i_min' : i_min,
             'i_max' : i_max,
@@ -455,6 +460,21 @@ class Read():
 
         if (self.cgs_grid):
             self.restore_units_grid()
+
+        if (self.resolution and not direct):
+            Readc.read_grid_resolution(res_level_x1, res_level_x2, 
+                                       res_level_x3)
+        elif (self.resolution and direct):
+            Readc = hamr_readc.PyRead(self.dir, self.axisym, self.by_block,
+                self.export_raytracing, amr, self.amr_info, self.block_info, 
+                self.options, params, physics)   
+            Readc.read_grid_resolution(res_level_x1, res_level_x2, 
+                                       res_level_x3)
+            
+        if (self.resolution):
+            self.grid['level_x1'] = res_level_x1
+            self.grid['level_x2'] = res_level_x2
+            self.grid['level_x3'] = res_level_x3
 
     def read_prims(self, fnum, **kwargs):
         skip_read_params = kwargs.get('skip_read_params', False)
