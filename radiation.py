@@ -63,6 +63,7 @@ class Radiation():
     # Compton cooling rate
     # Equation 35 in Sadowski+ (2017)
     def calc_qIC(self, rho, Te, urad, **kwargs):
+        rho0, rho0c2 = self.rho0, self.rho0 * self.c * self.c 
         opacities = dict.fromkeys(['electron_scattering'])
         Opac      = Opacity(opacities, rho, Te, urad, 
                             self.params, self.CONSTANTS)
@@ -70,10 +71,12 @@ class Radiation():
         Theta_e   = (self.kB * Te) / (self.me * self.c * self.c)
         Trad      = (urad / self.aRAD) ** (1./4.)
         mc2       = self.me * self.c * self.c
-        qIC = (self.c * kappa_es * rho * urad * (
+        qIC_float = (
+            self.c * kappa_es * (rho / rho0) * (urad / rho0c2) * (
             4. * self.kB * (Te - Trad) / mc2) * (
             1. + 3.683 * Theta_e + 4. * np.square(Theta_e)) * (
-            1. / (1. + Theta_e))) # erg/cm^3 s
+            1. / (1. + Theta_e))) 
+        qIC = rho0 * rho0c2 * np.float64(qIC_float) # erg/cm^3 s
         if kwargs.get('cooling'):
             qIC[Te < Trad] = 0.0
             return qIC # erg/cm^3 s
@@ -185,7 +188,6 @@ class Radiation():
         Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
         dtype    = np.float64 # C++ layer expects double
         [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
-        
         XRB  = 1 if kwargs.get('XRB') else 0
         qabs = np.zeros(rho.shape, dtype=dtype)
         Radiationc.calc_q_abs_tot(qabs, rho, Te, Tr, b2, 
@@ -371,14 +373,14 @@ class Opacity():
         nu_mu    = (3./2.) * e_2pimc * np.sqrt(self.b2) * (Theta_e ** 2)
         if process == 'absorption' or process == 'both':
             # McKinney+ (2017) Equation D5
-            phi = self.kB * self.Tr / (self.h * nu_mu)
+            phi = (self.kB * self.Tr / (self.h * nu_mu)).astype(np.float64)
             # McKinney+ (2017) Equation D6
             g   = 5.85374e-14 * ne * phi * (Theta_e ** -3) * (1. / self.Tr)
             self.opacities['synchrotron_abs'] = self.calc_kappa_sync(
                                                             g, phi, **kwargs)
         if process == 'emission' or process == 'both':
             # McKinney+ (2017) Equation D5
-            phi = self.kB * self.Te / (self.h * nu_mu)
+            phi = (self.kB * self.Te / (self.h * nu_mu)).astype(np.float64)
             # McKinney+ (2017) Equation D6
             g   = 5.85374e-14 * ne * phi * (Theta_e ** -3) * (1. / self.Te)
             self.opacities['synchrotron_emi'] = self.calc_kappa_sync(
