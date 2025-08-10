@@ -652,7 +652,7 @@ class Read():
 
         if (physics['RAD_M1']):
             self.data['u_rad']  *= rho0 * c * c     # erg/cm^3
-            self.data['uu_rad'] *= rho0 * c * c * c # erg/cm^2 s
+            self.data['uu_rad'] *= c # cm/s
 
         if (physics['RESISTIVE']):
             self.data['E'] *= np.sqrt(rho0) * c # statVolt/cm (same as Gauss)

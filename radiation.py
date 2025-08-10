@@ -32,9 +32,9 @@ class Radiation():
     # "upper_lower": TRAD^{mu}_{nu} 
     # "lower_lower": TRAD_{mu, nu}
     def calc_TRAD(self, urad, uu_rad, gcov, gcon, **kwargs):
+        c       = self.c
         rho0c2  = self.rho0 * self.c * self.c
-        rho0c3  = rho0c2 * self.c
-        uu_tnsr = Tools.construct_dyadic(uu_rad / rho0c3, gcov, **kwargs) 
+        uu_tnsr = Tools.construct_dyadic(uu_rad / c, gcov, **kwargs) 
         g_tnsr  = Tools.g_metric(gcov, gcon, **kwargs)
         return ((4./3.) * (urad / rho0c2) * uu_tnsr + 
                 (1./3.) * (urad / rho0c2) * g_tnsr) * rho0c2
