@@ -155,8 +155,8 @@ def main(**kwargs):
             Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
                 cgs=cgs, MBH=MBH, radiation=radiation)
             # Initialize Coordinates class
-            Coords = coords.Coordinates(H.grid['r'], H.grid['theta'],
-                H.grid['phi'], H.params, hr.CONSTANTS, cgs=cgs, MBH=MBH)
+            Coords = coords.Coordinates(**H.grid, pars=H.params, 
+                CONSTANTS=hr.CONSTANTS, cgs=cgs, MBH=MBH)
             # Initialize Fluid class
             Fluid = ana.Fluid(H.params, hr.CONSTANTS, cgs=cgs)
             # Initialize Field class
@@ -165,9 +165,8 @@ def main(**kwargs):
             Radi  = rad.Radiation(H.params, hr.CONSTANTS, cgs=cgs)
 
             # Calculate sigma (3D)
-            b  = Field.calc_b(H.data['B'], H.data['uu'], H.grid['gcov'], 
-                              cpp=True)
-            b2 = Field.calc_b2(b, H.data['B'], H.grid['gcov'], cpp=True)
+            b  = Field.calc_b(**H.data, **H.grid, cpp=True)
+            b2 = Field.calc_b2(b=b, **H.data, **H.grid, cpp=True)
             if (cgs):
                 sigma = (b2 / (4. * np.pi)) / (H.data['rho'] * c * c)
             else:
@@ -179,22 +178,18 @@ def main(**kwargs):
         
             # Calculate gas pressure
             if (two_temp):
-                pgas= Fluid.calc_pgas(
-                    H.data['u_gas'], H.data['Te'], H.data['Ti'])
+                pgas= Fluid.calc_pgas(**H.data)
             else:
                 gamma_adi = (5. / 3.)
                 pgas= (gamma_adi - 1.) * H.data['u_gas']
 
             # Mass and energy accretion rates. Radial magnetic flux (Phi_BH).
-            stress_energy_HD  = Fluid.calc_THD(H.data['rho'], H.data['uu'], 
-                H.data['u_gas'], pgas, H.grid['gcov'], H.grid['gcon'], 
+            stress_energy_HD  = Fluid.calc_THD(**H.data, **H.grid, pgas=pgas,
                 uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
-            stress_energy_EM  = Field.calc_TEM(H.data['uu'], H.data['B'], 
-                H.grid['gcov'], H.grid['gcon'], b2 = b2, b = b, 
-                uu_tnsr = uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
+            stress_energy_EM  = Field.calc_TEM(**H.data, **H.grid, b2=b2, b=b, 
+                uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
             if (radiation):
-                stress_energy_RAD = Radi.calc_TRAD(H.data['u_rad'], 
-                    H.data['uu_rad'], H.grid['gcov'], H.grid['gcon'], 
+                stress_energy_RAD = Radi.calc_TRAD(**H.data, **H.grid, 
                     upper_lower=True, index=[1, 0], cpp=True)
             del uu_tnsr
         
@@ -210,19 +205,19 @@ def main(**kwargs):
             }
 
             slices['Mdot']      += ph_sum(-H.data['rho'] * H.data['uu'][1], 
-                H.grid, H.data, H.params, hr.CONSTANTS)[0]
+                                    H.grid, H.data, H.params, hr.CONSTANTS)[0]
             slices['Edot']      += ph_sum(stress_energy_MHD, 
-                H.grid, H.data, H.params, hr.CONSTANTS)[0]
+                                    H.grid, H.data, H.params, hr.CONSTANTS)[0]
             slices['Mdot_sigma']+= ph_sum(-H.data['rho'] * H.data['uu'][1], 
-                H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
+                                    H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
             slices['Edot_sigma']+= ph_sum(stress_energy_MHD, 
-                H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
+                                    H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
             slices['Edot_Poyt'] += ph_sum(stress_energy_EM, 
-                H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
+                                    H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
             slices['Edot_Fluid']+= ph_sum(stress_energy_HD, 
-                H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
+                                    H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
             slices['Phi_BH']    += ph_sum(0.5 * np.abs(H.data['B'][1]), 
-                H.grid, H.data, H.params, hr.CONSTANTS)[0] 
+                                    H.grid, H.data, H.params, hr.CONSTANTS)[0] 
         
             if (radiation):
                 slices['Edot_Rad'] += ph_sum(stress_energy_RAD, H.grid, H.data, 
@@ -254,12 +249,12 @@ def main(**kwargs):
                     'CHIANTI', 'free_free', 'hydrogen', 'molecular', 
                     'synchrotron'])
             if (two_temp):
-                Opac = rad.Opacity(opacities, H.data['rho'], H.data['Te'], 
-                    H.data['u_rad'], H.params, hr.CONSTANTS, b2=b2, XRB=True)
+                Opac = rad.Opacity(opacities, **H.data, pars=H.params, 
+                    CONSTANTS=hr.CONSTANTS, b2=b2, XRB=True)
             else:
-                Opac = rad.Opacity(opacities, H.data['rho'], 
-                    (mu_g * mp / kB) * (pgas / H.data['rho']), H.data['u_rad'], 
-                    H.params, hr.CONSTANTS, b2=b2, XRB=True)
+                Opac = rad.Opacity(opacities, **H.data, 
+                    Te=(mu_g * mp / kB) * (pgas / H.data['rho']), 
+                    pars=H.params, CONSTANTS=hr.CONSTANTS, b2=b2, XRB=True)
             kappa_abs = Opac.opacities['absorption_total']
             kappa_es  = Opac.opacities['electron_scattering']
             kappa_eff = np.sqrt(kappa_abs * (kappa_abs + kappa_es))
@@ -271,9 +266,9 @@ def main(**kwargs):
 
             # Deallocate magnetic field in the lab frame and radiation 4-momentum
             # as well as metric tensor and inverse
-            H.data['B']      = H.data['rho']
-            H.grid['gcov']   = H.data['rho']
-            H.grid['gcon']   = H.data['rho']
+            H.data['B']    = H.data['rho']
+            H.grid['gcov'] = H.data['rho']
+            H.grid['gcon'] = H.data['rho']
     
             if (two_temp):
                 # Calculate gamma (ratio of specific heats)
@@ -310,8 +305,8 @@ def main(**kwargs):
                 ]
 
             for (key, quant) in zip(keys, quants):
-                slices[f'{key}'] = ph_sum(quant, 
-                    H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
+                slices[f'{key}'] = ph_sum(quant, H.grid, H.data, 
+                                    H.params, hr.CONSTANTS, **acc_args)[0]
         
             if (two_temp):
                 del Theta_e, Theta_i, gam_e, gam_i, pgas
@@ -332,23 +327,20 @@ def main(**kwargs):
                 }
 
             if (two_temp):
-                qie = Fluid.calc_qie(H.data['rho'], H.data['Te'], 
-                                     H.data['Ti'], cpp=True)
+                qie = Fluid.calc_qie(**H.data, cpp=True)
                 # cooling = True (maybe)
                 #qie[qie < 0.] = 0.
                 slices['qie'] += ph_sum(qie, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
                 if (radiation):
                     slices['qie_thin'] += ph_sum(qie, H.grid, H.data, H.params, 
-                        hr.CONSTANTS, weight=uu_t, optically_thin = True,
-                        **tau_args)[0]
+                        hr.CONSTANTS, weight=uu_t, optically_thin=True, **tau_args)[0]
                     slices['qie_thick']+= ph_sum(qie, H.grid, H.data, H.params, 
-                        hr.CONSTANTS, weight=uu_t, optically_thin = False, 
-                        **tau_args)[0]
+                        hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
                 del qie
         
             if (radiation):
-                qIC = Radi.calc_qIC(H.data['rho'], H.data['Te'], H.data['u_rad'])
+                qIC = Radi.calc_qIC(**H.data)
                 # cooling = True (maybe)
                 slices['qIC'] += ph_sum(qIC, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
@@ -358,8 +350,7 @@ def main(**kwargs):
                     hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
                 del qIC
 
-                qemi=Radi.calc_q_emi(H.data['rho'], H.data['Te'], H.data['u_rad'], 
-                                    b2=b2, XRB=True, cpp=True)
+                qemi=Radi.calc_q_emi(**H.data, b2=b2, XRB=True, cpp=True)
                 slices['qemi'] += ph_sum(qemi, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
                 slices['qemi_thin']  += ph_sum(qemi, H.grid, H.data, H.params, 
@@ -368,8 +359,7 @@ def main(**kwargs):
                     hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
                 del qemi
 
-                qabs= Radi.calc_q_abs(H.data['rho'], H.data['Te'], H.data['u_rad'], 
-                                    b2=b2, XRB=True, cpp=True)
+                qabs= Radi.calc_q_abs(**H.data, b2=b2, XRB=True, cpp=True)
                 slices['qabs'] += ph_sum(qabs, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
                 del qabs
@@ -394,16 +384,16 @@ def main(**kwargs):
 
             quants = [
                 uu_cyl[1], uu_cyl[2], uu_cyl[3],
-                uu_cyl[1] / uu_cyl[0],
-                uu_cyl[2] / uu_cyl[0],
-                uu_cyl[3] / uu_cyl[0],
+                np.nan_to_num(uu_cyl[1] / uu_cyl[0]),
+                np.nan_to_num(uu_cyl[2] / uu_cyl[0]),
+                np.nan_to_num(uu_cyl[3] / uu_cyl[0]),
                 b_cyl[1], b_cyl[2], b_cyl[3],
                 uu_rad_cyl[1], uu_rad_cyl[2], uu_rad_cyl[3]
             ]
 
             for (key, quant) in zip(vec_keys, quants):
-                slices[f'{key}'] = ph_sum(quant, 
-                    H.grid, H.data, H.params, hr.CONSTANTS, **acc_args)[0]
+                slices[f'{key}'] = ph_sum(quant, H.grid, H.data, 
+                                    H.params, hr.CONSTANTS, **acc_args)[0]
 
             del uu_cyl, b_cyl, uu_rad_cyl, sigma
 
