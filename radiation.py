@@ -31,16 +31,16 @@ class Radiation():
     # Default TRAD^{mu, nu}
     # "upper_lower": TRAD^{mu}_{nu} 
     # "lower_lower": TRAD_{mu, nu}
-    def calc_TRAD(self, urad, uu_rad, gcov, gcon, **kwargs):
+    def calc_TRAD(self, u_rad, uu_rad, gcov, gcon, **kwargs):
         c       = self.c
         rho0c2  = self.rho0 * self.c * self.c
         uu_tnsr = Tools.construct_dyadic(uu_rad / c, gcov, **kwargs) 
         g_tnsr  = Tools.g_metric(gcov, gcon, **kwargs)
-        return ((4./3.) * (urad / rho0c2) * uu_tnsr + 
-                (1./3.) * (urad / rho0c2) * g_tnsr) * rho0c2
+        return ((4./3.) * (u_rad / rho0c2) * uu_tnsr + 
+                (1./3.) * (u_rad / rho0c2) * g_tnsr) * rho0c2
 
     # Compton cooling/heating time
-    def calc_tIC(self, rho, Te, urad, **kwargs):
+    def calc_tIC(self, rho, Te, u_rad, **kwargs):
         # Calculate gamma (ratio of specific heats)
         # Equation 28 in Sadowski+ (2017)
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
@@ -48,7 +48,7 @@ class Radiation():
         # Electron internal energy
         u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
         # In instances where qIC = 0, set tIC to 0.
-        qIC = self.calc_qIC(rho, Te, urad, **kwargs)
+        qIC = self.calc_qIC(rho, Te, u_rad, **kwargs)
         tIC = np.zeros(qIC.shape)
         tIC[qIC != 0.] = u_e[qIC != 0.] / qIC[qIC != 0.]
         if 'cooling' in kwargs:
@@ -62,17 +62,17 @@ class Radiation():
 
     # Compton cooling rate
     # Equation 35 in Sadowski+ (2017)
-    def calc_qIC(self, rho, Te, urad, **kwargs):
+    def calc_qIC(self, rho, Te, u_rad, **kwargs):
         rho0, rho0c2 = self.rho0, self.rho0 * self.c * self.c 
         opacities = dict.fromkeys(['electron_scattering'])
-        Opac      = Opacity(opacities, rho, Te, urad, 
+        Opac      = Opacity(opacities, rho, Te, u_rad, 
                             self.params, self.CONSTANTS)
         kappa_es  = Opac.opacities['electron_scattering']
         Theta_e   = (self.kB * Te) / (self.me * self.c * self.c)
-        Trad      = (urad / self.aRAD) ** (1./4.)
+        Trad      = (u_rad / self.aRAD) ** (1./4.)
         mc2       = self.me * self.c * self.c
         qIC_float = (
-            self.c * kappa_es * (rho / rho0) * (urad / rho0c2) * (
+            self.c * kappa_es * (rho / rho0) * (u_rad / rho0c2) * (
             4. * self.kB * (Te - Trad) / mc2) * (
             1. + 3.683 * Theta_e + 4. * np.square(Theta_e)) * (
             1. / (1. + Theta_e))) 
@@ -89,7 +89,7 @@ class Radiation():
     # Electron cooling time due to emission of radiation, i.e.
     # electron-radiation temperature equilibration timescale
     # t_rad^eq = (1 / kappa rho) * u_e / (a Te^4 c + q_IC) if Compton = True
-    def calc_trad_emi(self, rho, Te, urad, **kwargs):
+    def calc_trad_emi(self, rho, Te, u_rad, **kwargs):
         # Calculate gamma (ratio of specific heats)
         # Equation 28 in Sadowski+ (2017)
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
@@ -97,16 +97,16 @@ class Radiation():
         # Electron internal energy
         u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
         if kwargs.get('Compton'):
-            return (u_e / (self.calc_q_emi(rho, Te, urad, **kwargs) + 
-                self.q_IC(rho, Te, urad)))
+            return (u_e / (self.calc_q_emi(rho, Te, u_rad, **kwargs) + 
+                self.q_IC(rho, Te, u_rad)))
         else:
-            return u_e / self.calc_q_emi(rho, Te, urad, **kwargs)
+            return u_e / self.calc_q_emi(rho, Te, u_rad, **kwargs)
 
     # Emission rate assuming that radiation is blackbody spectrum
     # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
-    def calc_q_emi(self, rho, Te, urad, **kwargs):
+    def calc_q_emi(self, rho, Te, u_rad, **kwargs):
         if (kwargs.get('cpp', False)):
-            return self.calc_q_emi_cpp(rho, Te, urad, **kwargs)
+            return self.calc_q_emi_cpp(rho, Te, u_rad, **kwargs)
         # Calculate total emission opacity
         if 'opacities' in kwargs:
             opacities = kwargs.get('opacities')
@@ -115,7 +115,7 @@ class Radiation():
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
                 'molecular', 'synchrotron']) # 'iron_line' not used
-        Opac = Opacity(opacities, rho, Te, urad, 
+        Opac = Opacity(opacities, rho, Te, u_rad, 
                        self.params, self.CONSTANTS, 
                        mechansim='emission', **kwargs)
         kappa_em = Opac.opacities['emission_total']
@@ -125,20 +125,20 @@ class Radiation():
     # Electron heating time due to absorption of radiation, i.e.
     # electron-radiation temperature equilibration timescale
     # t_rad^eq = (1 / kappa rho) * u_e / (a T_rad^4 c)
-    def calc_trad_abs(self, rho, Te, urad, **kwargs):
+    def calc_trad_abs(self, rho, Te, u_rad, **kwargs):
         # Calculate gamma (ratio of specific heats)
         # Equation 28 in Sadowski+ (2017)
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
         # Electron internal energy
         u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
-        return u_e / self.calc_q_abs(rho, Te, urad, **kwargs)
+        return u_e / self.calc_q_abs(rho, Te, u_rad, **kwargs)
 
     # Absorption rate assuming that radiation is blackbody spectrum
     # Source term in Sadowski+ (2017) Equation 31 (term with Bhat)
-    def calc_q_abs(self, rho, Te, urad, **kwargs):
+    def calc_q_abs(self, rho, Te, u_rad, **kwargs):
         if (kwargs.get('cpp', False)):
-            return self.calc_q_abs_cpp(rho, Te, urad, **kwargs)
+            return self.calc_q_abs_cpp(rho, Te, u_rad, **kwargs)
         # Calculate total absorption opacity
         if 'opacities' in kwargs:
             opacities = kwargs.get('opacities')
@@ -147,22 +147,22 @@ class Radiation():
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
                 'molecular', 'synchrotron']) # 'iron_line' not used
-        Opac = Opacity(opacities, rho, Te, urad, 
+        Opac = Opacity(opacities, rho, Te, u_rad, 
                        self.params, self.CONSTANTS, 
                        mechansim='absorption', **kwargs)
         kappa_abs = Opac.opacities['absorption_total']
-        return kappa_abs * rho * urad * self.c
+        return kappa_abs * rho * u_rad * self.c
     
     # C++ accelerated
     # Emission rate assuming that radiation is blackbody spectrum
     # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
-    def calc_q_emi_cpp(self, rho, Te, urad, **kwargs):
+    def calc_q_emi_cpp(self, rho, Te, u_rad, **kwargs):
         if 'b2' in kwargs:
             b2 = np.float32(kwargs.get('b2'))
         else:
             raise ValueError("""Missing keyword argument b2
                               for calculating synchrotron opacity.""") 
-        Tr = (urad / self.aRAD) ** (1./4.)
+        Tr = (u_rad / self.aRAD) ** (1./4.)
         import hamr_readc
         Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
         dtype    = np.float64 # C++ layer expects double
@@ -177,13 +177,13 @@ class Radiation():
     # C++ accelerated 
     # Absorption rate assuming that radiation is blackbody spectrum
     # Source term in Sadowski+ (2017) Equation 31 (term with Bhat)
-    def calc_q_abs_cpp(self, rho, Te, urad, **kwargs):
+    def calc_q_abs_cpp(self, rho, Te, u_rad, **kwargs):
         if 'b2' in kwargs:
             b2 = np.float32(kwargs.get('b2'))
         else:
             raise ValueError("""Missing keyword argument b2
                               for calculating synchrotron opacity.""") 
-        Tr = (urad / self.aRAD) ** (1./4.)
+        Tr = (u_rad / self.aRAD) ** (1./4.)
         import hamr_readc
         Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
         dtype    = np.float64 # C++ layer expects double
@@ -210,7 +210,7 @@ class Radiation():
         return rho_dims
 
 class Opacity():
-    def __init__(self, opacities, rho, Te, urad, pars, CONSTANTS, **kwargs):
+    def __init__(self, opacities, rho, Te, u_rad, pars, CONSTANTS, **kwargs):
         self.X_ab = CONSTANTS['X_AB']
         self.Y_ab = CONSTANTS['Y_AB']
         self.Z_ab = CONSTANTS['Z_AB']
@@ -227,7 +227,7 @@ class Opacity():
 
         self.rho  = rho
         self.Te   = Te
-        self.Tr   = (urad / self.aRAD) ** (1./4.)
+        self.Tr   = (u_rad / self.aRAD) ** (1./4.)
 
         self.params    = pars
         self.CONSTANTS = CONSTANTS
