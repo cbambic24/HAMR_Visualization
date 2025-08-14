@@ -151,8 +151,8 @@ def main(**kwargs):
             Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
                 cgs=cgs, MBH=MBH, radiation=radiation)
             # Initialize Coordinates class
-            Coords = coords.Coordinates(H.grid['r'], H.grid['theta'], 
-                H.grid['phi'], H.params, hr.CONSTANTS, cgs=cgs, MBH=MBH)
+            Coords = coords.Coordinates(**H.grid, pars=H.params, 
+                CONSTANTS=hr.CONSTANTS, cgs=cgs, MBH=MBH)
             # Initialize Fluid class
             Fluid = ana.Fluid(H.params, hr.CONSTANTS, cgs=cgs)
             # Initialize Field class
@@ -161,9 +161,8 @@ def main(**kwargs):
             Radi  = rad.Radiation(H.params, hr.CONSTANTS, cgs=cgs)
 
             # Calculate sigma (3D)
-            b  = Field.calc_b(H.data['B'], H.data['uu'], H.grid['gcov'], 
-                              cpp=True)
-            b2 = Field.calc_b2(b, H.data['B'], H.grid['gcov'], cpp=True)
+            b  = Field.calc_b(**H.data, **H.grid, cpp=True)
+            b2 = Field.calc_b2(b=b, **H.data, **H.grid, cpp=True)
             if (cgs):
                 sigma = (b2 / (4. * np.pi)) / (H.data['rho'] * c * c)
             else:
@@ -175,21 +174,18 @@ def main(**kwargs):
             
             # Calculate gas pressure
             if (two_temp):
-                pgas= Fluid.calc_pgas(H.data['u_gas'], H.data['Te'], H.data['Ti'])
+                pgas= Fluid.calc_pgas(**H.data)
             else:
                 gamma_adi = (5. / 3.)
                 pgas= (gamma_adi - 1.) * H.data['u_gas']
 
             # Mass and energy accretion rates. Radial magnetic flux (Phi_BH).
-            stress_energy_HD  = Fluid.calc_THD(H.data['rho'], H.data['uu'], 
-                H.data['u_gas'], pgas, H.grid['gcov'], H.grid['gcon'], 
+            stress_energy_HD  = Fluid.calc_THD(**H.data, **H.grid, pgas=pgas,
                 uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
-            stress_energy_EM  = Field.calc_TEM(H.data['uu'], H.data['B'], 
-                H.grid['gcov'], H.grid['gcon'], b2 = b2, b = b, 
-                uu_tnsr = uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
+            stress_energy_EM  = Field.calc_TEM(**H.data, **H.grid, b2=b2, b=b,
+                uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
             if (radiation):
-                stress_energy_RAD = Radi.calc_TRAD(H.data['u_rad'], 
-                    H.data['uu_rad'], H.grid['gcov'], H.grid['gcon'], 
+                stress_energy_RAD = Radi.calc_TRAD(**H.data, **H.grid, 
                     upper_lower=True, index=[1, 0], cpp=True)
             del uu_tnsr
             
@@ -205,19 +201,15 @@ def main(**kwargs):
             }
 
             profiles['Mdot']      += Acc.calc_Mdot()[0]
-            profiles['Edot']      += Acc.calc_Edot(TMHD = stress_energy_MHD)[0]
+            profiles['Edot']      += Acc.calc_Edot(TMHD=stress_energy_MHD)[0]
             profiles['Mdot_sigma']+= Acc.calc_Mdot(**acc_args)[0]
-            profiles['Edot_sigma']+= Acc.calc_Edot(TMHD = stress_energy_MHD, 
-                                                  **acc_args)[0]
-            profiles['Edot_Poyt'] += Acc.calc_Edot(TMHD = stress_energy_EM, 
-                                                  **acc_args)[0]
-            profiles['Edot_Fluid']+= Acc.calc_Edot(TMHD = stress_energy_HD,
-                                                  **acc_args)[0]
+            profiles['Edot_sigma']+= Acc.calc_Edot(TMHD=stress_energy_MHD, **acc_args)[0]
+            profiles['Edot_Poyt'] += Acc.calc_Edot(TMHD=stress_energy_EM,  **acc_args)[0]
+            profiles['Edot_Fluid']+= Acc.calc_Edot(TMHD=stress_energy_HD,  **acc_args)[0]
             profiles['Phi_BH']    += Acc.calc_PhiBH()[0] 
 
             if (radiation):
-                profiles['Edot_Rad'] += Acc.calc_Edot(TMHD = stress_energy_RAD, 
-                                                     **acc_args)[0]
+                profiles['Edot_Rad'] += Acc.calc_Edot(TMHD=stress_energy_RAD, **acc_args)[0]
             
             del stress_energy_MHD 
             del stress_energy_HD, stress_energy_EM, stress_energy_RAD        
@@ -245,9 +237,9 @@ def main(**kwargs):
 
             # Deallocate magnetic field in the lab frame and 
             # radiation 4-momentum as well as metric tensor and inverse
-            H.data['B']      = H.data['rho']
-            H.grid['gcov']   = H.data['rho']
-            H.grid['gcon']   = H.data['rho']
+            H.data['B']    = H.data['rho']
+            H.grid['gcov'] = H.data['rho']
+            H.grid['gcon'] = H.data['rho']
             if (radiation):
                 H.data['uu_rad'] = H.data['rho']
         
@@ -306,44 +298,39 @@ def main(**kwargs):
                 }
 
             if (two_temp):
-                qie = Fluid.calc_qie(H.data['rho'], H.data['Te'], H.data['Ti'], 
-                                     cpp=True)
+                qie = Fluid.calc_qie(**H.data, cpp=True)
                 # cooling = True (maybe)
                 #qie[qie < 0.] = 0.
                 profiles['qie'] += thph_sum(qie, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
                 if (radiation):
                     profiles['qie_thin'] += thph_sum(qie, H.grid, H.data, H.params, 
-                        hr.CONSTANTS, weight=uu_t, optically_thin = True,
-                        **tau_args)[0]
+                        hr.CONSTANTS, weight=uu_t, optically_thin = True,  **tau_args)[0]
                     profiles['qie_thick']+= thph_sum(qie, H.grid, H.data, H.params, 
-                        hr.CONSTANTS, weight=uu_t, optically_thin = False, 
-                        **tau_args)[0]
+                        hr.CONSTANTS, weight=uu_t, optically_thin = False, **tau_args)[0]
                 del qie
             
             if (radiation):
-                qIC = Radi.calc_qIC(H.data['rho'], H.data['Te'], H.data['u_rad'])
+                qIC = Radi.calc_qIC(**H.data)
                 # cooling = True (maybe)
                 profiles['qIC'] += thph_sum(qIC, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
                 profiles['qIC_thin']  += thph_sum(qIC, H.grid, H.data, H.params, 
-                    hr.CONSTANTS, weight=uu_t, optically_thin=True, **tau_args)[0]
+                    hr.CONSTANTS, weight=uu_t, optically_thin=True,  **tau_args)[0]
                 profiles['qIC_thick'] += thph_sum(qIC, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
                 del qIC
 
-                qemi=Radi.calc_q_emi(H.data['rho'], H.data['Te'], H.data['u_rad'], 
-                                     b2=b2, XRB=True, cpp=True)
+                qemi=Radi.calc_q_emi(**H.data, b2=b2, XRB=True, cpp=True)
                 profiles['qemi'] += thph_sum(qemi, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
                 profiles['qemi_thin']  += thph_sum(qemi, H.grid, H.data, H.params, 
-                    hr.CONSTANTS, weight=uu_t, optically_thin=True, **tau_args)[0]
+                    hr.CONSTANTS, weight=uu_t, optically_thin=True,  **tau_args)[0]
                 profiles['qemi_thick'] += thph_sum(qemi, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
                 del qemi
 
-                qabs= Radi.calc_q_abs(H.data['rho'], H.data['Te'], H.data['u_rad'], 
-                                      b2=b2, XRB=True, cpp=True)
+                qabs= Radi.calc_q_abs(**H.data, b2=b2, XRB=True, cpp=True)
                 profiles['qabs'] += thph_sum(qabs, H.grid, H.data, H.params, 
                     hr.CONSTANTS, weight=uu_t, **acc_args)[0]
                 del qabs
@@ -366,16 +353,15 @@ def main(**kwargs):
 
             quants = [
                 uu_cyl[1], uu_cyl[2], uu_cyl[3],
-                uu_cyl[1] / uu_cyl[0],
-                uu_cyl[2] / uu_cyl[0],
-                uu_cyl[3] / uu_cyl[0],
+                np.nan_to_num(uu_cyl[1] / uu_cyl[0]),
+                np.nan_to_num(uu_cyl[2] / uu_cyl[0]),
+                np.nan_to_num(uu_cyl[3] / uu_cyl[0]),
                 b_cyl[1], b_cyl[2], b_cyl[3]
             ]
 
             for (key, quant) in zip(vec_keys, quants):
-                profiles[f'{key}'] += thph_sum(quant, 
-                    H.grid, H.data, H.params, hr.CONSTANTS, 
-                    weight=H.data['rho'], **acc_args)[0]
+                profiles[f'{key}'] += thph_sum(quant, H.grid, H.data, 
+                    H.params, hr.CONSTANTS, weight=H.data['rho'], **acc_args)[0]
 
             del uu_cyl, b_cyl, sigma
             
