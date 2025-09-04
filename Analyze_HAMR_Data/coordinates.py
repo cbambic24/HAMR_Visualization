@@ -2,7 +2,9 @@ import numpy as np
 from numba import jit
 from numba import prange
 from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import griddata
 import tracemalloc
+from analysis import Accretion
 from analysis import Tools
 
 class Coordinates():
@@ -56,7 +58,7 @@ class Coordinates():
     
     # (t, r, theta, phi) -> (t, x, y, z)
     def sph_to_cart_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
+        shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
         drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
@@ -109,7 +111,7 @@ class Coordinates():
 
     # (t, x, y, z) -> (t, r, theta, phi)
     def cart_to_sph_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
+        shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
         dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
@@ -158,7 +160,7 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, R, phi, z)
     def sph_to_cyl_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
+        shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
         drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
@@ -206,7 +208,7 @@ class Coordinates():
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_sph_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
+        shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
         dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
@@ -219,7 +221,7 @@ class Coordinates():
         dzdr[2, 1] = (1. / self.r) * np.cos(self.th)
         dzdr[2, 3] = -(1. / self.r) * np.sin(self.th)
         dzdr[3, 2] = (1. / self.r) * (1. / np.sin(self.th))
-        
+
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dzdr, dzdr)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
@@ -252,7 +254,7 @@ class Coordinates():
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_sph_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
+        shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
         dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
@@ -295,7 +297,7 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
     def sph_to_int_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
+        shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
         dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
@@ -385,7 +387,7 @@ class Coordinates():
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_ortho_sph_tnsr(self, tnsr, **kwargs):
-        shape = list(self.r.shape)
+        shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
         dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
@@ -445,6 +447,102 @@ class Coordinates():
     # (t, r, theta, phi) -> (t, x1, x2, x3)
     def ortho_sph_to_int_cotnsr(self, cotnsr, **kwargs):
         return self.int_to_ortho_sph_tnsr(cotnsr, **kwargs) 
+    
+    # -------------------------------------
+    # Spherical (orthonormal) to Cylindrical (orthonormal)
+    # -------------------------------------
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def ortho_sph_to_cyl_vec(self, vec, **kwargs):
+        shape = list(vec.shape)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.th)
+        drdz[1, 2] = np.cos(self.th)
+        drdz[2, 3] = np.sin(self.th)
+        drdz[3, 1] = np.cos(self.th)
+        drdz[3, 2] = -np.sin(self.th)
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', drdz, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, drdz)
+    
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def ortho_sph_to_cyl_one_form(self, one_form, **kwargs):
+        return self.cyl_to_ortho_sph_vec(one_form, **kwargs)
+
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def ortho_sph_to_cyl_tnsr(self, tnsr, **kwargs):
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.th)
+        drdz[1, 2] = np.cos(self.th)
+        drdz[2, 3] = np.sin(self.th)
+        drdz[3, 1] = np.cos(self.th)
+        drdz[3, 2] = np.sin(self.th)
+        
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, drdz, drdz)
+
+    # (t, r, theta, phi) -> (t, R, phi, z)
+    def ortho_sph_to_cyl_cotnsr(self, cotnsr, **kwargs):
+        return self.cyl_to_ortho_sph_tnsr(cotnsr, **kwargs)
+
+    # -------------------------------------
+    # Cylindrical (orthonormal) to Spherical (orthonormal)
+    # -------------------------------------
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_ortho_sph_vec(self, vec, **kwargs):
+        shape = list(vec.shape)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[1, 2] = 0.
+        dzdr[1, 3] = np.cos(self.th)
+        dzdr[2, 1] = np.cos(self.th)
+        dzdr[2, 3] = -np.sin(self.th)
+        dzdr[3, 2] = (1. / np.sin(self.th))
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dzdr, vec)
+        else:
+            return Tools.contract_vector_cpp(vec, dzdr)
+
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_ortho_sph_one_form(self, one_form, **kwargs):
+        return self.ortho_sph_to_cyl_vec(one_form, **kwargs)
+
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_ortho_sph_tnsr(self, tnsr, **kwargs):
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[1, 2] = 0.
+        dzdr[1, 3] = np.cos(self.th)
+        dzdr[2, 1] = np.cos(self.th)
+        dzdr[2, 3] = -np.sin(self.th)
+        dzdr[3, 2] = (1. / np.sin(self.th))
+        
+        return np.einsum('kl...,ki...,lj...->ij...', tnsr, dzdr, dzdr)
+
+    # (t, R, phi, z) -> (t, r, theta, phi)
+    def cyl_to_sph_cotnsr(self, cotnsr, **kwargs):
+        return self.ortho_sph_to_cyl_tnsr(cotnsr, **kwargs)
 
     # Compute dot product between two vectors in the desired
     # coordinate system. Assumes vec_a, vec_b, and gcov are in
@@ -538,59 +636,109 @@ class Integrals(Coordinates):
             int_qdr = np.cumsum(qdr[:, ::-1, :, :], axis=1)[:, ::-1, :, :]
         return int_qdr
 
+    # symmetric -\int_{\infty}^{z} dz q(z, R, phi)
+    # Note: expects gcov in cylindrical coordinates
     def cum_integrate_z(self, q, gcovZZ, **kwargs):
-        # note that this only works with a 2D array
-        if (kwargs.get('interpolate', False)):
-            return self.cum_integrate_z_interpolated(q, gcovZZ, **kwargs)
-        int_qdz = np.zeros(q.shape)
-        z       = self.r * np.cos(self.th)
-        dz      = np.sqrt(gcovZZ) * self.r * (
-            np.abs(self.dx1 * np.cos(self.th)) + 
-            np.abs((np.pi/2.) * self.dx2 * np.sin(self.th))
-        )
-        R_cyl   = self.r * np.sin(self.th)
-        dR_cyl  = self.r * self.dx1 * np.sin(self.th) 
-        Rcyl_min= R_cyl - 0.5 * dR_cyl
-        Rcyl_max= R_cyl + 0.5 * dR_cyl
+        dth   = self.th[0, 0, 1, 0] - self.th[0, 0, 0, 0]
 
-        qdz = q * dz * self.sigma_cut(**kwargs) * self.theta_cut(**kwargs)
-        int_qdz = self.int_dz_loop(int_qdz, qdz, self.r, self.th, z, 
-                                   R_cyl, Rcyl_min, Rcyl_max)
+        # Apply sigma cut before integrating in z
+        if 'sigma_cut' in kwargs:
+            sigma = kwargs.get('sigma')
+            R_uni, Z_uni, sigma_uni = self.interpolate_sph_to_cyl_3D(
+                sigma, self.r[0, 0, 0, 0] * dth, **kwargs)
+            kwargs['sigma'] = sigma_uni
+            self.sigma_uni = sigma_uni
+
+        R_uni, Z_uni, q_uni = self.interpolate_sph_to_cyl_3D(
+            q * np.sqrt(gcovZZ), self.r[0, 0, 0, 0] * dth, **kwargs)
+
+        shape     = list(q.shape)
+        int_qdz   = np.zeros(q_uni.shape)
+
+        # Apply theta cut before integrating in z
+        if 'theta_cut' in kwargs:
+            rsq       = R_uni * R_uni + Z_uni * Z_uni
+            theta_uni = np.arccos(Z_uni / np.sqrt(rsq))
+            kwargs['theta_uni'] = theta_uni
+            kwargs['uni']       = True
+
+        iz0 = np.argwhere(Z_uni[:, 0] < 0)[-1][0] + 1
+        dz  = self.get_dz(Z_uni, iz0)
+        qdz = q_uni * dz[:, None, None] * (
+            self.sigma_cut(**kwargs) * self.theta_cut(**kwargs))
+
+        # Integrate inward from |z_max|
+        int_qdz[:iz0,:,:]= np.cumsum(qdz[:iz0,:,:], axis=0)
+        int_qdz[iz0:,:,:]= np.cumsum(qdz[iz0:,:,:][::-1,:,:], axis=0)[::-1,:,:]
+
+        int_qdz = self.interpolate_cyl_to_sph_3D(int_qdz, R_uni, Z_uni, **kwargs)
+        int_qdz = np.swapaxes(int_qdz, 0, 1)
+        if len(shape) == 4:
+            return int_qdz[None, :, :, :]
+        else:
+            return int_qdz
+
+    def get_dz(self, z, iz0):
+        # calculate dz using knowledge that grid is sym-logarithmic in z
+        dlogz        = np.zeros(z[:, 0].shape)
+        dlogz[:-1]   = np.log(np.abs(z[1:, 0]/z[:-1, 0]))
+        dlogz[-1]    = dlogz[-2]
+        dlogz[iz0-1] = np.abs(dlogz[iz0])
+        return z[:, 0] * dlogz
+
+    def interpolate_sph_to_cyl_3D(self, q, rdth, **kwargs):
+        # Interpolate q(r, theta, phi) -> q(Z, R, phi)
+        r1D, th1D, phi1D = self.get_coords1D()
         
-        return int_qdz
+        # Resolution factor in z (default: 2 so 4x as many points in z as th)
+        res   = kwargs.get('res', 2)
+        # z_max restricts integral from -z_max to z_max (default: r_max)
+        z_max = kwargs.get('z_max', r1D[-1])
+        zpos  = np.logspace(
+            np.log(rdth), np.log(z_max), int(res * len(th1D)), base=np.e)
+        z1D  = np.concatenate([-zpos[::-1], zpos])
+        # Create uniform R-Z grid (nz, nr)
+        R_cyl, Z_cyl = np.meshgrid(r1D, z1D)
+        q_cyl        = np.zeros([len(z1D), len(r1D), len(phi1D)])
 
-    @staticmethod
-    @jit(nopython=True, parallel=True)
-    def int_dz_loop(int_qdz, qdz, r, th, z, R_cyl, Rcyl_min, Rcyl_max):
-        for ir in prange(len(r[:, 0])):
-            for ith in range(len(th[0, :])):
-                temp_sum = 0.0
-                for jr in range(len(r[:, 0])):
-                    for jth in range(len(th[0, :])):
-                        if ((R_cyl[jr, jth] < Rcyl_max[ir, ith]) and
-                            (R_cyl[jr, jth] > Rcyl_min[ir, ith])):
-                            if (z[ir, ith] >= 0.):
-                                if (z[jr, jth] > z[ir, ith]):
-                                    temp_sum += qdz[jr, jth]
-                            else:
-                                if (z[jr, jth] < z[ir, ith]):
-                                    temp_sum += qdz[jr, jth]
+        # Calculate true R-Z points
+        R2D = r1D[:, None] * np.sin(th1D[None, :])
+        Z2D = r1D[:, None] * np.cos(th1D[None, :])
 
-                int_qdz[ir, ith] = temp_sum
-        return int_qdz
-            
-    def cum_integrate_z_interpolated(self, q, gcovZZ, **kwargs):
-        R_cyl = self.r * np.sin(self.th)
-        z_cyl = self.r * np.cos(self.th)
-        f     = RegularGridInterpolator((R_cyl, z_cyl), (q * np.sqrt(gcovZZ)))
-        R1d   = self.r[:, 0]
-        z1d   = np.linspace(np.amin(z_cyl), np.amax(z_cyl), len(self.th[0, :]))
-        R_grid, z_grid = np.meshgrid(R1d, z1d)
-        q_grid         = f([R_grid, z_grid])
-        # This is wrong
-        dz_grid        = np.concatenate([np.diff(z_grid), np.diff(z_grid)[-1]])
-        int_qdz        = np.cumsum(q_grid * dz_grid)
-        return int_qdz
+        # Return q(th, r, phi) interpolated to new R-Z grid
+        q_cyl = self.interpolate3D(q_cyl, R_cyl, Z_cyl, q,
+            R2D.ravel(), Z2D.ravel(), len(phi1D), **kwargs)
+
+        return R_cyl, Z_cyl, q_cyl
+
+    def interpolate_cyl_to_sph_3D(self, q, R, Z, **kwargs):
+        # Interpolate q(Z, R, phi) -> q(theta, r, phi)
+        r1D, th1D, phi1D = self.get_coords1D()
+        
+        # Calculate true r-theta points
+        r2D  = np.sqrt((R * R) + (Z * Z))
+        th2D = np.arccos(Z / r2D)
+
+        # Create uniform log(r)-cos(theta) grid (nth, nr)
+        logr, costh = np.meshgrid(np.log(r1D), np.cos(th1D))
+        q_sph       = np.zeros([len(th1D), len(r1D), len(phi1D)])
+
+        q_sph = self.interpolate3D(q_sph, logr, costh, q[None, :, :, :],
+            np.log(r2D).ravel(), np.cos(th2D).ravel(), len(phi1D), **kwargs)
+
+        return q_sph
+
+    def interpolate3D(self, q_uni, x_uni, y_uni, q, x1D, y1D, nk, **kwargs):
+        for k in range(nk):
+            q_uni[:,:,k]=griddata((x1D,y1D), q[0,:,:,k].ravel(), (x_uni,y_uni), 
+                fill_value=0., method=kwargs.get('method','linear'))
+        return q_uni
+
+    def get_coords1D(self):
+        r1D   = self.r[ 0, :, 0, 0]
+        th1D  = self.th[0, 0, :, 0]
+        phi1D = self.ph[0, 0, 0, :]
+        return r1D, th1D, phi1D
 
     # Return where sigma < sigma_cut
     def sigma_cut(self, **kwargs):
@@ -605,9 +753,16 @@ class Integrals(Coordinates):
             return 1.0
 
     def theta_cut(self, **kwargs):
-        if 'theta_cut' in kwargs:
+        if 'theta_cut' in kwargs and not kwargs.get('uni', False):
             return ((self.th > kwargs.get('theta_cut')) & 
                     (self.th < np.pi - kwargs.get('theta_cut')))
+        elif 'theta_cut' in kwargs and kwargs.get('uni', False):
+            if 'theta_uni' in kwargs:
+                th_uni = kwargs.get('theta_uni')
+                return ((th_uni[:, :, None] > kwargs.get('theta_cut')) & 
+                        (th_uni[:, :, None] < np.pi - kwargs.get('theta_cut')))
+            else:
+                raise ValueError("Must supply theta_uni to use uni=True.")
         else:
             return 1.0
 
@@ -676,9 +831,54 @@ class Tetrads(Kerr_Schild):
         self.e[3, 1] = gammarp / np.sqrt(gammapp)
         self.e[3, 3] = np.sqrt(gammapp)
 
-class Tilt(Coordinates):
-    def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
-        super().__init__(r, theta, phi, pars, CONSTANTS, **kwargs)
+class Tilt(Accretion, Coordinates):
+    def __init__(self, grid, data, pars, CONSTANTS, **kwargs):
+        # Tilt angle as a function of radius (1D array)
+        if 'tilt_angle' in kwargs:
+            self.tilt_angle = kwargs.get('tilt_angle')
+        super()._init(self, grid, data, pars, CONSTANTS, **kwargs)
+        self.two_temp = True if ('Ti' in data and 'Te' in data) else False
+        self.radiation= True if ('u_rad' in data and 'uu_rad' in data) else False
+
+    # Equation 16 of Fragile & Anninos (2005)
+    def calc_angular_momentum_vector(self, L, S, S_cov):
+        levi_civita = Tools.calc_Levi_Civita(4, np.ones_like(S[1]))
+        return np.einsum('ijkl...,ij...,k...', levi_civita, L, S) / (
+            np.sqrt(-np.einsum('i...,i...->...', S_cov, S))
+        )
+
+    # Equation 17 of Fragile & Anninos (2005)
+    def calc_angular_momentum_tnsr(self, **kwargs):
+        if 'THD' not in kwargs:
+            EOS = '2T' if self.two_temp else False
+            self.stress_energy_HD = self.calc_THD_cart(EOS=EOS, **kwargs)
+        else:
+            self.stress_energy_HD = kwargs.get('THD')
+        x    = np.zeros(self.data['uu'].shape)
+        x[1] = self.r * np.sin(self.th) * np.cos(self.phi)
+        x[2] = self.r * np.sin(self.th) * np.sin(self.phi)
+        x[3] = self.r * np.cos(self.th) * np.ones(self.phi.shape)
+        return np.einsum('i...,j...->ij...', x, self.stress_energy_HD[:,0]) - (
+               np.einsum('j...,i...->ij...', x, self.stress_energy_HD[:,0]))
+    
+    # Angular momentum flux (see below Eq. 17 in Fragile & Anninos 2005)
+    def calc_total_momentum_vector(self, **kwargs):
+        if 'THD' not in kwargs:
+            EOS = '2T' if self.two_temp else False
+            self.stress_energy_HD = self.calc_THD_cart(EOS=EOS, **kwargs)
+        else:
+            self.stress_energy_HD = kwargs.get('THD')
+        return self.stress_energy_HD[:, 0]
+
+    # Hyrodynamic stress-energy tensor in Cartesian coordinates
+    # See White, Quataert & Blaes (2019), Equation 5
+    def calc_THD_cart(self, **kwargs):
+        gamma_adi = 5./3.
+        from analysis import Fluid
+        Flu    = Fluid(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
+        Coords = Coordinates(self.r, self.th, self.phi, self.pars, self.CONSTANTS)
+        return Coords.int_to_cart_tnsr(Flu.calc_THD(**self.data, **self.grid,
+            pgas=(gamma_adi - 1.) * self.data['u_gas'], **kwargs))
 
 class Christoffel_KS(Kerr_Schild):
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
