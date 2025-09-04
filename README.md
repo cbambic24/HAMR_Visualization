@@ -121,7 +121,7 @@ rho = H.data['rho']
 ```
 The coordinate variables (r, th, phi) and scalar variables like density (rho) are all 4D arrays with slots that correspond to (block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index). For vectors like the 4-velocity $u^{\mu}$ (H.data['uu'] in the code) or the 3-magnetic field __B__ (H.data['B'] in the code), the arrays are 5D with slots (direction, block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index), where direction $\in (0, 1, 2, 3)$ corresponds to the basis vectors in internal coordinates $(x_0, x_1, x_2, x_3)$. Similarly, for rank-2 tensors like the covariant metric tensor $g_{\mu \nu}$ (H.grid['gcov'] in the code), there are 6 slots: (direction, direction, block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index). The block number is always 0 unless the by_block flag is used in hr.Read. In that case, the arrays are stored such that the coordinate indices correspond to a given block rather than the global array upscaled to the highest refinement level. Thus, the by_block option decreases the memory occupied by each of the arrays stored in the H.grid and H.data dictionaries. 
 
-### Extracting profiles or slices
+### Extracting Radial Profiles or Poloidal Slices
 For any of the executable scripts we have written, the usage instructions should be available through the inclusion of the -h (for "help") flag at the end of the script. For instance, if you were to execute the _radial_profiles_time.py_ script from within the __RUN__ directory, 
 ```
 python ../HAMR_Visualization/Analyze_HAMR_Data/radial_profiles_time.py -h
@@ -155,7 +155,7 @@ options:
 ```
 The most common trick for analyzing _H-AMR_ data is to downsample in each direction independently using the --lowres flags. In addition, the --reduced flag tells the script to analyze the data in the __Data__/__Exciting_Simulation__/__reduced__ folder, which is usually downsampled ahead of time to reduce the amount of data that has to be moved through memory. For profile and slice extraction (where here, "slice" refers to an azimuthal average of the 3D data, which results in a 2D r-theta "slice"), the scripts are both OpenMP and MPI parallelized, with data chunks (for _radial_profiles.py_ and _poloidal_slices.py_) or individual dumps (for _radial_profiles_time.py_ and _poloidal_slices_time.py_) spread among different processors, while the read-in and computations on the separate data chunks/dumps are multithreaded with OpenMP, particularly whenever the cpp=True flag is passed to a function. Please consult the Wiki for invidiual function calls/behaviors. 
 
-### Creating images/movies
+### Creating Images/Movies
 As an example for creating a movie of the midplane density, you can run the script
 ```
 python ../HAMR_Visualization/Render_Movies/Midplane/density_midplane.py -h
