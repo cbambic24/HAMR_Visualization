@@ -1,6 +1,6 @@
 # H-AMR Analysis
 
-This is a beta version of the analysis pipeline for _H-AMR_ ([Liska et al. 2022](https://ui.adsabs.harvard.edu/abs/2022ApJS..263...26L/abstract)), a new GPU-accelerated general relativistic magnetohydrodynamics (GRMHD) code optimized to leverage exascale GPU-computing architectures.
+This is the analysis and visualization toolkit for _H-AMR_ ([Liska et al. 2022](https://ui.adsabs.harvard.edu/abs/2022ApJS..263...26L/abstract)), a new GPU-accelerated general relativistic magnetohydrodynamics (GRMHD) code optimized to leverage exascale GPU-computing architectures.
 
 _H-AMR_'s 3D adaptive mesh refinement (AMR) and adaptive time-stepping capabilities enable the code to perform state-of-the-art computations of accretion onto black holes at some of the highest resolutions achieved to date (e.g. [Liska et al. 2018](https://ui.adsabs.harvard.edu/abs/2018MNRAS.474L..81L/abstract), [Ripperda et al. 2022](https://ui.adsabs.harvard.edu/abs/2022ApJ...924L..32R/abstract)). However, the enormous data sets produced by _H-AMR_ require a unique read-in pipeline that can interpret the custom binary formats used for optimal memory storage on modern supercomputers.
 
@@ -8,11 +8,13 @@ This pipeline, written in Python and interfaced with C++ through a Cython-based 
 
 ## Getting Started 
 
-To use this pipeline, set up an SSH key on your GitHub account, then clone the repository with 
+To use this toolkit, set up an SSH key on your GitHub account, then clone the repository with 
 ```
 git clone git@github.com:cbambic24/HAMR_Analysis.git
 ```
-The pipeline assumes that you have a main directory (e.g. __RUN__) where your analysis scripts are stored. While sample analysis and plotting routines are provided in _analysis.py_ and _figs.py_, the user is strongly encouraged to develop their own scripts. Within the __RUN__ directory, the pipeline assumes that the scripts _hamr_read.cpp_, _hamr_read.h_, _hamr_read_c.pyx_, _hamr_read.py_, and _setup.py_ are all stored in __RUN/HAMR_Visualization/Read_HAMR_Data__. Changing this directory structure is straightforward so long as  _hamr_read.cpp_, _hamr_read.h_, _hamr_read_c.pyx_, and _hamr_read.py_ are in the same directory as _setup.py_.
+This process will create a directory called __HAMR_Visualization__, with three sub-directories: __Analyze_HAMR_Data__, __Read_HAMR_Data__, and __Render_Movies__. All of the primary analysis tools, as well as the C++ acceleration routines for all of the calculations specific to radiation and two-temperature physics, are contained within the __Analyze_HAMR_Data__ directory. Reading in of the data and compilation of the toolkit is accomplished by the files contained within __Read_HAMR_Data__. We include a large number of sample scripts for producing images/movies in the __Render_Movies__ directory. The file __Analyze_HAMR_Data__/_compute_variables.py_ is the only file that the user should need to modify. There, I define a number of paths that are specific to my setup on Oakridge National Laboratory's _Frontier_ supercomputer. You should modify these directories as it suits your set-up.
+
+We recommend you create the __HAMR_Visualization__ directory within the _user_path_ directory (for me, this is the path under the heading "cbambic"). At this same level (i.e. in the _user_path_ directory), we recommend you create the following directories: __Averages__, __DATA__, __Images__, __Movies__, __PDF__, __Logs__, and __RUN__. Generally, we store all of the profile and slice averages in the __Averages__ directory, hold all of the _H-AMR_ dumps files inside of the __DATA__/_Simulation_ directory, where here _Simulation_ refers to a specific _H-AMR_ simulation that you're analyzing, and we create the PNGs that are later turned into movies inside the __Images__ directory. We store folders containing LaTeX libraries, ffmpeg, etc. inside of __RUN__ and we will always execute code from the __RUN__ directory. In this respect, Jupyter notebooks are usually stored in the __RUN__ directory. Final PDFs that go into papers are stored in the __PDF__ directory. This set-up is what is expected by the toolkit, and these directories will be produced by the analysis scripts as they are needed if they do not already exist.  
 
 To compile the code, either execute the following command in the command line from the __RUN__ directory,
 ```
@@ -79,30 +81,30 @@ where filename is an appropriately defined string for the file you're looking fo
 
 ### Reading in a Data Set
 
-Suppose you were interested in loading in a state-of-the-art two-temperature radiation GRMHD simulation stored in __RUN/DATA/Exciting_Simulation__. To read in output 100 (or in _H-AMR_ parlance, dump 100) with your Jupyter notebook or Python script situated in __RUN__, you would execute
+Suppose you were interested in loading in a state-of-the-art two-temperature radiation GRMHD simulation stored in __DATA__/__Exciting_Simulation__. First, you should edit the paths appropriately in __HAMR_Visuaization__/__Analyze_HAMR_Data__/_compute_variables.py_ such that the Python path includes all of the necessary analysis files. Then, to read in output 100 (or in _H-AMR_ parlance, dump 100) with your Jupyter notebook or Python script situated in __RUN__, you would execute
 ```
 import sys
 import os
 import numpy as np
-sys.path.insert(0, 'PATH_TO_RUN/RUN/HAMR_Visualization/Read_HAMR_Data')
+sys.path.insert(0, 'PATH_TO_HAMR_Visualization/HAMR_Visualization/Analyze_HAMR_Data')
+import compute_variables as cv
 import hamr_read as hr
 
 H = hr.Read('DATA/Exciting_Simulation')
 H.read_grid(100, direct=True)
 H.read_prims(100, skip_read_params=True)
 ```
-The flags "direct=True" and "skip_read_params=True" are unnecessary if you have properly written grid dump (gdumps) files in __RUN/DATA/Exciting_Simulation/gdumps__. Otherwise, the "direct=True" flag implies that you would like to analytically compute the Kerr metric for a spinning black hole in spherical Kerr-Schild coordinates without the additional step of waiting for the grid to be read in. The "skip_read_params=True" flag is a convenience that prevents read_prims from doing double-work and re-reading in the parameters file when read_grid has already read-in and stored the parameters. 
+The flags "direct=True" and "skip_read_params=True" are unnecessary if you have properly written grid dump (gdumps) files in __DATA__/__Exciting_Simulation__/__gdumps__. Otherwise, the "direct=True" flag implies that you would like to analytically compute the Kerr metric for a spinning black hole in spherical Kerr-Schild coordinates without the additional step of waiting for the grid to be read in. The "skip_read_params=True" flag is a convenience that prevents read_prims from doing double-work and re-reading in the parameters file when read_grid has already read-in and stored the parameters. 
 
 Additional flags/options available to the Read class can be found in the init() function in _hamr_read.py_. The user is encouraged to explore these settings and consult the Wiki on this repository for further instructions. Finally, for immediate assistance, please consult the parameter glossary included at the bottom of _hamr_read.py_. 
 
 ### Using the Data
 
-The user should only need access to the following dictionaries, where we assume that hamr_read was imported as "hr" and the Read class was assigned to "H" during the instantiation: hr.CONSTANTS, hr.params, H.grid, and H.data. List the keys in these dictionaries to determine what they contain, and consult the parameter glossary at the bottom of _hamr_read.py_ for assistance. 
+The user should only need access to the following dictionaries, where we assume that hamr_read was imported as "hr" and the Read class was assigned to "H" during the instantiation: hr.CONSTANTS, H.params, H.grid, and H.data. List the keys in these dictionaries to determine what they contain, and consult the parameter glossary at the bottom of _hamr_read.py_ for assistance. 
 
 As an example, suppose we wanted to read in our __Exciting_Simulation__ of a black hole of 10 solar masses, output in spherical Kerr-Schild coordinates ($r, \theta, \varphi$). If we wanted to read in the data and grid variables with CGS units, and only read in the data within a radial range of 1.2 to 300 gravitational radii ($R_g$), downsampled by a factor of 4 in the radial ($r$) coordinate, 4 in the poloidal ($\theta$) coordinate, and 16 in the toroidal ($\varphi$) coordinate, then the following commands would provide everything needed to plot the density ($\rho$ or "rho"):
  ```
 H = hr.Read('DATA/Exciting_Simulation', cgs_data = True, cgs_grid = True, MBH = 10.0,
-            do_box = 1, 
             r_min = 1.2, r_max = 300.0,
             lowres1 = 4, lowres2 = 4, lowres3 = 16)
 H.read_grid(100, direct=True)
