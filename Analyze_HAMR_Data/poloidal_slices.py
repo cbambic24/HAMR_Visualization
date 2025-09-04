@@ -511,15 +511,13 @@ if __name__ == '__main__':
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
-                        should be included in profile extraction 
-                        (default: True).""")
+                        should be included in profile extraction.""")
     parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if two-temperature 
-                        physics should be included in profile extraction 
-                        (default: True).""")    
+                        physics should be included in slice extraction.""")    
     parser.add_argument('--reduced', action='store_true', required=False,
-                        help="""boolean to determine if profile extraction
+                        help="""boolean to determine if slice extraction
                         should be done on reduced data.""")
     parser.add_argument('--restart', action='store_true', required=False, 
                         help="""boolean set to determine if profile 
