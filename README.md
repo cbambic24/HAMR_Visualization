@@ -1,4 +1,4 @@
-# H-AMR Analysis
+# H-AMR Visualization
 
 This is the analysis and visualization toolkit for _H-AMR_ ([Liska et al. 2022](https://ui.adsabs.harvard.edu/abs/2022ApJS..263...26L/abstract)), a new GPU-accelerated general relativistic magnetohydrodynamics (GRMHD) code optimized to leverage exascale GPU-computing architectures.
 
