@@ -369,6 +369,123 @@ void Opacity::kappaSynchrotron(double* kappa, float* rho, float* Te,
 
 Opacity::~Opacity() {};
 
+// RIAF Opacity class
+// Use synchrotron opacities from Sadowski+ (2017) instead of McKinney+ (2017)
+// Appropriate for low-Mdot radiatively inefficient accretion flows
+RIAF_Opacity::RIAF_Opacity() {};
+
+RIAF_Opacity::RIAF_Opacity(const std::unordered_map<std::string, double>& params,
+    const std::unordered_map<std::string, double>& CONSTANTS) 
+    : Opacity(params, CONSTANTS) {};
+
+RIAF_Opacity::RIAF_Opacity (RIAF_Opacity& opac) : Opacity(opac) {};
+
+// Synchrotron opacities
+// Override inherited functions
+double RIAF_Opacity::kappaSyncAbs(float rho, float Te, float Tr, float b2) {
+  ne          = rho / (mu_e * mp);
+  xi          = Tr / Te;
+  // Sadowski+ (2017) Equation 41
+  kappa_emi   = 1.59e-30 * ne * b2 / (Te * Te * rho);
+  // Sadowski+ (2017) Equation 42
+  pime3c5_ekh = (M_PI * me * me * me * std::pow(c, 5)) / (eStatC * kB * h);
+  ksi         = (4.0 / 3.0) * pime3c5_ekh * Tr / (std::sqrt(b2) * Te * Te);
+  // Sadowski+ (2017) Equation 43
+  return kappa_emi * (1.0 / (xi * xi * xi)) * (1.0 / (
+    1.0 + 5.444*(std::pow(ksi, -2.0/3.0)) + 7.218*(std::pow(ksi, -4.0/3.0))));
+} 
+
+double RIAF_Opacity::kappaSyncEmi(float rho, float Te, float Tr, float b2) {
+  ne = rho / (mu_e * mp);
+  // Sadowski+ (2017) Equation 41
+  return 1.59e-30 * ne * b2 / (Te * Te * rho);
+} 
+  
+// Total absorption and emission opacities
+double RIAF_Opacity::kappaAbsTotal(float rho, float Te, float Tr, 
+    float b2, int XRB) {
+  return kappaSyncAbs(rho, Te, Tr, b2) + ( 
+    (1.0 / ((1.0 / (kappaH(rho, Te, Tr) + kappaMol)) + 
+    (1.0 / (kappaBoundFreeAbs(rho, Te, Tr) + 
+	     kappaFreeFreeAbs(rho, Te, Tr) + 
+             kappaCHIANTIAbs( rho, Te, Tr)))))); 
+}
+
+double RIAF_Opacity::kappaEmiTotal(float rho, float Te, float Tr, 
+    float b2, int XRB) {
+  return kappaSyncEmi(rho, Te, Tr, b2) + ( 
+    (1.0 / ((1.0 / (kappaH(rho, Te, Tr) + kappaMol)) + 
+    (1.0 / (kappaBoundFreeEmi(rho, Te, Tr) + 
+	     kappaFreeFreeEmi(rho, Te, Tr) + 
+             kappaCHIANTIEmi( rho, Te, Tr)))))); 
+}
+  
+// Opacities exposed to Cython/Python
+// Total absorption and emission opacities
+void RIAF_Opacity::kappaAbsTotal(double* kappa, float* rho, float* Te, float* Tr,
+  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
+  gridsize_3D = nb * nx1 * nx2 * nx3;
+  int n;
+  #pragma omp parallel for private(n)
+  for (n = 0; n < gridsize_3D; n++) {
+    kappa[n] = kappaSyncAbs(rho[n], Te[n], Tr[n], b2[n]) + ( 
+      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
+      (1.0 / (kappaBoundFreeAbs(rho[n], Te[n], Tr[n]) + 
+	      kappaFreeFreeAbs( rho[n], Te[n], Tr[n]) + 
+      kappaCHIANTIAbs(rho[n], Te[n], Tr[n])))))); 
+  }
+}
+
+void RIAF_Opacity::kappaEmiTotal(double* kappa, float* rho, float* Te, float* Tr,
+  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
+  gridsize_3D = nb * nx1 * nx2 * nx3;
+  int n;
+  #pragma omp parallel for private(n)
+  for (n = 0; n < gridsize_3D; n++) {
+    kappa[n] = kappaSyncEmi(rho[n], Te[n], Tr[n], b2[n]) + ( 
+      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
+      (1.0 / (kappaBoundFreeEmi(rho[n], Te[n], Tr[n]) + 
+	      kappaFreeFreeEmi( rho[n], Te[n], Tr[n]) + 
+      kappaCHIANTIEmi(rho[n], Te[n], Tr[n])))))); 
+  }
+}
+  
+// Synchrotron opacity exposed to Cython/Python
+void RIAF_Opacity::kappaSynchrotron(double* kappa, float* rho, float* Te, 
+    float* Tr, float* b2, int emi, int XRB, 
+    int nb, int nx1, int nx2, int nx3) {
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
+  int n;
+  // Private (P) variables in OMP threads
+  double neP, ksiP, xiP, kappa_emiP;
+  gridsize_3D = nb * nx1 * nx2 * nx3;
+  // Sadowski+ (2017) Equation 42
+  pime3c5_ekh = (M_PI * me * me * me * std::pow(c, 5)) / (eStatC * kB * h);
+  if (emi) {
+    #pragma omp parallel for private(n, neP)
+    for (n = 0; n < gridsize_3D; n++) {
+      neP = rho[n] / (mu_e * mp);
+      // Sadowski+ (2017) Equation 41
+      kappa[n] = 1.59e-30 * neP * b2[n] / (Te[n] * Te[n] * rho[n]);
+    }
+  } else {
+    #pragma omp parallel for private(n, neP, ksiP, xiP, kappa_emiP)
+    for (n = 0; n < gridsize_3D; n++) {
+      neP = rho[n] / (mu_e * mp);
+      ksiP= (4.0/3.0) * pime3c5_ekh * Tr[n]/(std::sqrt(b2[n]) * Te[n] * Te[n]);
+      xiP = Tr[n] / Te[n];
+      // Sadowski+ (2017) Equation 41
+      kappa_emiP = 1.59e-30 * neP * b2[n] / (Te[n] * Te[n] * rho[n]);
+      kappa[n]   = kappa_emiP * (1.0 / (xiP * xiP * xiP)) * (1.0 / (1.0 + 
+        5.444*(std::pow(ksiP, -2.0/3.0)) + 7.218*(std::pow(ksiP, -4.0/3.0))));
+    }
+  }
+}
+
+RIAF_Opacity::~RIAF_Opacity() {};
+
 // Radiation class
 Radiation::Radiation() {};
 
