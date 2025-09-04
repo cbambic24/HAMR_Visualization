@@ -7,7 +7,7 @@ from libcpp.unordered_map cimport unordered_map
 from libcpp.string cimport string
 from libcpp.vector cimport vector
 
-cdef extern from "hamr_analysis.h":
+cdef extern from "../Analyze_HAMR_Data/hamr_analysis.h":
     cdef cppclass Fluid:
         Fluid() except + 
         Fluid(unordered_map[string, double] params,
@@ -33,6 +33,23 @@ cdef extern from "hamr_analysis.h":
             float* Tr, float *b2, int XRB, 
             int nb, int nx1, int nx2, int nx3)
     
+    cdef cppclass RIAF_Opacity:
+        RIAF_Opacity() except + 
+        RIAF_Opacity(unordered_map[string, double] params,
+            unordered_map[string, double] CONSTANTS) except +
+
+        void kappaSynchrotron(double* kappa, float* rho, float* Te, 
+            float* uRad, float* b2, int emi, int XRB, 
+            int nb, int nx1, int nx2, int nx3)
+        
+        void kappaAbsTotal(double* kappa, float* rho, float* Te, 
+            float* Tr, float *b2, int XRB, 
+            int nb, int nx1, int nx2, int nx3)
+
+        void kappaEmiTotal(double* kappa, float* rho, float* Te, 
+            float* Tr, float *b2, int XRB, 
+            int nb, int nx1, int nx2, int nx3)
+
     cdef cppclass Radiation:
         Radiation() except + 
         Radiation(unordered_map[string, double] params,
@@ -140,6 +157,52 @@ cdef class PyOpacity:
         CONSTANTS_cpp = pass_dict_to_cpp(CONSTANTS)
 
         self.c_opacity= new Opacity(params_cpp, CONSTANTS_cpp)
+    
+    def calc_kappa_abs_tot(self,
+        np.ndarray[np.float64_t, ndim=4, mode="c"] kappa_abs,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] rho,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] Te,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] Tr,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] b2,
+        int XRB, int nb, int nx1, int nx2, int nx3):
+        return self.c_opacity.kappaAbsTotal(
+            &kappa_abs[0,0,0,0], &rho[0,0,0,0], &Te[0,0,0,0],
+            &Tr[0,0,0,0], &b2[0,0,0,0], XRB, 
+            nb, nx1, nx2, nx3)
+    
+    def calc_kappa_emi_tot(self,
+        np.ndarray[np.float64_t, ndim=4, mode="c"] kappa_emi,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] rho,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] Te,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] Tr,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] b2,
+        int XRB, int nb, int nx1, int nx2, int nx3):
+        return self.c_opacity.kappaEmiTotal(
+            &kappa_emi[0,0,0,0], &rho[0,0,0,0], &Te[0,0,0,0],
+            &Tr[0,0,0,0], &b2[0,0,0,0], XRB, 
+            nb, nx1, nx2, nx3)
+        
+    def calc_kappa_sync(self,
+        np.ndarray[np.float64_t, ndim=4, mode="c"] kappa_sync,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] rho,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] Te,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] Tr,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] b2,
+        int emi, int XRB, int nb, int nx1, int nx2, int nx3):
+        return self.c_opacity.kappaSynchrotron(
+            &kappa_sync[0,0,0,0], &rho[0,0,0,0], &Te[0,0,0,0],
+            &Tr[0,0,0,0], &b2[0,0,0,0], emi, XRB, 
+            nb, nx1, nx2, nx3)
+
+# wrapper class for C++
+cdef class PyRIAF_Opacity:
+    cdef RIAF_Opacity *c_opacity
+
+    def __init__(self, params, CONSTANTS):
+        params_cpp    = pass_dict_to_cpp(params)
+        CONSTANTS_cpp = pass_dict_to_cpp(CONSTANTS)
+
+        self.c_opacity= new RIAF_Opacity(params_cpp, CONSTANTS_cpp)
     
     def calc_kappa_abs_tot(self,
         np.ndarray[np.float64_t, ndim=4, mode="c"] kappa_abs,
