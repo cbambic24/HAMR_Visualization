@@ -3,7 +3,7 @@ import os
 import argparse
 import numpy as np
 sys.path.insert(0, '/lustre/orion/ast178/proj-shared/' +
-    'cbambic/HAMR_Visualization/NewObj_Read_HAMR_Data')
+    'cbambic/HAMR_Visualization/Read_HAMR_Data')
 import hamr_read as hr
 import analysis as ana
 import coordinates as coords
@@ -82,7 +82,7 @@ def main(**kwargs):
         cool_keys = ['qie']
     if (radiation):
         cool_keys = [
-            'qIC', 'qemi', 'qabs', 
+            'qIC', 'qIC_cool', 'qemi', 'qabs', 
             'qIC_thin', 'qemi_thin', 'qIC_thick', 'qemi_thick'
         ]
     if (two_temp and radiation):
@@ -145,7 +145,7 @@ def main(**kwargs):
     
         # Read grid and data
         H.read_grid(file_num, direct=True)
-        H.read_prims(file_num, skip_read_params=True)
+        H.read_prims(file_num, skip_read_params=False)
 
         # Initialize Accretion class
         Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
@@ -159,7 +159,7 @@ def main(**kwargs):
         Field = ana.Field(H.params, hr.CONSTANTS, cgs=cgs)
         # Initialize Radiation class
         Radi  = rad.Radiation(H.params, hr.CONSTANTS, cgs=cgs)
-
+        
         # Calculate sigma (3D)
         b  = Field.calc_b(**H.data, **H.grid, cpp=True)
         b2 = Field.calc_b2(b=b, **H.data, **H.grid, cpp=True)
@@ -205,6 +205,8 @@ def main(**kwargs):
         prof_loc['Mdot_sigma']= Acc.calc_Mdot(**acc_args)[0]
         prof_loc['Edot_sigma']= Acc.calc_Edot(TMHD=stress_energy_MHD, **acc_args)[0]
         prof_loc['Edot_Poyt'] = Acc.calc_Edot(TMHD=stress_energy_EM,  **acc_args)[0]
+        prof_loc['Edot_jet']  = Acc.calc_Edot(TMHD=stress_energy_EM, 
+                                              jet=True, **acc_args)[0]
         prof_loc['Edot_Fluid']= Acc.calc_Edot(TMHD=stress_energy_HD,  **acc_args)[0]
         prof_loc['Phi_BH']    = Acc.calc_PhiBH()[0] 
 
@@ -311,9 +313,12 @@ def main(**kwargs):
             del qie
         
         if (radiation):
+            qIC = Radi.calc_qIC(**H.data, cooling=True)
+            prof_loc['qIC_cool']  = thph_sum(qIC, H.grid, H.data, H.params, 
+                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
             qIC = Radi.calc_qIC(**H.data)
             # cooling = True (maybe)
-            prof_loc['qIC'] = thph_sum(qIC, H.grid, H.data, H.params, 
+            prof_loc['qIC']       = thph_sum(qIC, H.grid, H.data, H.params, 
                 hr.CONSTANTS, weight=uu_t, **acc_args)[0]
             prof_loc['qIC_thin']  = thph_sum(qIC, H.grid, H.data, H.params, 
                 hr.CONSTANTS, weight=uu_t, optically_thin=True, **tau_args)[0]

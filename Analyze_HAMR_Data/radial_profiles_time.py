@@ -3,7 +3,7 @@ import os
 import argparse
 import numpy as np
 sys.path.insert(0, '/lustre/orion/ast178/proj-shared/' +
-    'cbambic/HAMR_Visualization/NewObj_Read_HAMR_Data')
+    'cbambic/HAMR_Visualization/Read_HAMR_Data')
 import hamr_read as hr
 import analysis as ana
 import coordinates as coords
