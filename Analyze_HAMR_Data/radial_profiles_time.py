@@ -2,8 +2,9 @@ import sys
 import os
 import argparse
 import numpy as np
-sys.path.insert(0, '/lustre/orion/ast178/proj-shared/' +
-    'cbambic/HAMR_Visualization/Read_HAMR_Data')
+file_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, f'{file_dir}')
+import compute_variables as cv
 import hamr_read as hr
 import analysis as ana
 import coordinates as coords
@@ -12,7 +13,6 @@ from mpi4py import MPI
 import time as timeit
 
 def main(**kwargs):
-    main_dir  = '/lustre/orion/ast178/proj-shared/cbambic/'
     sim       = kwargs.get('sim')
     start_file= int(kwargs.get('start_file'))
     end_file  = int(kwargs.get('end_file'))
@@ -56,8 +56,9 @@ def main(**kwargs):
         mu_g = 4.0 / (6.0 * x_AB + y_AB + 2.)
     
     # Determine data extraction and save directories
-    data_dir = get_data_dir(sim, reduced, shared, main_dir)
-    save_dir = get_save_dir(sim, title, 'Averages', 'Profiles', main_dir)
+    data_dir = cv.get_data_dir(sim, reduced, shared)
+    save_dir = cv.get_save_dir(sim if title == None else title, 
+                               'Averages', 'Profiles', reduced=reduced)
 
     nzeros = len(str(int(os.popen(
         f'ls -d {data_dir}/dumps* | wc -l').read())))
@@ -105,7 +106,7 @@ def main(**kwargs):
     size = comm.Get_size()
     rank = comm.Get_rank()
 
-    file_list_local = get_file_list_local(file_list, size, rank, data_dir)
+    file_list_local = cv.get_file_list_local(file_list, size, rank, data_dir)
 
     read_args = {
         'cgs_grid' : True,
@@ -393,57 +394,6 @@ def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
     return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
         grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
 
-def read_restart(profile_file, lowres1, lowres2, lowres3):
-    profiles_in = np.load(profile_file, allow_pickle=True).ravel()[0]
-    if (lowres1 != profiles_in['lowres1']):
-        raise ValueError("Chosen lowres1 parameter incompatible with restart")
-    if (lowres2 != profiles_in['lowres2']):
-        raise ValueError("Chosen lowres2 parameter incompatible with restart")
-    if (lowres3 != profiles_in['lowres3']):
-        raise ValueError("Chosen lowres3 parameter incompatible with restart")
-    return profiles_in
-
-def get_data_dir(sim, reduced, shared, main_dir):
-    if not reduced and not shared:
-        data_dir = main_dir + 'DATA/' + sim
-    elif reduced and not shared:
-        data_dir = main_dir + 'DATA/' + sim + '/reduced'
-    elif not reduced and shared:
-        data_dir = '/lustre/orion/ast178/proj-shared/' + sim
-    elif reduced and shared:
-        data_dir = '/lustre/orion/ast178/proj-shared/' + sim + '/reduced'
-    return data_dir 
-
-def get_save_dir(sim, title, type, diagnostic, main_dir):
-    if title == None:
-        save_dir = main_dir + f'{type}/' + sim + f'/{diagnostic}'
-    else:
-        save_dir = main_dir + f'{type}/' + title + f'/{diagnostic}'
-    return save_dir
-
-def get_file_list_local(file_list, size, rank, data_dir):
-    nout             = len(file_list)
-    nfiles_nproc     = int(np.floor(nout / size))
-    nfiles_remaining = nout % size
-    files_per_proc   = ((size - nfiles_remaining) * [nfiles_nproc] +
-        nfiles_remaining * [nfiles_nproc + 1])
-    file_list_local  = ((sum(files_per_proc[:rank]) +
-        np.arange(0, files_per_proc[rank])) + file_list[0]).tolist()
-    
-    file_list_local = check_dumps_exist(data_dir, file_list_local)
-    
-    return file_list_local
-
-def check_dumps_exist(path_to_dumps, file_list):
-    for file_num in file_list:
-        if not os.path.isdir(path_to_dumps + f'/dumps{file_num}'):
-            print(f'Dumps {file_num} is missing.')
-            file_list.remove(file_num)
-            if os.path.isdir(path_to_dumps + f'/dumps{file_num}_'):
-                found_file = path_to_dumps + f'/dumps{file_num}_'
-                print(f'The file can be found as {found_file}', flush=True) 
-    return file_list
-
 def init_profiles(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
     profiles = {}
@@ -467,7 +417,7 @@ def init_profiles(data_dir, file_num, keys,
     else:
         fnum_str = str(file_num).zfill(nzro)
         profile_file = f'{save_dir}/Profiles_{fnum_str}'
-        profiles = read_restart(profile_file)
+        profiles = cv.read_restart(profile_file)
         first_call = False
 
     # Initialize profiles dictionary
@@ -501,16 +451,16 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
-    parser.add_argument('--radiation', action='store_true', required=False,
-                        default=True,
+    parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
+                        default=True, 
                         help="""boolean to determine if radiation quantities
                         should be included in profile extraction 
                         (default: True).""")
-    parser.add_argument('--two_temp', action='store_true', required=False,
-                        default=True,
+    parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
+                        default=True, 
                         help="""boolean to determine if two-temperature 
                         physics should be included in profile extraction 
-                        (default: True).""")
+                        (default: True).""")    
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")

@@ -2,8 +2,9 @@ import sys
 import os
 import argparse
 import numpy as np
-sys.path.insert(0, '/lustre/orion/ast178/proj-shared/' +
-    'cbambic/HAMR_Visualization/Read_HAMR_Data')
+file_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, f'{file_dir}')
+import compute_variables as cv
 import hamr_read as hr
 import analysis as ana
 import coordinates as coords
@@ -12,7 +13,6 @@ from mpi4py import MPI
 import time as timeit
 
 def main(**kwargs):
-    main_dir  = '/lustre/orion/ast178/proj-shared/cbambic/'
     sim       = kwargs.get('sim')
     file_num  = kwargs.get('file_num')
     nslices   = kwargs.get('nslices')
@@ -55,8 +55,9 @@ def main(**kwargs):
         mu_g = 4.0 / (6.0 * x_AB + y_AB + 2.)
     
     # Determine data extraction and save directories
-    data_dir = get_data_dir(sim, reduced, shared, main_dir)
-    save_dir = get_save_dir(sim, title, 'Averages', 'Profiles', main_dir)
+    data_dir = cv.get_data_dir(sim, reduced, shared)
+    save_dir = cv.get_save_dir(sim if title == None else title, 
+                               'Averages', 'Profiles', reduced=reduced)
 
     nzeros = len(str(int(os.popen(
         f'ls -d {data_dir}/dumps* | wc -l').read())))
@@ -145,7 +146,7 @@ def main(**kwargs):
     
         # Read grid and data
         H.read_grid(file_num, direct=True)
-        H.read_prims(file_num, skip_read_params=False)
+        H.read_prims(file_num, skip_read_params=True)
 
         # Initialize Accretion class
         Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
@@ -407,34 +408,6 @@ def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
     return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
         grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
 
-def read_restart(profile_file, lowres1, lowres2, lowres3):
-    profiles_in = np.load(profile_file, allow_pickle=True).ravel()[0]
-    if (lowres1 != profiles_in['lowres1']):
-        raise ValueError("Chosen lowres1 parameter incompatible with restart")
-    if (lowres2 != profiles_in['lowres2']):
-        raise ValueError("Chosen lowres2 parameter incompatible with restart")
-    if (lowres3 != profiles_in['lowres3']):
-        raise ValueError("Chosen lowres3 parameter incompatible with restart")
-    return profiles_in
-
-def get_data_dir(sim, reduced, shared, main_dir):
-    if not reduced and not shared:
-        data_dir = main_dir + 'DATA/' + sim
-    elif reduced and not shared:
-        data_dir = main_dir + 'DATA/' + sim + '/reduced'
-    elif not reduced and shared:
-        data_dir = '/lustre/orion/ast178/proj-shared/' + sim
-    elif reduced and shared:
-        data_dir = '/lustre/orion/ast178/proj-shared/' + sim + '/reduced'
-    return data_dir 
-
-def get_save_dir(sim, title, type, diagnostic, main_dir):
-    if title == None:
-        save_dir = main_dir + f'{type}/' + sim + f'/{diagnostic}'
-    else:
-        save_dir = main_dir + f'{type}/' + title + f'/{diagnostic}'
-    return save_dir
-
 def init_profiles(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
     profiles = {}
@@ -458,7 +431,7 @@ def init_profiles(data_dir, file_num, keys,
     else:
         fnum_str = str(file_num).zfill(nzro)
         profile_file = f'{save_dir}/Profiles_{fnum_str}'
-        profiles = read_restart(profile_file)
+        profiles = cv.read_restart(profile_file)
         first_call = False
 
     # Initialize profiles dictionary
@@ -489,13 +462,13 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
-    parser.add_argument('--radiation', action='store_true', required=False,
-                        default=True,
+    parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
+                        default=True, 
                         help="""boolean to determine if radiation quantities
                         should be included in profile extraction 
                         (default: True).""")
-    parser.add_argument('--two_temp', action='store_true', required=False,
-                        default=True,
+    parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
+                        default=True, 
                         help="""boolean to determine if two-temperature 
                         physics should be included in profile extraction 
                         (default: True).""")
