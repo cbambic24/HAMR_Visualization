@@ -81,7 +81,7 @@ where filename is an appropriately defined string for the file you're looking fo
 
 ### Reading in a Data Set
 
-Suppose you were interested in loading in a state-of-the-art two-temperature radiation GRMHD simulation stored in __DATA__/__Exciting_Simulation__. First, you should edit the paths appropriately in __HAMR_Visuaization__/__Analyze_HAMR_Data__/_compute_variables.py_ such that the Python path includes all of the necessary analysis files. Then, to read in output 100 (or in _H-AMR_ parlance, dump 100) with your Jupyter notebook or Python script situated in __RUN__, you would execute
+Suppose you were interested in loading in a state-of-the-art two-temperature radiation GRMHD simulation stored in __DATA__/__Exciting_Simulation__. First, you should edit the paths appropriately in __HAMR_Visualization__/__Analyze_HAMR_Data__/_compute_variables.py_ such that the Python path includes all of the necessary analysis files. Then, to read in output 100 (or in _H-AMR_ parlance, dump 100) with your Jupyter notebook or Python script situated in __RUN__, you would execute
 ```
 import sys
 import os
