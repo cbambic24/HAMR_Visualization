@@ -195,13 +195,11 @@ if __name__ == '__main__':
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
-                        should be included in movie extraction 
-                        (default: True).""")
+                        should be included in movie extraction.""")
     parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if two-temperature 
-                        physics should be included in movie extraction 
-                        (default: True).""")    
+                        physics should be included in movie extraction.""")    
     parser.add_argument('--fieldlines', action='store_true', required=False,
                         default=False,
                         help="""boolean to determine if magnetic-field lines 
