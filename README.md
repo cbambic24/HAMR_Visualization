@@ -10,7 +10,7 @@ This pipeline, written in Python and interfaced with C++ through a Cython-based 
 
 To use this toolkit, set up an SSH key on your GitHub account, then clone the repository with 
 ```
-git clone git@github.com:cbambic24/HAMR_Analysis.git
+git clone git@github.com:cbambic24/HAMR_Visualization.git
 ```
 This process will create a directory called __HAMR_Visualization__, with three sub-directories: __Analyze_HAMR_Data__, __Read_HAMR_Data__, and __Render_Movies__. All of the primary analysis tools, as well as the C++ acceleration routines for all of the calculations specific to radiation and two-temperature physics, are contained within the __Analyze_HAMR_Data__ directory. Reading in of the data and compilation of the toolkit is accomplished by the files contained within __Read_HAMR_Data__. We include a large number of sample scripts for producing images/movies in the __Render_Movies__ directory. The file __Analyze_HAMR_Data__/_compute_variables.py_ is the only file that the user should need to modify. There, I define a number of paths that are specific to my setup on Oakridge National Laboratory's _Frontier_ supercomputer. You should modify these directories as it suits your set-up.
 
