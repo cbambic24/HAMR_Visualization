@@ -163,6 +163,7 @@ class Cartesian():
         return None
 
     def plot_xy_vec(self, fig, ax, X, Y, X_uni, Y_uni, VX, VY, **kwargs):
+        method= kwargs.get('interp_method', 'cubic')
         xlim  = 1.1 * np.amax(np.abs(X_uni))
         ylim  = 1.1 * np.amax(np.abs(Y_uni))
 
@@ -178,9 +179,9 @@ class Cartesian():
         VY_data = VY_dat[selec]
 
         VX_uni = griddata((x_data, y_data), VX_data, 
-                          (X_uni, Y_uni), method='cubic')
+                          (X_uni, Y_uni), method=method)
         VY_uni = griddata((x_data, y_data), VY_data, 
-                          (X_uni, Y_uni), method='cubic')
+                          (X_uni, Y_uni), method=method)
 
         if 'mask' in kwargs:
             mask      = kwargs.get('mask')
@@ -199,25 +200,27 @@ class Cartesian():
             values_dat  = values['r'].ravel()
             values_data = values_dat[selec]
             values_uni  = griddata((x_data, y_data), values_data, 
-                                   (X_uni, Y_uni), method='cubic')
+                                   (X_uni, Y_uni), method=method)
         
         dens = kwargs.get('dens', 1.0)
 
-        ax.streamplot(X_uni, Y_uni, VX_uni, VY_uni, 
-                      density = (dens, dens),
-                      broken_streamlines = (
-                          kwargs.get('broken_streamlines', True)),
-                      linewidth = kwargs.get('linewidth', 1.0), 
-                      color = (kwargs.get('color', 'white') 
-                        if 'color_streamlines' not in kwargs else values_uni), 
-                      cmap = (
-                          None if 'color_streamlines' not in kwargs else cmap),
-                      arrowsize = kwargs.get('arrowsize', 1.0))
+        streams = ax.streamplot(X_uni, Y_uni, VX_uni, VY_uni, 
+            density = (dens, dens),
+            broken_streamlines = kwargs.get('broken_streamlines', True),
+            linewidth = kwargs.get('linewidth', 1.0), 
+            color = (kwargs.get('color', 'white') 
+                     if 'color_streamlines' not in kwargs else values_uni), 
+            cmap = None if 'color_streamlines' not in kwargs else cmap,
+            arrowsize = kwargs.get('arrowsize', 1.0))
+
+        if kwargs.get('return_streamlines', False):
+            return streams
         
     def plot_Rz_vec(self, fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs):
         return self.plot_xy_vec(fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs)
     
     def plot_xz_vec(self, fig, ax, X, Z, X_uni, Z_uni, VX, VZ, **kwargs):
+        method= kwargs.get('interp_method', 'cubic')
         xlim  = 1.1 * np.amax(np.abs(X_uni))
         zlim  = 1.1 * np.amax(np.abs(Z_uni))
 
@@ -233,9 +236,9 @@ class Cartesian():
         VZ_data = VZ_dat[selec]
 
         VX_uni = griddata((x_data, z_data), VX_data, 
-                          (X_uni, Z_uni), method='cubic')
+                          (X_uni, Z_uni), method=method)
         VZ_uni = griddata((x_data, z_data), VZ_data, 
-                          (X_uni, Z_uni), method='cubic')
+                          (X_uni, Z_uni), method=method)
 
         if 'mask' in kwargs:
             mask      = kwargs.get('mask')
@@ -256,24 +259,22 @@ class Cartesian():
                 [values['r'].ravel(), values['l'].ravel()])
             values_data = values_dat[selec]
             values_uni  = griddata((x_data, z_data), values_data, 
-                                   (X_uni, Z_uni), method='cubic')
+                                   (X_uni, Z_uni), method=method)
 
         dens = kwargs.get('dens', 1.0)
         
         ax.streamplot(X_uni, Z_uni, VX_uni, VZ_uni, 
-                      density = (dens, dens),
-                      broken_streamlines = (
-                          kwargs.get('broken_streamlines', True)),
-                      linewidth = kwargs.get('linewidth', 1.0), 
-                      color = (kwargs.get('color', 'white') 
-                        if 'color_streamlines' not in kwargs else values_uni), 
-                      cmap = (
-                          None if 'color_streamlines' not in kwargs else cmap),
-                      arrowsize = kwargs.get('arrowsize', 1.0))
+            density = (dens, dens),
+            broken_streamlines = kwargs.get('broken_streamlines', True),
+            linewidth = kwargs.get('linewidth', 1.0), 
+            color = (kwargs.get('color', 'white') 
+                if 'color_streamlines' not in kwargs else values_uni), 
+            cmap = (None if 'color_streamlines' not in kwargs else cmap),
+            arrowsize = kwargs.get('arrowsize', 1.0))
         
     def plot_xz_mirror_vec(self, fig, ax, X, Z, 
                            X_uni, Z_uni, VX, VZ, **kwargs): 
-        
+        method= kwargs.get('interp_method', 'cubic')
         xlim  = 1.1 * np.amax(np.abs(X_uni))
         zlim  = 1.1 * np.amax(np.abs(Z_uni))
 
@@ -289,9 +290,9 @@ class Cartesian():
         VZ_data = VZ_dat[selec]
 
         VX_uni = griddata((x_data, z_data), VX_data, 
-                          (X_uni, Z_uni), method='cubic')
+                          (X_uni, Z_uni), method=method)
         VZ_uni = griddata((x_data, z_data), VZ_data, 
-                          (X_uni, Z_uni), method='cubic')
+                          (X_uni, Z_uni), method=method)
 
         if 'mask' in kwargs:
             mask      = kwargs.get('mask')
@@ -310,7 +311,7 @@ class Cartesian():
             values_dat  = values['r'].ravel()
             values_data = values_dat[selec]
             values_uni  = griddata((x_data, z_data), values_data, 
-                                   (X_uni, Z_uni), method='cubic')
+                                   (X_uni, Z_uni), method=method)
         
         dens = kwargs.get('dens', 1.0)
 
@@ -562,5 +563,3 @@ class Fix_Pole():
 
 if __name__ == "__main__":
     print("Executing figs.py")
-
-
