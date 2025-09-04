@@ -43,7 +43,8 @@ class Accretion():
     def calc_Mdot(self, **kwargs):
         rho, uu = self.data['rho'], self.data['uu']
         Mdot = (-rho * uu[1] * self.sigma_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+            self.temp_cut(**kwargs) * (
+            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
         return self.upscale64(Mdot, self.Rg * self.Rg)
     
     # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
@@ -169,10 +170,22 @@ class Accretion():
     def calc_sigma(self, **kwargs):
         B02 = self.B0 * self.B0
         Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
-        b2  = Fld.calc_b2(b=self.data['B'], **data, **grid, from_B=True)
-        sigma = (b2 / B02) / (self.rho / self.rho0)
+        b2  = Fld.calc_b2(b=self.data['B'], **self.data, 
+                          **self.grid, from_B=True)
+        sigma = (b2 / B02) / (self.data['rho'] / self.rho0)
         return sigma
     
+    # Return where T < Temp_cut if cold = True (default)
+    # Return where T > Temp_cut if cold = False
+    def temp_cut(self, **kwargs):
+        cold=kwargs.get('cold', True) if not kwargs.get('hot', False) else True
+        T = kwargs.get('Temp', 0.) if 'Temp' in kwargs else self.data['Ti']
+        if 'Temp_cut' in kwargs:
+            T_cut = kwargs.get('Temp_cut')
+            return (T < T_cut) if cold else (T > T_cut)
+        else:
+            return 1.0
+
     # If optically_thin = True, return where tau < tau_cut
     def tau_cut(self, **kwargs):
         if ('sigma_cut' not in kwargs and 'tau' not in kwargs and 
@@ -205,7 +218,10 @@ class Accretion():
         
         if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
             # Save memory and computation time by using b^2
-            sigma = self.b2 / (4. * np.pi * self.rho * c * c)
+            if 'synchrotron' in kwargs.get('opacities'):
+                sigma = self.b2 / (4. * np.pi * self.data['rho'] * c * c)
+            else:
+                sigma = self.calc_sigma()
             kwargs['sigma'] = sigma
         elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
             sigma = kwargs.get('sigma')
@@ -224,11 +240,18 @@ class Accretion():
             raise ValueError("""Cannot calculate optical depth tau 
                              without initializing Accretion class with 
                              radiation=True.""")
-        if 'opacities' not in kwargs:
+        if 'opacities' in kwargs:
+            opacities = kwargs.get('opacities')
+        else:
             raise ValueError("""Cannot calculate tau without opacities 
                              dictionary passed as kwarg.""")
-        else:
-            opacities = kwargs.get('opacities')
+        
+        opacity_args = {
+            'pars'      : self.pars,
+            'CONSTANTS' : self.CONSTANTS,
+            'XRB'       : True
+        }
+        
         if 'synchrotron' in opacities:
             # b2 is required for synchrotron opacities
             if 'b2' not in kwargs:
@@ -238,11 +261,12 @@ class Accretion():
                                       **self.grid, from_B=True)
             else:
                 self.b2 = kwargs.get('b2')
-            Opac = radiation.Opacity(opacities, **self.data, pars=self.pars, 
-                CONSTANTS=self.CONSTANTS, b2 = self.b2, XRB = True)
-        else:
-            Opac = radiation.Opacity(opacities, **self.data, pars=self.pars, 
-                                     CONSTANTS=self.CONSTANTS, XRB = True)
+            opacity_args['b2'] = self.b2
+
+        if not kwargs.get('RIAF', False):
+            Opac = radiation.Opacity(opacities, **self.data, **opacity_args)
+        else: 
+            Opac = radiation.RIAF_Opacity(opacities, **self.data, **opacity_args)
 
         if (len(Opac.opacities) == 1 and 'electron_scattering' in opacities):
             kappa = Opac.opacities['electron_scattering']
@@ -262,61 +286,25 @@ class Accretion():
             return self.integrate_in_theta(kappa, **kwargs)
 
     def integrate_in_z(self, kappa, **kwargs):
-        if not kwargs.get('interpolate', False):
-            return self.integrate_in_z_direct(kappa, **kwargs)
-        elif kwargs.get('interpolate', False):
-            return self.integrate_in_z_interpolate(kappa, **kwargs)
-
-    def integrate_in_z_direct(self, kappa, **kwargs):
         import coordinates
         Rg = self.Rg
         Coords = coordinates.Coordinates(self.r / Rg, self.th, self.phi, 
                                          self.pars, self.CONSTANTS)            
-        gcov_cart = Coords.int_to_cart_cotnsr(self.grid['gcov'])
-        if (len(list(self.data['rho'].shape)) > 2 and 
-            self.data['rho'].shape[0] == 1):
-            print("z integration without interpolation may be " + 
-                  "very slow on 3D arrays. Consider using interpolate=True.")
-            tau   = np.zeros(self.data['rho'].shape)
-            if 'sigma' in kwargs:
-                sigma_in_args = True
-                sigma = kwargs.pop('sigma')
-            else:
-                if 'sigma_cut' in kwargs:
-                    sigma = self.calc_sigma(**kwargs)
-                    sigma_in_args = True
-                else:
-                    print("Integrating in z without a sigma cut " +
-                          "can be dangerous for optical depths.")
-                    sigma_in_args = False
-            r   = self.r   * np.ones_like(self.data['rho'])
-            th  = self.th  * np.ones_like(self.data['rho'])
-            phi = self.phi * np.ones_like(self.data['rho'])
-            for k in range(tau.shape[-1]):
-                Integrals = coordinates.Integrals(r[0, :, :, k] / self.Rg, 
-                    th[0, :, :, k], phi[0, :, :, k], self.pars, self.CONSTANTS)
-                if (sigma_in_args):
-                    kwargs['sigma'] = sigma[0, :, :, k]
-                tau[0, :, :, k] = self.Rg * Integrals.cum_integrate_z(
-                    (kappa * self.data['rho'])[0, :, :, k], 
-                    gcov_cart[3, 3, 0, :, :, k], **kwargs)
-        else:
-            Integrals = coordinates.Integrals(self.r / self.Rg, 
-                self.th, self.phi, self.pars, self.CONSTANTS)
-            tau = self.Rg * Integrals.cum_integrate_z(
-                kappa * self.data['rho'], gcov_cart[3, 3], **kwargs)
-        return tau
+        gcov_cyl = Coords.int_to_cyl_cotnsr(self.grid['gcov'])
 
-    def integrate_in_z_interpolate(self, kappa, **kwargs):
-        import coordinates
-        c, Rg = self.c, self.Rg
-        Coords = coordinates.Coordinates(self.r / Rg, self.th, self.phi, 
-                                         self.pars, self.CONSTANTS)            
-        gcov_cart = Coords.int_to_cart_cotnsr(self.gcov)
-        Integrals = coordinates.Integrals(self.r / self.Rg, self.th, self.phi, 
+        # Initialize Integrals class
+        r   = self.r   * np.ones_like(self.data['rho'])
+        th  = self.th  * np.ones_like(self.data['rho'])
+        phi = self.phi * np.ones_like(self.data['rho'])
+
+        Integrals = coordinates.Integrals(r / self.Rg, th, phi, 
                                           self.pars, self.CONSTANTS)
-        pass
+        
+        tau = self.Rg * Integrals.cum_integrate_z(
+            (kappa * self.data['rho']), gcov_cyl[3, 3], **kwargs) 
 
+        return tau
+    
     def integrate_in_r(self, kappa, **kwargs):
         import coordinates
         Integrals = coordinates.Integrals(self.r / self.Rg, self.th, self.phi, 
@@ -780,6 +768,20 @@ class Fluid():
             return qie # erg/cm^3 s
         else:    
             return qie # erg/cm^3 s
+    
+    # Compute ion-ion momentum-exchange (collision) timescale tii
+    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
+    def calc_tii(self, rho, Te, Ti, **kwargs):
+        ne = rho / (self.mu_e * self.mp)
+        ni = rho / (self.mu_i * self.mp)
+        return (Ti / Te) ** (3./2.) * np.sqrt(self.me / self.mi) * (
+            (self.Coulomb_log(ne, Te) / self.Coulomb_log(ni, Ti)) * (
+            self.calc_teq(rho, Te, Ti, **kwargs)))
+    
+    # Compute electron-electron momentum-exchange (collision) timescale tee
+    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
+    def calc_tee(self, rho, Te, Ti, **kwargs):
+        return (self.me / self.mi) * self.calc_teq(rho, Te, Ti, **kwargs)
 
     # H-AMR uses approximations for the Bessel functions when the
     # electrons (E) or ions (I) are cold (Theta < Theta_min)
