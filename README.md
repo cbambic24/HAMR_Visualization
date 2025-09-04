@@ -121,6 +121,40 @@ rho = H.data['rho']
 ```
 The coordinate variables (r, th, phi) and scalar variables like density (rho) are all 4D arrays with slots that correspond to (block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index). For vectors like the 4-velocity $u^{\mu}$ (H.data['uu'] in the code) or the 3-magnetic field __B__ (H.data['B'] in the code), the arrays are 5D with slots (direction, block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index), where direction $\in (0, 1, 2, 3)$ corresponds to the basis vectors in internal coordinates $(x_0, x_1, x_2, x_3)$. Similarly, for rank-2 tensors like the covariant metric tensor $g_{\mu \nu}$ (H.grid['gcov'] in the code), there are 6 slots: (direction, direction, block number, $x_1$ coordinate index, $x_2$ coordinate index, $x_3$ coordinate index). The block number is always 0 unless the by_block flag is used in hr.Read. In that case, the arrays are stored such that the coordinate indices correspond to a given block rather than the global array upscaled to the highest refinement level. Thus, the by_block option decreases the memory occupied by each of the arrays stored in the H.grid and H.data dictionaries. 
 
+### Extracting profiles or slices
+For any of the executable scripts we have written, the usage instructions should be available through the inclusion of the -h (for "help") flag at the end of the script. For instance, if you were to execute the _radial_profiles_time.py_ script from within the __RUN__ directory, 
+```
+python ../HAMR_Visualization/Analyze_HAMR_Data/radial_profiles_time.py -h
+```
+you would see the following information:
+```
+python ../HAMR_Visualization/Analyze_HAMR_Data/radial_profiles_time.py -h
+usage: radial_profiles_time.py [-h] [--nslices NSLICES] [--lowres1 LOWRES1] [--lowres2 LOWRES2] [--lowres3 LOWRES3] [--radiation | --no-radiation] [--two_temp | --no-two_temp] [--reduced] [--restart] [--shared] [--title TITLE] sim start_file end_file
+
+Calculate 1D profiles for all simulation outputs.
+
+positional arguments:
+  sim                   simulation name
+  start_file            dump number of start file in profile extraction
+  end_file              dump number of end file in profile extraction
+
+options:
+  -h, --help            show this help message and exit
+  --nslices NSLICES     number of slices in phi used to load the data
+  --lowres1 LOWRES1     downsampling parameter in x1
+  --lowres2 LOWRES2     downsampling parameter in x2
+  --lowres3 LOWRES3     downsampling parameter in x3
+  --radiation, --no-radiation
+                        boolean to determine if radiation quantities should be included in profile extraction. (default: True)
+  --two_temp, --no-two_temp
+                        boolean to determine if two-temperature physics should be included in profile extraction. (default: True)
+  --reduced             boolean to determine if profile extraction should be done on reduced data.
+  --restart             boolean set to determine if profile integration should continue from last slice_num
+  --shared              boolean set to determine if proj-shared should be used as the location of the data directory
+  --title TITLE         title of simulation used for Averages directory if different from the simulation title in proj-shared
+```
+The most common trick for analyzing _H-AMR_ data is to downsample in each direction independently using the --lowres flags. In addition, the --reduced flag tells the script to analyze the data in the __Data__/__Exciting_Simulation__/__reduced__ folder, which is usually downsampled ahead of time to reduce the amount of data that has to be moved through memory. For profile and slice extraction, the scripts are both OpenMP and MPI parallelized, with data chunks (for _radial_profiles.py_ and _poloidal_slices.py_) or individual dumps (for _radial_profiles_time.py_ and _poloidal_slices_time.py_) spread among different processors, while the read-in and computations on the separate data chunks/dumps are multithreaded with OpenMP, particularly whenever the cpp=True flag is passed to a function. Please consult the Wiki for invidiual function calls/behaviors. 
+
 ## Credits
 
 _H-AMR_ as well as the original analysis pipeline was developed by Dr. Matthew Liska. The new pipeline contained in this repository was written by Dr. Christopher Bambic. Dr. Bambic is particularly grateful to Nicholas Kaaz for useful discussions and assistance. 
