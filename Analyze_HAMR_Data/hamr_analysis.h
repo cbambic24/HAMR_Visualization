@@ -62,29 +62,33 @@ class Opacity {
     
     Opacity (Opacity& opac);
     
-    double kappaAbsTotal(float rho, float Te, float Tr, float b2, int XRB); 
+    virtual double kappaAbsTotal(float rho, float Te, float Tr, float b2, int XRB); 
     
-    double kappaEmiTotal(float rho, float Te, float Tr, float b2, int XRB); 
+    virtual double kappaEmiTotal(float rho, float Te, float Tr, float b2, int XRB); 
 
-    void kappaAbsTotal(double* kappa, float* rho, float* Te, 
+    virtual void kappaAbsTotal(double* kappa, float* rho, float* Te, 
       float* Tr, float *b2, int XRB, int nb, int nx1, int nx2, int nx3);
 
-    void kappaEmiTotal(double* kappa, float* rho, float* Te, 
+    virtual void kappaEmiTotal(double* kappa, float* rho, float* Te, 
       float* Tr, float *b2, int XRB, int nb, int nx1, int nx2, int nx3);
     
-    void kappaSynchrotron(double* kappa, float* rho, float* Te, 
+    virtual void kappaSynchrotron(double* kappa, float* rho, float* Te, 
         float* Tr, float* b2, int emi, int XRB, 
         int nb, int nx1, int nx2, int nx3);
     
     ~Opacity();
 
-  private:
-    double rho0, c, kB, aRAD, mu_i, mu_e, mp, mi, me, sigT; 
+  protected:
+    double rho0, c, kB, aRAD, mu_i, mu_e, mp, mi, me, sigT;
     double xAB, yAB, zAB, eStatC, h, kappaMol;
-    double e_2pimc, ne, Thetae, nu_mu, phi, g, kappaGInv;
-    double async, bsync, csync, dsync, esync;
+    double ne;
     int index_3D, gridsize_3D;
-
+    
+    virtual double kappaSyncAbs(float rho, float Te, float Tr, float b2, 
+        double async, double bsync, double csync, double dsync, double esync);
+    virtual double kappaSyncEmi(float rho, float Te, float Tr, float b2, 
+        double async, double bsync, double csync, double dsync, double esync);
+    
     double kappaBoundFreeAbs(float rho, float Te, float Tr);
     double kappaBoundFreeEmi(float rho, float Te, float Tr);
     double kappaCHIANTIAbs(float rho, float Te, float Tr);
@@ -93,13 +97,48 @@ class Opacity {
     double kappaFreeFreeEmi(float rho, float Te, float Tr);
     double kappaH(float rho, float Te, float Tr);
     double kappaFe(float rho, float Te, float Tr);
-    double kappaSyncAbs(float rho, float Te, float Tr, float b2, 
-        double async, double bsync, double csync, double dsync, double esync);
-    double kappaSyncEmi(float rho, float Te, float Tr, float b2, 
-        double async, double bsync, double csync, double dsync, double esync);
+
+  private:
+    double e_2pimc, Thetae, nu_mu, phi, g, kappaGInv;
+    double async, bsync, csync, dsync, esync;
+
     void getABCDESynch(int XRB, double& a, double& b, double& c, 
         double& d, double& e);
     
+};
+
+// RIAF Opacity class
+// Use synchrotron opacities from Sadowski+ (2017) instead of McKinney+ (2017)
+// Appropriate for low-Mdot radiatively inefficient accretion flows
+class RIAF_Opacity : public Opacity {
+  public:
+    RIAF_Opacity();
+    
+    RIAF_Opacity(const std::unordered_map<std::string, double>& params,
+        const std::unordered_map<std::string, double>& CONSTANTS);
+    
+    RIAF_Opacity (RIAF_Opacity& opac);
+   
+    double kappaAbsTotal(float rho, float Te, float Tr, float b2, int XRB); 
+    
+    double kappaEmiTotal(float rho, float Te, float Tr, float b2, int XRB); 
+
+    void kappaAbsTotal(double* kappa, float* rho, float* Te, 
+        float* Tr, float *b2, int XRB, int nb, int nx1, int nx2, int nx3);
+
+    void kappaEmiTotal(double* kappa, float* rho, float* Te, 
+        float* Tr, float *b2, int XRB, int nb, int nx1, int nx2, int nx3);
+    
+    void kappaSynchrotron(double* kappa, float* rho, float* Te, 
+        float* Tr, float* b2, int emi, int XRB, 
+        int nb, int nx1, int nx2, int nx3);
+    
+    ~RIAF_Opacity();
+
+  private:
+    double xi, kappa_emi, pime3c5_ekh, ksi;
+    double kappaSyncAbs(float rho, float Te, float Tr, float b2);
+    double kappaSyncEmi(float rho, float Te, float Tr, float b2);
 };
 
 // Radiation class
