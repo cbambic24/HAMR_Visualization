@@ -1,6 +1,5 @@
 import numpy as np
 from analysis import Tools
-import time as get_time
 
 class Radiation():
     def __init__(self, pars, CONSTANTS, **kwargs):
@@ -376,15 +375,13 @@ class Opacity():
             phi = (self.kB * self.Tr / (self.h * nu_mu)).astype(np.float64)
             # McKinney+ (2017) Equation D6
             g   = 5.85374e-14 * ne * phi * (Theta_e ** -3) * (1. / self.Tr)
-            self.opacities['synchrotron_abs'] = self.calc_kappa_sync(
-                                                            g, phi, **kwargs)
+            self.opacities['synchrotron_abs'] = self.calc_kappa_sync(g, phi, **kwargs)
         if process == 'emission' or process == 'both':
             # McKinney+ (2017) Equation D5
             phi = (self.kB * self.Te / (self.h * nu_mu)).astype(np.float64)
             # McKinney+ (2017) Equation D6
             g   = 5.85374e-14 * ne * phi * (Theta_e ** -3) * (1. / self.Te)
-            self.opacities['synchrotron_emi'] = self.calc_kappa_sync(
-                                                            g, phi, **kwargs)
+            self.opacities['synchrotron_emi'] = self.calc_kappa_sync(g, phi, **kwargs)
         return None
 
     # Calculate synchrotron kappa from McKinney+ (2017) Equation D7
@@ -442,6 +439,10 @@ class Opacity():
         synchrotron           = 0
         hydrogen_or_molecular = 0
         bf_or_CHI_or_ff       = 0
+        # Initiaize opacities
+        kappa_synchrotron     = 0.
+        kappa_H_Mol           = 1.
+        kappa_bf_CHI_ff       = 1.
         if 'synchrotron' in self.opacities:
             synchrotron = 1.0
             kappa_synchrotron = self.opacities['synchrotron_%s' %proc]
@@ -522,4 +523,49 @@ class Opacity():
             raise ValueError("""Your arrays must have dimension 4
                                 to be passed to C++""")
         return rho_dims
-            
+
+class RIAF_Opacity(Opacity):
+    def __init__(self, opacities, rho, Te, u_rad, pars, CONSTANTS, **kwargs):
+        super().__init__(opacities, rho, Te, u_rad, pars, CONSTANTS, **kwargs)
+    
+    # Synchrotron opacity
+    # Sadowski+ (2017) Equations 41-43
+    # Appropriate or low-Mdot radiatively inefficient accretion flows
+    def synchrotron_opacity(self, process, **kwargs):
+        if kwargs.get('cpp', False):
+            return self.synchrotron_opacity_cpp(process, **kwargs)
+        ne        = self.rho / (self.mu_e * self.mp)
+        xi        = self.Tr / self.Te
+        kappa_emi = 1.59e-30 * ne * self.b2 * self.Te ** (-2.) / self.rho
+        if process == 'absorption' or process == 'both':
+            # Sadowski+ (2017) Equation 42
+            pime3c5_ekh = (np.pi * self.me ** 3. * self.c ** 5. / 
+                (self.e * self.kB * self.h))
+            ksi = (4./3.) * pime3c5_ekh * (
+                self.Tr / (np.sqrt(self.b2) * self.Te ** 2.))
+            # Sadowski+ (2017) Equation 43
+            self.opacities['synchrotron_abs'] = kappa_emi * xi ** (-3.) * (
+                1. / (1. + 5.444*(ksi**(-2./3.)) + 7.218*(ksi**(-4./3.)))
+            )
+        if process == 'emission' or process == 'both':
+            self.opacities['synchrotron_emi'] = kappa_emi 
+        return None
+    
+    # Perform synchrotron opacity calculations in C++
+    def synchrotron_opacity_cpp(self, process, **kwargs):
+        import hamr_readc
+        Opacityc = hamr_readc.PyRIAF_Opacity(self.params, self.CONSTANTS)
+        dtype    = np.float64 # C++ layer expects double
+        [nb, nx1, nx2, nx3] = self.check_dims()
+        
+        XRB = 1 if kwargs.get('XRB') else 0
+        if process == 'absorption' or process == 'both':
+            kappa_sync = np.zeros(self.rho.shape, dtype=dtype)
+            Opacityc.calc_kappa_sync(kappa_sync, self.rho, self.Te, self.Tr, 
+                                     self.b2, 0, XRB, nb, nx1, nx2, nx3)
+            self.opacities['synchrotron_abs'] = kappa_sync
+        if process == 'emission' or process == 'both':
+            kappa_sync = np.zeros(self.rho.shape, dtype=dtype)
+            Opacityc.calc_kappa_sync(kappa_sync, self.rho, self.Te, self.Tr, 
+                                     self.b2, 1, XRB, nb, nx1, nx2, nx3)
+            self.opacities['synchrotron_emi'] = kappa_sync
