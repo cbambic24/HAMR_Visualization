@@ -51,7 +51,7 @@ def main(**kwargs):
     # Determine data extraction and save directories
     data_dir = cv.get_data_dir(sim, reduced, shared)
     save_dir = cv.get_save_dir(sim if title == None else title, 'Images', 
-        f'{movie_title}', main_dir, subtype='Midplane', reduced=reduced)
+        f'{movie_title}', subtype='Midplane', reduced=reduced)
 
     # Ensure that nodes don't all attempt to make directory at same time
     timeit.sleep(np.random.rand())
@@ -199,13 +199,11 @@ if __name__ == '__main__':
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
-                        should be included in movie extraction 
-                        (default: True).""")
+                        should be included in movie extraction.""")
     parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if two-temperature 
-                        physics should be included in movie extraction 
-                        (default: True).""")
+                        physics should be included in movie extraction.""")
     parser.add_argument('--fieldlines', action='store_true', required=False,
                         default=False,
                         help="""boolean to determine if magnetic-field lines 
