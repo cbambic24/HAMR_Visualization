@@ -192,6 +192,47 @@ options:
 ```
 The script can be used to plot the density for frames start_file to end_file along with streamlines of the 3-vector magnetic field (--fieldlines), the 4-velocity (--streamlines) or the radiation 4-velocity (--rad_streamlines). 
 
+Similarly, the same can be done with movies in the X-Z (poloidal) plane. Here, we can look at the density script usng the help (-h) flag to find,
+```
+python ../HAMR_Visualization/Render_Movies/Poloidal/density_poloidal.py -h
+usage: density_poloidal.py [-h] [--lowres1 LOWRES1] [--lowres2 LOWRES2] [--lowres3 LOWRES3] [--radiation | --no-radiation] [--two_temp | --no-two_temp] [--fieldlines] [--streamlines] [--rad_streamlines] [--reduced] [--shared] [--sigma_contour SIGMA_CONTOUR] [--scattering_photosphere] [--effective_photosphere]
+                           [--integrate_in_z] [--title TITLE] [--movie_title MOVIE_TITLE]
+                           sim start_file end_file
+
+Poloidal slice fluid-frame density.
+
+positional arguments:
+  sim                   simulation name
+  start_file            dump number of start file in movie extraction
+  end_file              dump number of end file in movie extraction
+
+options:
+  -h, --help            show this help message and exit
+  --lowres1 LOWRES1     downsampling parameter in x1
+  --lowres2 LOWRES2     downsampling parameter in x2
+  --lowres3 LOWRES3     downsampling parameter in x3
+  --radiation, --no-radiation
+                        boolean to determine if radiation quantities should be included in movie extraction. (default: True)
+  --two_temp, --no-two_temp
+                        boolean to determine if two-temperature physics should be included in movie extraction. (default: True)
+  --fieldlines          boolean to determine if magnetic-field lines should be drawn (default: False).
+  --streamlines         boolean to determine if 4-velocity streamlines should be drawn (default: False).
+  --rad_streamlines     boolean to determine if radiation 4-velocity streamlines should be drawn (default: False).
+  --reduced             boolean to determine if movie extraction should be done on reduced data.
+  --shared              boolean set to determine if proj-shared should be used as the location of the data directory
+  --sigma_contour SIGMA_CONTOUR
+                        draw sigma contour for specified value of sigma (default: 0)
+  --scattering_photosphere
+                        boolean to determine if scattering photosphere should be drawn
+  --effective_photosphere
+                        boolean to determine if effective absorption photosphere should be drawn (based on all opacities)
+  --integrate_in_z      boolean to determine if photospheres should be computed from theta integral (default) vs z-integral
+  --title TITLE         title of simulation used for Movie directory if different from the simulation title in proj-shared
+  --movie_title MOVIE_TITLE
+                        title of movie (default: Density)
+```
+For plots in the poloidal plane, we have included a number of additional options, namely the ability to draw the scattering photosphere and the effective photosphere (defined for simplicity as the optical depth $\tau = 1$ surface) as well as a contour for sigma. Further, integrals for computing the optical depths/photosheres can be computed either by integrating in $\theta$ or by integrating in $z$ through the flag --integrate_in_z.
+
 ## Credits
 
 _H-AMR_ as well as the original analysis pipeline was developed by Dr. Matthew Liska. The new pipeline contained in this repository was written by Dr. Christopher Bambic. Dr. Bambic is particularly grateful to Nicholas Kaaz for useful discussions and assistance. 
