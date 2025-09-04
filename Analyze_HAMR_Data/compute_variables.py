@@ -5,6 +5,7 @@ import numpy as np
 read_path   = '/lustre/orion/ast178/proj-shared/cbambic/HAMR_Visualization/Read_HAMR_Data'
 asys_path   = '/lustre/orion/ast178/proj-shared/cbambic/HAMR_Visualization/Analyze_HAMR_Data'
 run_path    = '/lustre/orion/ast178/proj-shared/cbambic/RUN'
+user_path   = '/lustre/orion/ast178/proj-shared/cbambic'
 shared_path = '/lustre/orion/ast178/proj-shared'
 sys.path.insert(0, read_path)
 sys.path.insert(0, asys_path)
@@ -19,28 +20,28 @@ import hamr_read as hr
 
 ##############################################################################
 
-def get_data_dir(sim, reduced, shared, main_dir):
+def get_data_dir(sim, reduced, shared):
     if not reduced and not shared:
-        data_dir = main_dir + 'DATA/' + sim
+        data_dir = user_path + '/DATA/' + sim
     elif reduced and not shared:
-        data_dir = main_dir + 'DATA/' + sim + '/reduced'
+        data_dir = user_path + '/DATA/' + sim + '/reduced'
     elif not reduced and shared:
         data_dir = f'{shared_path}/' + sim
     elif reduced and shared:
         data_dir = f'{shared_path}/' + sim + '/reduced'
     return data_dir 
 
-def get_save_dir(sim, type, diagnostic, main_dir, **kwargs):
+def get_save_dir(sim, type, diagnostic, **kwargs):
     subtype = kwargs.get('subtype', False)
     reduced = kwargs.get('reduced', False)
     if not subtype and not reduced:
-        save_dir = main_dir + f'{type}/' + sim + f'/Full_Resolution/{diagnostic}'
+        save_dir = user_path + f'/{type}/' + sim + f'/Full_Resolution/{diagnostic}'
     elif subtype and not reduced:
-        save_dir = main_dir + f'{type}/' + sim + f'/Full_Resolution/{subtype}/{diagnostic}'
+        save_dir = user_path + f'/{type}/' + sim + f'/Full_Resolution/{subtype}/{diagnostic}'
     elif not subtype and reduced:
-        save_dir = main_dir + f'{type}/' + sim + f'/Reduced_Resolution/{diagnostic}'
+        save_dir = user_path + f'/{type}/' + sim + f'/Reduced_Resolution/{diagnostic}'
     elif subtype and reduced:
-        save_dir = main_dir + f'{type}/' + sim + f'/Reduced_Resolution/{subtype}/{diagnostic}'
+        save_dir = user_path + f'/{type}/' + sim + f'/Reduced_Resolution/{subtype}/{diagnostic}'
     return save_dir
 
 def get_file_list_local(file_list, size, rank, data_dir):
