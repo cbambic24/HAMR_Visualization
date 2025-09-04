@@ -20,7 +20,7 @@ We recommend you create the __HAMR_Visualization__ directory within the _user_pa
 
 To compile the code, either execute the following command in the command line from the __RUN__ directory,
 ```
-python HAMR_Visualization/Read_HAMR_Data/setup.py build_ext --inplace
+python ../HAMR_Visualization/Read_HAMR_Data/setup.py build_ext --inplace
 ```
 or if executing the code from a Jupyter notebook situated in the __RUN__ directory, use the command
 ```
