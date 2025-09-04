@@ -153,7 +153,44 @@ options:
   --shared              boolean set to determine if proj-shared should be used as the location of the data directory
   --title TITLE         title of simulation used for Averages directory if different from the simulation title in proj-shared
 ```
-The most common trick for analyzing _H-AMR_ data is to downsample in each direction independently using the --lowres flags. In addition, the --reduced flag tells the script to analyze the data in the __Data__/__Exciting_Simulation__/__reduced__ folder, which is usually downsampled ahead of time to reduce the amount of data that has to be moved through memory. For profile and slice extraction, the scripts are both OpenMP and MPI parallelized, with data chunks (for _radial_profiles.py_ and _poloidal_slices.py_) or individual dumps (for _radial_profiles_time.py_ and _poloidal_slices_time.py_) spread among different processors, while the read-in and computations on the separate data chunks/dumps are multithreaded with OpenMP, particularly whenever the cpp=True flag is passed to a function. Please consult the Wiki for invidiual function calls/behaviors. 
+The most common trick for analyzing _H-AMR_ data is to downsample in each direction independently using the --lowres flags. In addition, the --reduced flag tells the script to analyze the data in the __Data__/__Exciting_Simulation__/__reduced__ folder, which is usually downsampled ahead of time to reduce the amount of data that has to be moved through memory. For profile and slice extraction (where here, "slice" refers to an azimuthal average of the 3D data, which results in a 2D r-theta "slice"), the scripts are both OpenMP and MPI parallelized, with data chunks (for _radial_profiles.py_ and _poloidal_slices.py_) or individual dumps (for _radial_profiles_time.py_ and _poloidal_slices_time.py_) spread among different processors, while the read-in and computations on the separate data chunks/dumps are multithreaded with OpenMP, particularly whenever the cpp=True flag is passed to a function. Please consult the Wiki for invidiual function calls/behaviors. 
+
+### Creating images/movies
+As an example for creating a movie of the midplane density, you can run the script
+```
+python ../HAMR_Visualization/Render_Movies/Midplane/density_midplane.py -h
+```
+This will yield the following output:
+```
+python ../HAMR_Visualization/Render_Movies/Midplane/density_midplane.py -h
+usage: density_midplane.py [-h] [--lowres1 LOWRES1] [--lowres2 LOWRES2] [--lowres3 LOWRES3] [--radiation | --no-radiation] [--two_temp | --no-two_temp] [--fieldlines] [--streamlines] [--rad_streamlines] [--reduced] [--shared] [--title TITLE] [--movie_title MOVIE_TITLE] sim start_file end_file
+
+Midplane slice of fluid-frame density.
+
+positional arguments:
+  sim                   simulation name
+  start_file            dump number of start file in movie extraction
+  end_file              dump number of end file in movie extraction
+
+options:
+  -h, --help            show this help message and exit
+  --lowres1 LOWRES1     downsampling parameter in x1
+  --lowres2 LOWRES2     downsampling parameter in x2
+  --lowres3 LOWRES3     downsampling parameter in x3
+  --radiation, --no-radiation
+                        boolean to determine if radiation quantities should be included in movie extraction. (default: True)
+  --two_temp, --no-two_temp
+                        boolean to determine if two-temperature physics should be included in movie extraction. (default: True)
+  --fieldlines          boolean to determine if magnetic-field lines should be drawn (default: False).
+  --streamlines         boolean to determine if 4-velocity streamlines should be drawn (default: False).
+  --rad_streamlines     boolean to determine if radiation 4-velocity streamlines should be drawn (default: False).
+  --reduced             boolean to determine if movie extraction should be done on reduced data.
+  --shared              boolean set to determine if proj-shared should be used as the location of the data directory
+  --title TITLE         title of simulation used for Movie directory if different from the simulation title in proj-shared
+  --movie_title MOVIE_TITLE
+                        title of movie (default: Density)
+```
+The script can be used to plot the density for frames start_file to end_file along with streamlines of the 3-vector magnetic field (--fieldlines), the 4-velocity (--streamlines) or the radiation 4-velocity (--rad_streamlines). 
 
 ## Credits
 
