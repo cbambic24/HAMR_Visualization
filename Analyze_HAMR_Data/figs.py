@@ -218,60 +218,26 @@ class Cartesian():
         
     def plot_Rz_vec(self, fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs):
         return self.plot_xy_vec(fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs)
-    
-    def plot_xz_vec(self, fig, ax, X, Z, X_uni, Z_uni, VX, VZ, **kwargs):
-        method= kwargs.get('interp_method', 'cubic')
-        xlim  = 1.1 * np.amax(np.abs(X_uni))
-        zlim  = 1.1 * np.amax(np.abs(Z_uni))
 
-        x_dat  = np.concatenate([X['r'].ravel(),  X['l'].ravel()])
-        z_dat  = np.concatenate([Z['r'].ravel(),  Z['l'].ravel()])
-        VX_dat = np.concatenate([VX['r'].ravel(), VX['l'].ravel()])
-        VZ_dat = np.concatenate([VZ['r'].ravel(), VZ['l'].ravel()])
+    def plot_xz_vec(self, fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs):
+        R_l, Z_l   = {'r' : R['l']},  {'r' : Z['l']}
+        VR_l, VZ_l = {'r' : VR['l']}, {'r' : VZ['l']}
+        r1D, z1D   = R_uni[0, :], Z_uni[:, 0]
+        r1D_pos, r1D_neg = r1D[r1D > 0], r1D[r1D < 0]
+        R_uni_l, Z_uni_l = np.meshgrid(r1D_neg, z1D)
+        R_uni_r, Z_uni_r = np.meshgrid(r1D_pos, z1D)
 
-        selec   = (np.abs(x_dat) <= xlim) & (np.abs(z_dat) <= zlim)
-        x_data  = x_dat[selec]
-        z_data  = z_dat[selec]
-        VX_data = VX_dat[selec]
-        VZ_data = VZ_dat[selec]
-
-        VX_uni = griddata((x_data, z_data), VX_data, 
-                          (X_uni, Z_uni), method=method)
-        VZ_uni = griddata((x_data, z_data), VZ_data, 
-                          (X_uni, Z_uni), method=method)
-
+        kwargs_l = kwargs.copy()
         if 'mask' in kwargs:
-            mask      = kwargs.get('mask')
-            mask_dat  = np.concatenate([(mask['r'].astype(int)).ravel(),
-                                        (mask['l'].astype(int)).ravel()])
-            mask_data = mask_dat[selec]
-            mask_uni  = griddata((x_data, z_data), mask_data, 
-                                 (X_uni, Z_uni), method='nearest')
-            VX_uni = np.ma.array(VX_uni, mask=mask_uni)
-            VZ_uni = np.ma.array(VZ_uni, mask=mask_uni)
-
+            mask     = {'r' : kwargs.get('mask')['l']}
+            kwargs_l['mask'] = mask
         if 'color_streamlines' in kwargs:
-            color_streamlines = kwargs.get('color_streamlines')
-            values            = color_streamlines['values']
-            cmap              = color_streamlines['cmap']
+            values   = {'r' : kwargs.get('values')['l']}
+            kwargs_l['values'] = values
 
-            values_dat  = np.concatenate(
-                [values['r'].ravel(), values['l'].ravel()])
-            values_data = values_dat[selec]
-            values_uni  = griddata((x_data, z_data), values_data, 
-                                   (X_uni, Z_uni), method=method)
-
-        dens = kwargs.get('dens', 1.0)
-        
-        ax.streamplot(X_uni, Z_uni, VX_uni, VZ_uni, 
-            density = (dens, dens),
-            broken_streamlines = kwargs.get('broken_streamlines', True),
-            linewidth = kwargs.get('linewidth', 1.0), 
-            color = (kwargs.get('color', 'white') 
-                if 'color_streamlines' not in kwargs else values_uni), 
-            cmap = (None if 'color_streamlines' not in kwargs else cmap),
-            arrowsize = kwargs.get('arrowsize', 1.0))
-        
+        self.plot_Rz_vec(fig, ax, R_l, Z_l, R_uni_l, Z_uni_l, VR_l, VZ_l, **kwargs_l)
+        return self.plot_Rz_vec(fig, ax, R, Z, R_uni_r, Z_uni_r, VR, VZ, **kwargs)
+                   
     def plot_xz_mirror_vec(self, fig, ax, X, Z, 
                            X_uni, Z_uni, VX, VZ, **kwargs): 
         method= kwargs.get('interp_method', 'cubic')
@@ -377,7 +343,8 @@ class Cartesian():
                 else:
                     return -np.amax(DD), np.amax(DD)
             else: 
-                return np.amin(DD), np.amax(DD)
+                minD, maxD = np.percentile(DD, 5), np.percentile(DD, 95)
+                return minD, maxD
 
     def get_norm(self, vmin, vmax, **kwargs):
         if (kwargs.get('log')):
@@ -439,8 +406,9 @@ class Fix_Pole():
 
     def fix_cart_xz(self, X, Z, D, r, theta, phi, **kwargs):
         r1D, th1D, phi1D = self.get1D(r, theta, phi)
-        th_strt, th_end  = 0., np.pi
-        dat_strt, dat_end = D['r'][:, 0], D['r'][:, -1]
+        th_strt, th_end     = 0., np.pi
+        rdat_strt, rdat_end = D['r'][:, 0], D['r'][:, -1]
+        ldat_strt, ldat_end = D['l'][:, 0], D['l'][:, -1]
         x_strt  = r1D * np.sin(th_strt)
         x_end   = r1D * np.sin(th_end)
         z_strt  = r1D * np.cos(th_strt)
@@ -448,13 +416,18 @@ class Fix_Pole():
 
         X['r']  = self.concatenate(X['r'], x_strt, x_end)
         Z['r']  = self.concatenate(Z['r'], z_strt, z_end)
+        X['l']  = self.concatenate(X['l'], x_strt, x_end)
+        Z['l']  = self.concatenate(Z['l'], z_strt, z_end)
 
         if kwargs.get('fix_pole', 'constant') == 'constant':
-            D['r'] = self.concatenate(D['r'], dat_strt, dat_end)
+            D['r'] = self.concatenate(D['r'], rdat_strt, rdat_end)
+            D['l'] = self.concatenate(D['l'], ldat_strt, ldat_end)
         elif kwargs.get('fix_pole', 'constant') == 'average':
             print("Warning: you're averaging two separate poles.")
-            dat_avg = 0.5 * (dat_strt + dat_end)
+            dat_avg = 0.5 * (rdat_strt + rdat_end)
             D['r'] = self.concatenate(D['r'], dat_avg, dat_avg)  
+            dat_avg = 0.5 * (ldat_strt + ldat_end)
+            D['l'] = self.concatenate(D['l'], dat_avg, dat_avg)  
 
     def fix_cart_Rz(self, R, Z, D, r, theta, phi, **kwargs):
         r1D, th1D, phi1D = self.get1D(r, theta, phi)
@@ -508,7 +481,12 @@ class Fix_Pole():
         D['r'] = D['r'][:, 1:-1]
 
     def remove_poles_xz(self, R, Z, D):
-        return self.remove_poles_xy(R, Z, D)
+        R['l'] = R['l'][:, 1:-1]
+        Z['l'] = Z['l'][:, 1:-1]
+        R['r'] = R['r'][:, 1:-1]
+        Z['r'] = Z['r'][:, 1:-1]
+        D['l'] = D['l'][:, 1:-1]
+        D['r'] = D['r'][:, 1:-1]
 
     def remove_poles_Rz(self, R, Z, D):
         return self.remove_poles_xy(R, Z, D)
