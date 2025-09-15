@@ -43,7 +43,7 @@ class Accretion():
     def calc_Mdot(self, **kwargs):
         rho, uu = self.data['rho'], self.data['uu']
         Mdot = (-rho * uu[1] * self.sigma_cut(**kwargs) * (
-            self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
+            self.temp_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
         return self.upscale64(Mdot, self.Rg * self.Rg)
     
@@ -106,8 +106,7 @@ class Accretion():
             stress_energy_MHD = kwargs.get('TMHD')
         stress_energy_MHD *= (1. / rho0c2)
         Edot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
-            self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+            self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
         stress_energy_MHD *= rho0c2
         return self.upscale64(Edot, self.Rg * self.Rg * self.c * rho0c2)
 
@@ -121,8 +120,7 @@ class Accretion():
             stress_energy_MHD = kwargs.get('TMHD')
         stress_energy_MHD *= (1. / rho0c2)
         Ldot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
-            self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+            self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
         stress_energy_MHD *= rho0c2
         return self.upscale64(Ldot, self.Rg * self.Rg * rho0c2)
 
@@ -142,7 +140,7 @@ class Accretion():
             pgas = kwargs.get('pgas')
         else:
             gamma_adi = 5./3.
-            pgas = (gamma_adi - 1.) * self.data['u_gas']
+            pgas = (gamma_adi - 1.) * self.u_gas
         stress_energy_HD = Flu.calc_THD(**self.data, **self.grid, pgas=pgas, 
                                         EOS=self.kwargs.get('EOS'), **kwargs)
         stress_energy_EM = Fld.calc_TEM(**self.data, **self.grid, **kwargs)
@@ -185,18 +183,6 @@ class Accretion():
         if 'Temp_cut' in kwargs:
             T_cut = kwargs.get('Temp_cut')
             return (T < T_cut) if cold else (T > T_cut)
-        else:
-            return 1.0
-
-    # Return where |z| < H if above = False (default)
-    # Return where |z| > H if above = True
-    def height_cut(self, **kwargs):
-        th = self.th * np.ones_like(self.data['rho'])
-        if 'HoR_cut' in kwargs:
-            HoR = kwargs.get('HoR_cut') * np.ones_like(self.data['rho'])
-            return ((np.abs(np.cos(th)) < HoR) 
-                    if not kwargs.get('above', False) else 
-                    (np.abs(np.cos(th)) > HoR))
         else:
             return 1.0
 
@@ -751,20 +737,6 @@ class Fluid():
             return teq # s
         else:
             return teq # s
-    
-    # Compute ion-ion momentum-exchange (collision) timescale tii
-    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
-    def calc_tii(self, rho, Te, Ti, **kwargs):
-        ne = rho / (self.mu_e * self.mp)
-        ni = rho / (self.mu_i * self.mp)
-        return (Ti / Te) ** (3./2.) * np.sqrt(self.me / self.mi) * (
-            (self.Coulomb_log(ne, Te) / self.Coulomb_log(ni, Ti)) * (
-            self.calc_teq(rho, Te, Ti, **kwargs)))
-    
-    # Compute electron-electron momentum-exchange (collision) timescale tee
-    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
-    def calc_tee(self, rho, Te, Ti, **kwargs):
-        return (self.me / self.mi) * self.calc_teq(rho, Te, Ti, **kwargs)
 
     # Compute cooling/heating rate due to ion-electron collisions
     # Assumes rho in g/cm^3, Te and Ti in K
@@ -797,6 +769,20 @@ class Fluid():
         else:    
             return qie # erg/cm^3 s
     
+    # Compute ion-ion momentum-exchange (collision) timescale tii
+    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
+    def calc_tii(self, rho, Te, Ti, **kwargs):
+        ne = rho / (self.mu_e * self.mp)
+        ni = rho / (self.mu_i * self.mp)
+        return (Ti / Te) ** (3./2.) * np.sqrt(self.me / self.mi) * (
+            (self.Coulomb_log(ne, Te) / self.Coulomb_log(ni, Ti)) * (
+            self.calc_teq(rho, Te, Ti, **kwargs)))
+    
+    # Compute electron-electron momentum-exchange (collision) timescale tee
+    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
+    def calc_tee(self, rho, Te, Ti, **kwargs):
+        return (self.me / self.mi) * self.calc_teq(rho, Te, Ti, **kwargs)
+
     # H-AMR uses approximations for the Bessel functions when the
     # electrons (E) or ions (I) are cold (Theta < Theta_min)
     def Bessel_terms(self, Theta_e, Theta_i):
