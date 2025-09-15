@@ -1076,3 +1076,202 @@ class Tools():
 
 if __name__ == "__main__":
     print("Executing analysis.")
+
+
+'''
+    def integrate_th(self, q, gcov, **kwargs):
+        shape = list(q.shape)
+        if (len(shape) == 2): axis = -1
+        else: axis = 2
+        qdth = np.zeros(q.shape)
+        qdth[self.theta < np.pi/2.] 
+        np.cumsum((q * gcov[2, 2] * self.dx2 * (
+            self.sigma_cut(**kwargs))[self.theta < np.pi/2.]), axis=axis)
+        qdth[self.theta > np.pi/2.] np.cumsum((q * gcov[2, 2] * self.dx2 * (
+            self.sigma_cut(**kwargs))[self.theta > np.pi/2.][:, ::-1]), axis=axis)
+        return qdth
+
+
+                theta_max = np.asin(Rcyl_max[ir, ith] / r[-1, 0])
+                r_min     = Rcyl_min[ir, ith]
+                if (np.any(r[:, 0] < r_min)):
+                    ir_min  = np.where(r[:, 0] < r_min)[0][-1]
+                else:
+                    ir_min = 0
+                ir_max    = len(r[:, 0])
+                if (z[ir, ith] > 0):
+                    it_min    = 0
+                    it_max    = np.where(th[0, :] > theta_max)[0][0]
+                else:
+                    it_min = len(th[0, :]) / 2
+                    it_max = np.where(th[0, :] > theta_max)[0][0] + it_min
+                temp_sum  = 0.0
+                for jr in range(ir_min, ir_max):
+                    for jth in range(it_min, it_max):
+                        temp_sum += (q * dz)[jr, jth]
+                int_qdz[ir, ith] = temp_sum
+                
+                #in_R_range = (
+                #    (R_cyl < Rcyl_max[ir, ith]) &
+                #    (R_cyl > Rcyl_min[ir, ith]))
+                #if (z[ir, ith] >= 0.):
+                #    in_z_range = (z > z[ir, ith])
+                #elif (z[ir, ith] < 0.):
+                #    in_z_range = (z < z[ir, ith])
+                #int_qdz[ir, ith] = np.sum(
+                #    q * dz * in_R_range * in_z_range)
+
+
+# Calculate precession period
+def calc_PrecPeriod(angle_tilt):
+    gam,a,precperiod
+    uu_proj = project_vector(uu)
+    L = rho * r * uu_proj[3]
+    tilt=np.zeros((nb,bs1new,1,1),dtype=np.float32)
+    tilt[0,:,0,0]=(np.nan_to_num(angle_tilt)+0.1)/360.0*2.0*np.pi
+    Z1 = 1.0 + (1.0 - a ** 2.0) ** (1.0 / 3.0) * ((1.0 + a) ** (1.0 / 3.0) + (1.0 - a) ** (1.0 / 3.0))
+    Z2 = np.sqrt(3.0 * a ** 2.0 + Z1 ** 2.0)
+    r_isco = (3.0 + Z2 - np.sqrt((3.0 - Z1) * (3.0 + Z1 + 2.0 * Z2)))
+    L_tot = np.nan_to_num(L * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
+    vnod=1.0/(r**1.5+a)*(1.0-np.sqrt(1.0-4.0*a/r**1.5+3.0*a*a/r**2))
+    tau_tot = np.nan_to_num(L * vnod * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
+    precperiod = 2 * np.pi * L_tot / tau_tot
+
+# Calculate mass accretion rate as function of radius
+def calc_Mdot():
+    global Mdot
+    Mdot = (-gdet * rho * uu[1] * _dx2 * _dx3).sum(-1).sum(-1)
+
+def calc_profiles(cutoff):
+    global pgas_avg, rho_avg, pb_avg, Q_avg1_1,Q_avg1_2,Q_avg1_3, Q_avg2_1,Q_avg2_2,Q_avg2_3
+    calc_Q()
+    norm1 = (gdet * rho * (rho > cutoff)).sum(-1).sum(-1)
+    norm2 = (gdet * rho * (rho > cutoff)).sum(-1).sum(-1)
+    norm3 = (gdet * np.sqrt(np.abs(rho * bsq)) * (rho > cutoff)).sum(-1).sum(-1)
+    fact1 = gdet * rho * (rho > cutoff)
+    fact2 = gdet * np.sqrt(np.abs(rho * bsq)) * (rho > cutoff)
+    pgas_avg = (fact1 * (gam - 1.0) * ug).sum(-1).sum(-1) / norm1
+    pb_avg = (fact1 * bsq / 2.0).sum(-1).sum(-1) / norm1
+    rho_avg = (gdet * (rho > cutoff) * rho * rho)[:, :, :, :].sum(-1).sum(-1) / (gdet * rho* (rho > cutoff)).sum(-1).sum(-1)
+    Q_avg1_1 = (fact1 * Q[1]).sum(-1).sum(-1) / norm2
+    Q_avg1_2 = (fact1 * Q[2]).sum(-1).sum(-1) / norm2
+    Q_avg1_3 = (fact1 * Q[3]).sum(-1).sum(-1) / norm2
+    Q_avg2_1 = (fact2 * Q[1]).sum(-1).sum(-1) / norm3
+    Q_avg2_2 = (fact2 * Q[2]).sum(-1).sum(-1) / norm3
+    Q_avg2_3 = (fact2 * Q[3]).sum(-1).sum(-1) / norm3
+
+def calc_profiles_M1(scaleheight, cutoff=1.0e-5):
+    global rho, bsq, Te, Ti, TE, TI, kappa_es, kappa_abs, kappa_emmit, kappa_sy2, density_scale, gcov, _dx1, _dx2, _dx3
+    global Mdot, M_EDD_RAT, bs1new, bs2new, bs3new, gcov, gcon, gdet, R_G_CGS
+    global tau_es_tot, tau_em_tot, tau_abs_tot, cool_frac, rho_filtered, emmission_tot, emmission_hard, Mdot_rad, Rdot_rad
+    global prad_tot, pe_tot, pi_tot, rho_tot, pb_tot
+    global t_diff, t_emmit_disk, t_abs_disk, t_compton_disk
+    global t_emmit_corona, t_abs_corona, t_compton_corona
+    global tau_es
+
+    # Calculate vertically and azimuthally integrated optical depths; exclude poles
+    tau_es_int = ((kappa_es) * rho * density_scale * R_G_CGS * np.sqrt(gcov[2, 2]) * _dx2)[0, :, 10:bs2new - 10, :].sum(1)
+    tau_abs_int = ((kappa_abs) * rho * density_scale * R_G_CGS * np.sqrt(gcov[2, 2]) * _dx2)[0, :, 10:bs2new - 10, :].sum(1)
+    tau_em_int = ((kappa_emmit) * rho * density_scale * R_G_CGS * np.sqrt(gcov[2, 2]) * _dx2)[0, :, 10:bs2new - 10, :].sum(1)
+
+    # Set the filter for the cool thin disk
+    rho_filtered = rho * (Ti > 10 ** 8.0) * (Te > 10 ** 8.0)
+    cold_filtered = rho * (Ti < 10 ** 8.0) * (Te < 10 ** 8.0)
+
+    # Calculate Mdot normalize to eddington ratio
+    Mdot_rad = (Mdot * (M_EDD_RAT / Mdot[0, 5]))[0]
+
+    #Calculate Rdot in code units
+    ud_rad = gcov[:, 0] * uu_rad[0] + gcov[:, 1] * uu_rad[1] + gcov[:, 2] * uu_rad[2] + gcov[:, 3] * uu_rad[3]
+    Rdot_rad =((4.0/3.0)*E_rad*uu_rad[1]*ud_rad[0]*gdet*_dx2*_dx3).sum(-1).sum(-1)[0]
+
+    # Calculate filtered rho
+    rho_max = np.zeros((bs1new, bs3new), dtype=np.float64)
+    for i in range(0, bs1new):
+        for z in range(0, bs3new):
+            rho_max[i, z] = np.max(cold_filtered[0, i, :, z]) * (tau_es_int[i, z] > 1.0)
+
+    # Allocate arrays
+    rho_frac = np.zeros((bs1new), dtype=np.float64)
+    tau_es_tot = np.zeros((bs1new), dtype=np.float64)
+    tau_abs_tot = np.zeros((bs1new), dtype=np.float64)
+    tau_em_tot = np.zeros((bs1new), dtype=np.float64)
+    cool_frac = np.zeros((bs1new), dtype=np.float64)
+
+    # Compute hard fraction of emmission
+    for i in range(0, bs1new):
+        for z in range(0, bs3new):
+            if (rho_max[i, z] > 0.0):
+                cool_frac[i] = cool_frac[i] + 1.0 / bs3new
+            tau_es_tot[i] = tau_es_tot[i] + tau_es_int[i, z]/bs3new
+            tau_abs_tot[i] = tau_abs_tot[i] + tau_abs_int[i, z]/bs3new
+            tau_em_tot[i] = tau_em_tot[i] + tau_em_int[i, z]/bs3new
+    # emmission_tot=((4.0/3.0)*E_rad*uu_rad[1]*ud_rad[0]*_dx2*_dx3*gdet).sum(-1).sum(-1)
+    emmission_tot = ((kappa_emmit) * rho * R_G_CGS * density_scale * 2.2714380625235033e+21 * (TE ** 4) * _dx1 * _dx2 * _dx3 * gdet).sum(-1).sum(-1).cumsum(axis=1)[0]
+    emmission_hard = ((kappa_emmit) * rho_filtered * R_G_CGS * density_scale * 2.2714380625235033e+21 * (TE ** 4) * _dx1 * _dx2 * _dx3 * gdet).sum(-1).sum(-1).cumsum(axis=1)[0]
+
+    # Set normalizations
+    norm1 = (gdet * rho * (rho > cutoff) * _dx1 * _dx2 * _dx3).sum(-1).sum(-1)[0]
+    fact1 = rho * (rho > cutoff)[0]
+
+    # Calculate total radiation pressure as function of radius
+    prad_tot = (E_rad * (4.0 / 3.0 - 1.0) * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
+
+    # Calculate electron and ion pressures
+    pe_tot = (TE * rho * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
+    pi_tot = (TI * rho * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
+
+    # Calculate gas mass in radial shell
+    rho_tot = (rho * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
+
+    # Calculate total magnetic pressure
+    pb_tot = (bsq / 2.0 * _dx2 * np.sqrt(gcov[2,2])).sum(-1).sum(-1)[0]
+
+    # Calculate optical depth integrated from pole
+    tau_es = (kappa_es * rho * density_scale * R_G_CGS * _dx2 * np.sqrt(gcov[2, 2]))[:, :, ::-1, :].cumsum(axis=2)[:, :, ::-1, :]
+    tau_es2 = (kappa_es * rho * density_scale * R_G_CGS * _dx2 * np.sqrt(gcov[2, 2])).cumsum(axis=2)
+    tau_es[tau_es > tau_es2] = tau_es2[tau_es > tau_es2]
+
+
+def calc_lum():
+    global lum
+    p = (gam - 1.0) * ug
+    lum = np.sum((rho ** 3.0 * p ** (-2.0) * np.exp(-0.2 * (rho ** 2.0 / (np.sqrt(bsq) * p ** 2.0)) ** (1.0 / 3.0)) * (h > np.pi / 3.0) * (h < 2.0 / 3.0 * np.pi) * (r < 50.) * gdet * _dx1 * _dx2 * _dx3))
+
+# Calculate energy accretion rate as function of radius
+def calc_Edot():
+    global Edot, Edotj, beta_gamma_sq, beta_gamma_cut, Mdotj
+    temp=Tcalcud_new(1, 0)* gdet * _dx2 * _dx3
+    beta_gamma_sq = np.power(Tcalcud_new(1, 0)/(rho*uu[1]),2)-1 # Equation (11) paper V EHT 2017
+    Edot = (temp).sum(-1).sum(-1)
+    Edotj = (temp*(bsq/rho>3)).sum(-1).sum(-1)
+    Mdotj = (-gdet * rho * uu[1] *(beta_gamma_sq>beta_gamma_cut) * _dx2 * _dx3).sum(-1).sum(-1)
+    
+def calc_Ldot():
+    global Ldot
+    Ldot = (Tcalcud_new(1, 3)* gdet * _dx2 * _dx3).sum(-1).sum(-1)
+
+# Calculate the Q resolution paramters and their average Q_avg in the disk
+def calc_Q():
+    global Q, Q_avg, lowres1, lowres2, lowres3
+    Q = np.zeros((4, 1, bs1new, bs2new, bs3new), dtype=np.float32, order='C')
+    Q_avg = np.zeros((4), dtype=np.float32, order='C')
+    dx = np.zeros((4, nb, bs1new, bs2new, 1), dtype=np.float32, order='C')
+
+    dx[1] = _dx1 / lowres1 * np.sqrt(gcov[1, 1, :, :, :, :])
+    dx[2] = _dx2 / lowres2 * np.sqrt(gcov[2, 2, :, :, :, :])
+    dx[3] = _dx3 / lowres3 * np.sqrt(gcov[3, 3, :, :, :, :])
+    bu_proj = project_vector(bu)
+
+    for dir in range(1, 4):
+        alf_speed = np.sqrt(np.abs(bu_proj[dir] * bu_proj[dir]) / (rho + bsq + (gam) * ug))
+        vrot = np.sqrt((uu[3] * uu[3] * gcov[3][3] + uu[2] * uu[2] * gcov[2][2] + uu[1] * uu[1] * gcov[1][1])) / uu[0]
+        wavelength = 2 * 3.14 * alf_speed * r / vrot
+        if (dir == 1):
+            Q[dir] = wavelength / dx[dir]
+        if (dir == 2):
+            Q[dir] = wavelength / (dx[2]*theta_to_theta+dx[3]*np.abs(phi_to_theta))
+        if (dir == 3):
+            Q[dir] = wavelength / (dx[2]*np.abs(theta_to_phi) + dx[3] * phi_to_phi)
+        Q[dir] = np.nan_to_num(Q[dir])
+'''
