@@ -219,13 +219,17 @@ class Cartesian():
     def plot_Rz_vec(self, fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs):
         return self.plot_xy_vec(fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs)
 
-    def plot_xz_vec(self, fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs):
-        R_l, Z_l   = {'r' : R['l']},  {'r' : Z['l']}
-        VR_l, VZ_l = {'r' : VR['l']}, {'r' : VZ['l']}
-        r1D, z1D   = R_uni[0, :], Z_uni[:, 0]
+    def plot_xz_vec(self, fig, ax, X, Z, X_uni, Z_uni, VX, VZ, **kwargs):
+        # Do not allow streamlines to cross pole unless cross_pole=True
+        if (kwargs.get('cross_pole', False)):
+            return self.plot_xz_vec_cross_pole(fig, ax, X, Z, X_uni, Z_uni, 
+                                               VX, VZ, **kwargs)
+        X_l, Z_l   = {'r' : X['l']},  {'r' : Z['l']}
+        VX_l, VZ_l = {'r' : VX['l']}, {'r' : VZ['l']}
+        r1D, z1D   = X_uni[0, :], Z_uni[:, 0]
         r1D_pos, r1D_neg = r1D[r1D > 0], r1D[r1D < 0]
-        R_uni_l, Z_uni_l = np.meshgrid(r1D_neg, z1D)
-        R_uni_r, Z_uni_r = np.meshgrid(r1D_pos, z1D)
+        X_uni_l, Z_uni_l = np.meshgrid(r1D_neg, z1D)
+        X_uni_r, Z_uni_r = np.meshgrid(r1D_pos, z1D)
 
         kwargs_l = kwargs.copy()
         if 'mask' in kwargs:
@@ -235,8 +239,61 @@ class Cartesian():
             values   = {'r' : kwargs.get('values')['l']}
             kwargs_l['values'] = values
 
-        self.plot_Rz_vec(fig, ax, R_l, Z_l, R_uni_l, Z_uni_l, VR_l, VZ_l, **kwargs_l)
-        return self.plot_Rz_vec(fig, ax, R, Z, R_uni_r, Z_uni_r, VR, VZ, **kwargs)
+        self.plot_Rz_vec(fig, ax, X_l, Z_l, X_uni_l, Z_uni_l, VX_l, VZ_l, **kwargs_l)
+        return self.plot_Rz_vec(fig, ax, X, Z, X_uni_r, Z_uni_r, VX, VZ, **kwargs)
+            
+    def plot_xz_vec_cross_pole(fig, ax, X, Z, X_uni, Z_uni, VX, VZ, **kwargs):
+        method= kwargs.get('interp_method', 'cubic')
+        xlim  = 1.1 * np.amax(np.abs(X_uni))
+        zlim  = 1.1 * np.amax(np.abs(Z_uni))
+
+        x_dat  = np.concatenate([X['r'].ravel(),  X['l'].ravel()])
+        z_dat  = np.concatenate([Z['r'].ravel(),  Z['l'].ravel()])
+        VX_dat = np.concatenate([VX['r'].ravel(), VX['l'].ravel()])
+        VZ_dat = np.concatenate([VZ['r'].ravel(), VZ['l'].ravel()])
+
+        selec   = (np.abs(x_dat) <= xlim) & (np.abs(z_dat) <= zlim)
+        x_data  = x_dat[selec]
+        z_data  = z_dat[selec]
+        VX_data = VX_dat[selec]
+        VZ_data = VZ_dat[selec]
+
+        VX_uni = griddata((x_data, z_data), VX_data, 
+                          (X_uni, Z_uni), method=method)
+        VZ_uni = griddata((x_data, z_data), VZ_data, 
+                          (X_uni, Z_uni), method=method)
+
+        if 'mask' in kwargs:
+            mask      = kwargs.get('mask')
+            mask_dat  = np.concatenate([(mask['r'].astype(int)).ravel(),
+                                        (mask['l'].astype(int)).ravel()])
+            mask_data = mask_dat[selec]
+            mask_uni  = griddata((x_data, z_data), mask_data, 
+                                 (X_uni, Z_uni), method='nearest')
+            VX_uni = np.ma.array(VX_uni, mask=mask_uni)
+            VZ_uni = np.ma.array(VZ_uni, mask=mask_uni)
+
+        if 'color_streamlines' in kwargs:
+            color_streamlines = kwargs.get('color_streamlines')
+            values            = color_streamlines['values']
+            cmap              = color_streamlines['cmap']
+
+            values_dat  = np.concatenate(
+                [values['r'].ravel(), values['l'].ravel()])
+            values_data = values_dat[selec]
+            values_uni  = griddata((x_data, z_data), values_data, 
+                                   (X_uni, Z_uni), method=method)
+
+        dens = kwargs.get('dens', 1.0)
+        
+        ax.streamplot(X_uni, Z_uni, VX_uni, VZ_uni, 
+            density = (dens, dens),
+            broken_streamlines = kwargs.get('broken_streamlines', True),
+            linewidth = kwargs.get('linewidth', 1.0), 
+            color = (kwargs.get('color', 'white') 
+                if 'color_streamlines' not in kwargs else values_uni), 
+            cmap = (None if 'color_streamlines' not in kwargs else cmap),
+            arrowsize = kwargs.get('arrowsize', 1.0))      
                    
     def plot_xz_mirror_vec(self, fig, ax, X, Z, 
                            X_uni, Z_uni, VX, VZ, **kwargs): 
