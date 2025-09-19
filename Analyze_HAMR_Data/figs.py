@@ -242,7 +242,7 @@ class Cartesian():
         self.plot_Rz_vec(fig, ax, X_l, Z_l, X_uni_l, Z_uni_l, VX_l, VZ_l, **kwargs_l)
         return self.plot_Rz_vec(fig, ax, X, Z, X_uni_r, Z_uni_r, VX, VZ, **kwargs)
             
-    def plot_xz_vec_cross_pole(fig, ax, X, Z, X_uni, Z_uni, VX, VZ, **kwargs):
+    def plot_xz_vec_cross_pole(self, fig, ax, X, Z, X_uni, Z_uni, VX, VZ, **kwargs):
         method= kwargs.get('interp_method', 'cubic')
         xlim  = 1.1 * np.amax(np.abs(X_uni))
         zlim  = 1.1 * np.amax(np.abs(Z_uni))
