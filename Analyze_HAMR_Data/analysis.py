@@ -180,13 +180,14 @@ class Accretion():
     # Return where T < Temp_cut if cold = True (default)
     # Return where T > Temp_cut if cold = False
     def temp_cut(self, **kwargs):
-        cold=kwargs.get('cold', True) if not kwargs.get('hot', False) else True
-        T = kwargs.get('Temp', 0.) if 'Temp' in kwargs else self.data['Ti']
-        if 'Temp_cut' in kwargs:
+        if 'Temp_cut' not in kwargs:
+            return 1.0
+        elif 'Temp_cut' in kwargs:
+            cold = (kwargs.get('cold', True) if not kwargs.get('hot', False) 
+                    else True)
+            T = kwargs.get('Temp', 0.) if 'Temp' in kwargs else self.data['Ti']
             T_cut = kwargs.get('Temp_cut')
             return (T < T_cut) if cold else (T > T_cut)
-        else:
-            return 1.0
 
     # Return where |z| < H if above = False (default)
     # Return where |z| > H if above = True
