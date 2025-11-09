@@ -238,6 +238,11 @@ class Cartesian():
         if 'color_streamlines' in kwargs:
             values   = {'r' : kwargs.get('values')['l']}
             kwargs_l['values'] = values
+        if 'color' in kwargs:
+            color = kwargs.get('color')
+            if isinstance(color, dict):
+                kwargs_l['color'] = color['l']
+                kwargs['color']   = color['r']
 
         self.plot_Rz_vec(fig, ax, X_l, Z_l, X_uni_l, Z_uni_l, VX_l, VZ_l, **kwargs_l)
         return self.plot_Rz_vec(fig, ax, X, Z, X_uni_r, Z_uni_r, VX, VZ, **kwargs)
@@ -507,10 +512,7 @@ class Fix_Pole():
   
     def fix_cart_xz_mirror(self, X, Z, Dl, Dr, r, theta, phi, **kwargs):
         r1D, th1D, phi1D      = self.get1D(r, theta, phi)
-        theta_min, theta_max  = np.amin(th1D), np.amax(th1D)
-        dth     = np.diff(th1D)[-1]
-        th_strt = (theta_min / 2.) * np.ones(len(r1D))
-        th_end  = (np.pi - dth/2) * np.ones(len(r1D))
+        th_strt, th_end  = 0., np.pi
         ldat_strt, ldat_end = Dl['l'][:, 0], Dl['l'][:, -1]
         rdat_strt, rdat_end = Dr['r'][:, 0], Dr['r'][:, -1]
         phi0    = kwargs.get('phi0', 0.0)
