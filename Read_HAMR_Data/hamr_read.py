@@ -5,6 +5,7 @@ Functions accelerated through Cython and C++
 
 import os
 import numpy as np
+import sys
 import hamr_readc
 
 CONSTANTS = {
@@ -50,7 +51,7 @@ amr_keys = [
 phys_keys = [
     'RAD_M1', 'RESISTIVE', 'TWO_T',
     'P_NUM', 'DO_YE', 'NEUTRINOS_M1',
-    'DO_NUCLEAR', 'DOTRACER'
+    'DO_NUCLEAR', 'DOTRACER', 'DUMP_DISS'
 ]
 
 param_keys = [
@@ -152,7 +153,7 @@ class Read():
             while(os.path.isfile(self.dir + "/gdumps/grid%d" % i)):
                 if (i == 1): fin.close()
                 fin = open(self.dir + "/gdumps/grid%d" % i, "rb")
-                size += os.path.getsize(self.dir + "gdumps/grid%d" % i)
+                size += os.path.getsize(self.dir + "/gdumps/grid%d" % i)
                 fin.close()
                 i += 1
             fin = open(self.dir + "/gdumps/grid", "rb")
@@ -214,7 +215,7 @@ class Read():
         # Using phys_int, determine which physics modules are active
         for key in phys_keys:
             physics['%s' % key] = 0
-        phys_int = '{:08}'.format(phys_int)
+        phys_int = '{:09}'.format(phys_int)
 
         if (phys_int[-1] == '1'): physics['RAD_M1']       = 1
         if (phys_int[-2] == '1'): physics['RESISTIVE']    = 1
@@ -224,6 +225,8 @@ class Read():
         if (phys_int[-6] == '1'): physics['NEUTRINOS_M1'] = 1
         if (phys_int[-7] == '1'): physics['DO_NUCLEAR']   = 1
         if (phys_int[-8] == '1'): physics['DOTRACER']     = 1
+        if (phys_int[-9] == '1'): physics['DUMP_DISS']    = 1
+        if (phys_int[-9] == '2'): physics['DUMP_DISS']    = 2
 
         trash = Tools.get_fromfile(fin, np.int32)
         del trash
@@ -1046,6 +1049,102 @@ class Read_Legacy(Read):
         if (nb3 > 2):
             ref_dir[1], ref_dir[2], ref_dir[3] = 1, 1, 1
         return ref_dir
+
+class Write_VTK(Read):
+    def __init__(self, dir, **kwargs):
+        super().__init__(dir, **kwargs)
+        import vtk 
+        from vtk.util import numpy_support
+        self.vtk = vtk
+        self.numpy_support = numpy_support
+        if (kwargs.get('cgs_grid', False)):
+            G       = CONSTANTS['G']
+            c       = CONSTANTS['c']
+            Msun    = CONSTANTS['Msun']
+            self.Rg = G * self.MBH * Msun / (c * c)
+        else:
+            self.Rg = 1. 
+
+    def write_prims(self, fnum, **kwargs):
+        direct   = kwargs.get('grid_direct', False)
+        if not hasattr(self, 'grid'):
+            self.read_grid(fnum, direct=direct)
+        if not hasattr(self, 'data') and not kwargs.get('user_only', False):
+            self.read_prims(fnum)
+        r   = self.grid['r'] / self.Rg
+        th  = self.grid['theta']
+        phi = self.grid['phi']
+        
+        shape = list((r * th * phi).shape)
+        shape.append(3)
+        pts   = np.zeros(shape, dtype=kwargs.get('dtype'))
+
+        pts[..., 0] = r * np.sin(th) * np.cos(phi)
+        pts[..., 1] = r * np.sin(th) * np.sin(phi)
+        pts[..., 2] = r * np.cos(th) * np.ones_like(phi)
+        if not self.by_block:
+            pts = pts[0].transpose(2, 1, 0, 3).copy()
+        else:
+            pts = pts.transpose(0, 3, 2, 1, 4).copy()
+
+        # Create the VTK points object
+        self.points = self.vtk.vtkPoints()
+
+        if not kwargs.get('user_only', False):
+            if 'keys' in kwargs: keys = kwargs.get('keys')
+            else:                keys = self.data.keys()
+
+            if not self.by_block:
+                # Store data points in VTK points object
+                pts.shape = pts.size // 3, 3
+                self.points.SetData(self.numpy_support.numpy_to_vtk(pts, deep=True))
+                # Store the data associated with keys into StructuredGrid
+                self.get_structured_grid(keys, 0)
+                if not kwargs.get('vtk_dir', False): vtk_dir = f'{self.dir}/VTK_Files'
+                else:                                vtk_dir = kwargs.get('vtk_dir')
+                writer = self.vtk.vtkXMLStructuredGridWriter()
+                os.makedirs(vtk_dir, exist_ok=True)
+                writer.SetFileName(f"{vtk_dir}/Data_{fnum:06}.vts")
+                writer.SetInputData(self.sgrid)
+                writer.Write() 
+                print(f"Finished creating {vtk_dir}/Data_{fnum:06}.vts") 
+            else:
+                pass
+
+    def get_structured_grid(self, keys, block_ID):
+        self.sgrid = self.vtk.vtkStructuredGrid()
+        blk        = int(block_ID)
+        for key in keys:                
+            if len(list(self.data[f'{key}'].shape)) == 4:
+                scalar, vector = True, False
+            elif len(list(self.data[f'{key}'].shape)) == 5:
+                scalar, vector = False, True
+
+            if (scalar):
+                dims      = self.data[f'{key}'][blk].shape
+                self.sgrid.SetDimensions(dims[0], dims[1], dims[2])
+                self.sgrid.SetPoints(self.points)
+                vtk_scalar = self.numpy_support.numpy_to_vtk(
+                    (self.data[f'{key}'][blk].T).ravel(), deep=True, 
+                    array_type=self.vtk.VTK_FLOAT)
+                vtk_scalar.SetName(f"{key}")
+                self.sgrid.GetPointData().AddArray(vtk_scalar)
+                self.sgrid.GetPointData().SetActiveScalars(f"{key}")
+            elif (vector):
+                # assumes 3-vectors
+                dims      = self.data[f'{key}'][0, blk].shape
+                self.sgrid.SetDimensions(dims[0], dims[1], dims[2])
+                self.sgrid.SetPoints(self.points)
+                # Create vector array with axes
+                # (blk, x1, x2, x3, component)
+                vector_array = (np.moveaxis(self.data[f'{key}'], 0, -1))[blk,:,:,:,1:]
+                vtk_vector   = self.numpy_support.numpy_to_vtk(
+                    (vector_array.T).ravel(), deep=True, 
+                    array_type=self.vtk.VTK_FLOAT)
+                vtk_vector.SetNumberOfComponents(3)
+                vtk_vector.SetName(f"{key}")
+                self.sgrid.GetPointData().AddArray(vtk_vector)
+                self.sgrid.GetPointData().SetActiveVectors(f"{key}")
 
 if __name__ == "__main__":
     print("Executing H-AMR Read")
