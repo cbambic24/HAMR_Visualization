@@ -544,6 +544,30 @@ class Coordinates():
     def cyl_to_sph_cotnsr(self, cotnsr, **kwargs):
         return self.ortho_sph_to_cyl_tnsr(cotnsr, **kwargs)
 
+    # Calculate the Lorentz boost matrix Lambda^mu_alpha 
+    # See Sadowski+2013 Equation 10 (with - signs on t-i components)
+    # Boost is from the unprimed to the primed frame
+    # uu is the velocity of the primed frame as measured in the unprimed frame
+    def calc_Lorentz_boost(self, uu, **kwargs):
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        Lambda = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        Lambda[0,  0] =  uu[0]
+        Lambda[1:, 0] = -uu[1:]
+        Lambda[0, 1:] = -uu[1:]
+
+        if not kwargs.get('inverse', False):
+            v  = uu / uu[0]
+        elif kwargs.get('inverse', False):
+            v = - uu / uu[0]
+        v2 = v[1] * v[1] + v[2] * v[2] + v[3] * v[3]
+        for mu in range(3):
+            for nu in range(3):
+                Lambda[mu+1, nu+1] = ((uu[0] - 1.) / v2) * (
+                    v[mu + 1] * v[nu + 1] + (mu == nu))
+        return Lambda
+
     # Compute dot product between two vectors in the desired
     # coordinate system. Assumes vec_a, vec_b, and gcov are in
     # internal coordinates. Memory intensive on 3D arrays.
@@ -796,6 +820,34 @@ class Kerr_Schild(Coordinates):
         g_Mink[2, 2] = self.r * self.r
         g_Mink[3, 3] = (self.r * np.sin(self.th)) ** 2.
         return g_Mink
+    
+    def calc_gcov(self, **kwargs):
+        # Calculate covariant metric in spherical Kerr-Schild coordinates
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        gcov  = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        
+        cth  = np.cos(self.th)
+        sth  = np.sin(self.th)
+        s2   = sth * sth
+        rho2 = self.r * self.r + self.a * self.a * cth * cth
+        
+        gcov[0, 0, 0, :, :, 0] = (-1. + 2. * self.r / rho2)[0, :, :, 0]
+        gcov[0, 1, 0, :, :, 0] = (2. * self.r / rho2)[0, :, :, 0]
+        gcov[0, 3, 0, :, :, 0] = (-2. * self.a * self.r * s2 / rho2
+                                  )[0, :, :, 0]
+        gcov[1, 0, 0, :, :, 0] = gcov[0, 1, 0, :, :, 0]
+        gcov[1, 1, 0, :, :, 0] =  (1. + 2. * self.r / rho2)[0, :, :, 0]
+        gcov[1, 3, 0, :, :, 0] = (
+            -self.a * s2 * (1. + 2. * self.r / rho2))[0, :, :, 0]
+        gcov[2, 2, 0, :, :, 0] = rho2[0, :, :, 0]
+        gcov[3, 0, 0, :, :, 0] = gcov[0, 3, 0, :, :, 0]
+        gcov[3, 1, 0, :, :, 0] = gcov[1, 3, 0, :, :, 0]
+        gcov[3, 3, 0, :, :, 0] = (s2 * (
+            rho2 + self.a * self.a * s2 * (1. + 2. * self.r / rho2))
+            )[0, :, :, 0] 
+        return gcov
     
 class Tetrads(Kerr_Schild):
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
