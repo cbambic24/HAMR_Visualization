@@ -42,7 +42,7 @@ def main(**kwargs):
         mp   = hr.CONSTANTS['mp'] 
 
         x_AB = hr.CONSTANTS['X_AB']
-        y_AB = hr.CONSTANTS['X_AB']
+        y_AB = hr.CONSTANTS['Y_AB']
 
         # Equation 11 in Sadowski+ (2017)
         mu_i = 4.0 / (4.0 * x_AB + y_AB)
@@ -69,25 +69,18 @@ def main(**kwargs):
     # Accretion rates (mass and energy) + Phi_BH
     acc_keys = [
         'Mdot', 'Edot', 'Mdot_sigma', 'Edot_sigma',
-        'Edot_Poyt', 'Edot_Fluid', 'Phi_BH'
+        'Edot_Poyt', 'Edot_Fluid', 'Edot_jet'
+    ]
+    phi_keys = [
+        'Phi_BH',  'Phi_sph_upp', 'Phi_sph_low', 
+        'Phi_mid', 'Phi_max_upp', 'Phi_max_low'
     ]
     if (two_temp and radiation):
         keys += ['Te', 'Prad', 'Eion', 'Eelc']
-        acc_keys.append('Edot_Rad')
+        acc_keys += ['Edot_Rad']
     elif (radiation and not two_temp):
-        keys.append('Prad')
-        acc_keys.append('Edot_Rad')
-
-    # Cooling diagnostics
-    if (two_temp and not radiation):
-        cool_keys = ['qie']
-    if (radiation):
-        cool_keys = [
-            'qIC', 'qIC_cool', 'qemi', 'qabs', 
-            'qIC_thin', 'qemi_thin', 'qIC_thick', 'qemi_thick'
-        ]
-    if (two_temp and radiation):
-        cool_keys += ['qie', 'qie_thin', 'qie_thick']
+        keys += ['Prad']
+        acc_keys += ['Edot_Rad']
 
     # Vectors (4-velocity, 3-velocity, 4-magnetic field)
     vec_keys = [
@@ -101,8 +94,8 @@ def main(**kwargs):
     os.makedirs(save_dir, exist_ok=True)
 
     read_args = {
-        'cgs_grid' : True,
-        'cgs_data' : True,
+        'cgs_grid' : cgs,
+        'cgs_data' : cgs,
         'coords1D' : True,
         'MBH'      : MBH,
         'lowres1'  : lowres1,
@@ -110,10 +103,7 @@ def main(**kwargs):
         'lowres3'  : lowres3
     }
 
-    if (radiation or two_temp):
-        profile_keys = keys + acc_keys + cool_keys + vec_keys
-    else:
-        profile_keys = keys + acc_keys + vec_keys
+    profile_keys = keys + acc_keys + phi_keys + vec_keys
     
     profiles, nphi, iphi_stp = init_profiles(data_dir, file_num, profile_keys,
         save_dir, nslices, restart, nzeros, **read_args)
@@ -180,7 +170,7 @@ def main(**kwargs):
             gamma_adi = (5. / 3.)
             pgas= (gamma_adi - 1.) * H.data['u_gas']
 
-        # Mass and energy accretion rates. Radial magnetic flux (Phi_BH).
+        # Mass and energy accretion/outflow rates
         stress_energy_HD  = Fluid.calc_THD(**H.data, **H.grid, pgas=pgas,
             uu_tnsr=uu_tnsr, upper_lower=True, index=[1, 0], cpp=True)
         stress_energy_EM  = Field.calc_TEM(**H.data, **H.grid, b2=b2, b=b, 
@@ -197,6 +187,9 @@ def main(**kwargs):
             stress_energy_MHD = stress_energy_HD + stress_energy_EM
 
         acc_args = {
+            'MBH'       : MBH,
+            'cgs'       : cgs,
+            'radiation' : radiation,
             'sigma_cut' : 3.,
             'sigma'     : sigma
         }
@@ -204,47 +197,35 @@ def main(**kwargs):
         prof_loc['Mdot']      = Acc.calc_Mdot()[0]
         prof_loc['Edot']      = Acc.calc_Edot(TMHD=stress_energy_MHD)[0]
         prof_loc['Mdot_sigma']= Acc.calc_Mdot(**acc_args)[0]
-        prof_loc['Edot_sigma']= Acc.calc_Edot(TMHD=stress_energy_MHD, **acc_args)[0]
-        prof_loc['Edot_Poyt'] = Acc.calc_Edot(TMHD=stress_energy_EM,  **acc_args)[0]
+        prof_loc['Edot_sigma']= Acc.calc_Edot(TMHD=stress_energy_MHD, 
+                                              **acc_args)[0]
+        prof_loc['Edot_Poyt'] = Acc.calc_Edot(TMHD=stress_energy_EM,  
+                                              **acc_args)[0]
         prof_loc['Edot_jet']  = Acc.calc_Edot(TMHD=stress_energy_EM, 
                                               jet=True, **acc_args)[0]
-        prof_loc['Edot_Fluid']= Acc.calc_Edot(TMHD=stress_energy_HD,  **acc_args)[0]
-        prof_loc['Phi_BH']    = Acc.calc_PhiBH()[0] 
-
+        prof_loc['Edot_Fluid']= Acc.calc_Edot(TMHD=stress_energy_HD,  
+                                              **acc_args)[0]
         if (radiation):
-            prof_loc['Edot_Rad']=Acc.calc_Edot(TMHD=stress_energy_RAD, **acc_args)[0]
+            prof_loc['Edot_Rad']=Acc.calc_Edot(TMHD=stress_energy_RAD, 
+                                               **acc_args)[0]
         
         del stress_energy_MHD 
-        del stress_energy_HD, stress_energy_EM, stress_energy_RAD        
-        
-        if (radiation):
-            opacities = dict.fromkeys(['electron_scattering'])
-            tau_integral_args = {
-                'opacities' : opacities,
-                'integral'  : 'theta',
-                'sigma_cut' : 3.,
-                'sigma'     : sigma,
-                'theta_cut' : np.pi / 6.
-            }
-            if (two_temp):
-                tau_integral_args['Te'] = H.data['Te']
-            else:
-                norm = (mu_g * mp / kB)
-                tau_integral_args['Te'] = norm * (pgas / H.data['rho'])
-            tau_es = Acc.calc_tau(**tau_integral_args) 
-        
-        if (radiation or two_temp):
-            # Need uu_t / c for cooling rates
-            uu_t = np.einsum(
-                'ij...,j...->i...', H.grid['gcov'], H.data['uu'] / c)[0]
+        del stress_energy_HD, stress_energy_EM, stress_energy_RAD  
 
+        # Magnetic fluxes
+        prof_loc['Phi_BH']      = Acc.calc_PhiBH()[0]
+        prof_loc['Phi_sph_upp'] = Acc.calc_PhiSph(hemisphere='upper')[0]
+        prof_loc['Phi_sph_low'] = Acc.calc_PhiSph(hemisphere='lower')[0]
+        prof_loc['Phi_mid']     = Acc.calc_PhiMid()[0]
+        prof_loc['Phi_max_upp'] = Acc.calc_PhiMax(hemisphere='upper')[0]
+        prof_loc['Phi_max_low'] = Acc.calc_PhiMax(hemisphere='lower')[0]     
+        
         # Deallocate magnetic field in the lab frame and radiation 4-momentum
         # as well as metric tensor and inverse
         H.data['B']    = H.data['rho']
         H.grid['gcov'] = H.data['rho']
         H.grid['gcon'] = H.data['rho']
-        if (radiation):
-            H.data['uu_rad'] = H.data['rho']
+        if (radiation): H.data['uu_rad'] = H.data['rho']
     
         if (two_temp):
             # Calculate gamma (ratio of specific heats)
@@ -266,7 +247,7 @@ def main(**kwargs):
                 (H.data['rho'] / (mu_e * mp)) * kB * H.data['Te'])
             ]
         elif (radiation and not two_temp):
-            T_gas = pgas / H.data['rho']
+            T_gas = (mu_g * mp / kB) * (pgas / H.data['rho'])
             quants = [
                 H.data['rho'], T_gas, b2/(8. * np.pi), pgas,
                 1.0, np.square(H.grid['theta'] - np.pi/2.),
@@ -285,72 +266,15 @@ def main(**kwargs):
                 weight=H.data['rho'], **acc_args)[0]
         
         if (two_temp):
-            del Theta_e, Theta_i, gam_e, gam_i, pgas
+            del Theta_e, Theta_i, gam_e, gam_i, pgas, b2
         else:
-            del pgas, T_gas
-        
-        if not radiation:
-            del b2
-            
-        if (radiation):
-            tau_args = {
-                'tau_cut'   : 1.,
-                'tau'       : tau_es,
-                'sigma_cut' : 3.,
-                'sigma'     : sigma
-            }
-
-        if (two_temp):
-            qie = Fluid.calc_qie(**H.data, cpp=True)
-            # cooling = True (maybe)
-            #qie[qie < 0.] = 0.
-            prof_loc['qie'] = thph_sum(qie, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
-            if (radiation):
-                prof_loc['qie_thin'] = thph_sum(qie, H.grid, H.data, H.params, 
-                    hr.CONSTANTS, weight=uu_t, optically_thin=True, **tau_args)[0]
-                prof_loc['qie_thick']= thph_sum(qie, H.grid, H.data, H.params, 
-                    hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
-            del qie
-        
-        if (radiation):
-            qIC = Radi.calc_qIC(**H.data, cooling=True)
-            prof_loc['qIC_cool']  = thph_sum(qIC, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
-            qIC = Radi.calc_qIC(**H.data)
-            # cooling = True (maybe)
-            prof_loc['qIC']       = thph_sum(qIC, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
-            prof_loc['qIC_thin']  = thph_sum(qIC, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, optically_thin=True, **tau_args)[0]
-            prof_loc['qIC_thick'] = thph_sum(qIC, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
-            del qIC
-
-            qemi=Radi.calc_q_emi(**H.data, b2=b2, XRB=True, cpp=True)
-            prof_loc['qemi'] = thph_sum(qemi, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
-            prof_loc['qemi_thin']  = thph_sum(qemi, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, optically_thin=True, **tau_args)[0]
-            prof_loc['qemi_thick'] = thph_sum(qemi, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, optically_thin=False, **tau_args)[0]
-            del qemi
-
-            qabs= Radi.calc_q_abs(**H.data, b2=b2, XRB=True, cpp=True)
-            prof_loc['qabs'] = thph_sum(qabs, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
-            del qabs
+            del pgas, T_gas, b2
 
         # Deallocate temperatures and energy densities 
         # in preparation for large transformation matrices
-        if (two_temp and radiation):
+        if (two_temp):
             H.data['Ti'] = H.data['rho']
             H.data['Te'] = H.data['rho']
-            del uu_t, b2, tau_es
-        elif (two_temp and not radiation):
-            H.data['Ti'] = H.data['rho']
-            H.data['Te'] = H.data['rho']
-            del uu_t
 
         # Compute theta and phi averages of vector quantities
         uu_cyl = Coords.int_to_cyl_vec(H.data['uu'], cpp=True)
@@ -375,6 +299,8 @@ def main(**kwargs):
             # Put spherical radius in dictionary 
             profiles['r']   = H.grid['r'][0, :, 0, 0] / Rg
             profiles['dx1'] = H.params['dx1']
+            # Density scale
+            profiles['rho0'] = H.params['density_scale']
 
         # Gather local profiles (prof_loc) from all processors and 
         # place them in main profiles dictionary
@@ -389,22 +315,24 @@ def main(**kwargs):
                     profiles[f'{key}'] += prof[f'{key}']
 
             profiles['k_max'] = k_min + (k_max - k_min) * size 
-
+            profiles['slice_num_restart'] = slice_num + 1
             fnum_str = str(file_num).zfill(nzeros)
-            np.save(save_dir + f'/Profiles_{fnum_str}', profiles)
+            np.savez(save_dir + f'/Profiles_{fnum_str}', **profiles)
 
             snum = int(slice_num + 1)
             print(f'Finished with slice {snum:d} of {nslices:d}', flush=True)
-
             profiles['saved'] = True
-            profiles['slice_num_restart'] = slice_num + 1
 
     print(f'Done with all profiles for file number {file_num}.')
 
 def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
     w    = kwargs.get('weight', 1.0)
-    Acc2 = ana.Accretion(grid, data, params, CONSTANTS, 
-            cgs=True, radiation=True, MBH = 10.0)
+    acc2_args = {
+        'cgs'       : kwargs.get('cgs',       False),
+        'radiation' : kwargs.get('radiation', False),
+        'MBH'       : kwargs.get('MBH',       1.)
+    }
+    Acc2 = ana.Accretion(grid, data, params, CONSTANTS, **acc2_args)
     return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
         grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
 
@@ -430,8 +358,7 @@ def init_profiles(data_dir, file_num, keys,
         first_call = True
     else:
         fnum_str = str(file_num).zfill(nzro)
-        profile_file = f'{save_dir}/Profiles_{fnum_str}'
-        profiles = cv.read_restart(profile_file)
+        profiles = dict(np.load(f'{save_dir}/Profiles_{fnum_str}.npz'))
         first_call = False
 
     # Initialize profiles dictionary
