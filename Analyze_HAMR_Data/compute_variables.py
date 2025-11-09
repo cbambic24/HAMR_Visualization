@@ -24,11 +24,11 @@ def get_data_dir(sim, reduced, shared):
     if not reduced and not shared:
         data_dir = user_path + '/DATA/' + sim
     elif reduced and not shared:
-        data_dir = user_path + '/DATA/' + sim + '/reduced'
+        data_dir = user_path + '/DATA/' + sim + '/reduced/'
     elif not reduced and shared:
         data_dir = f'{shared_path}/' + sim
     elif reduced and shared:
-        data_dir = f'{shared_path}/' + sim + '/reduced'
+        data_dir = f'{shared_path}/' + sim + '/reduced/'
     return data_dir 
 
 def get_save_dir(sim, type, diagnostic, **kwargs):
@@ -58,30 +58,43 @@ def get_file_list_local(file_list, size, rank, data_dir):
     return file_list_local
 
 def check_dumps_exist(path_to_dumps, file_list):
+    removed_files = []
     for file_num in file_list:
         if not os.path.isdir(path_to_dumps + f'/dumps{file_num}'):
             print(f'Dumps {file_num} is missing.')
-            file_list.remove(file_num)
+            removed_files.append(file_num)
             if os.path.isdir(path_to_dumps + f'/dumps{file_num}_'):
                 found_file = path_to_dumps + f'/dumps{file_num}_'
                 print(f'The file can be found as {found_file}', flush=True) 
+    for removed_file in removed_files:
+        file_list.remove(removed_file)
     return file_list
-
-def read_restart(profile_file, lowres1, lowres2, lowres3):
-    profiles_in = np.load(profile_file, allow_pickle=True).ravel()[0]
-    if (lowres1 != profiles_in['lowres1']):
-        raise ValueError("Chosen lowres1 parameter incompatible with restart")
-    if (lowres2 != profiles_in['lowres2']):
-        raise ValueError("Chosen lowres2 parameter incompatible with restart")
-    if (lowres3 != profiles_in['lowres3']):
-        raise ValueError("Chosen lowres3 parameter incompatible with restart")
-    return profiles_in
 
 def get_nice_time(time):
     raw_string = '%.5e' %time
     coeff = raw_string.split('e+')[0]
     expon = raw_string.split('e+')[1]
     return r'$%.5f \times 10^%d$' %(float(coeff), int(expon))
+
+def get_nice_Mdot(Mdot):
+    if (Mdot >= 1.e3):
+        raw_string = '%.5e' %Mdot
+        coeff = raw_string.split('e+')[0]
+        expon = raw_string.split('e+')[1]
+        return r'$%.1f \times 10^%d$' %(float(coeff), int(expon))
+    elif (Mdot > 10 and Mdot < 1.e3):
+        return r'$%.1f$' %Mdot
+    elif (Mdot < 1.e-2):
+        raw_string = '%.5e' %Mdot
+        coeff = raw_string.split('e-')[0]
+        expon = raw_string.split('e-')[1]
+        if (round(float(coeff)) == 10.):
+            expon, coeff = int(expon), float(coeff)
+            expon -= 1
+            coeff = 1.
+        return r'$%.1f \times 10^{-%d}$' %(float(coeff), int(expon))
+    else:
+        return r'$%.2f$' %Mdot
 
 def check_extend(q, lims):
     qmin, qmax = np.amin(q), np.amax(q)
@@ -98,61 +111,51 @@ def check_extend(q, lims):
         return 'neither'
 
 # Specific to X-Z (poloidal) plots
-def get_contours(plt_args, PS_r, PS_l, colors, sigma_contour, photospheres):
-    contours_left, contours_right = {}, {}
-    quantities_l,  levels_l, quantities_r, levels_r = [], [], [], []
-    linewidths_l, linewidths_r, colors_l, colors_r  = [], [], [], []
-    linestyles_l, linestyles_r                      = [], []
+def get_contours(plt_args, PS_r, PS_l, contour_colors, sigma_contour, photospheres):
+    quantities, levels, colors, linewidths, linestyles = (dict.fromkeys(['l', 'r']) for i in range(5))
+    quantities['r'], levels['r'], colors['r'], linewidths['r'], linestyles['r'] = ([] for i in range(5))
+    quantities['l'], levels['l'], colors['l'], linewidths['l'], linestyles['l'] = ([] for i in range(5))
+    
     if (sigma_contour != 0):
-        quantities_r.append(PS_r.calc_sigma(0))
-        quantities_l.append(PS_l.calc_sigma(0))
-        levels_r.append(sigma_contour)
-        levels_l.append(sigma_contour)
-        colors_r.append(colors[0])
-        colors_l.append(colors[0])
-        linestyles_r.append(['-'])
-        linestyles_l.append(['-'])
+        quantities['r'].append(PS_r.calc_sigma(0))
+        quantities['l'].append(PS_l.calc_sigma(0))
+        for key in ['r', 'l']:
+            levels[    f'{key}'].append(sigma_contour)
+            colors[    f'{key}'].append(contour_colors[0])
+            linestyles[f'{key}'].append(['-'])
     if (photospheres['scattering']):
         opacities = dict.fromkeys(['electron_scattering'])
-        quantities_r.append(PS_r.calc_tau(
-            opacities, 0, integral=photospheres['integral']))
-        quantities_l.append(PS_l.calc_tau(
-            opacities, 0, integral=photospheres['integral']))
-        levels_r.append(1.)
-        levels_l.append(1.)
-        colors_r.append(colors[1])
-        colors_l.append(colors[1])
-        linestyles_r.append(['-'])
-        linestyles_l.append(['-'])
+        quantities['r'].append(PS_r.calc_tau(opacities, 0, integral=photospheres['integral']))
+        quantities['l'].append(PS_l.calc_tau(opacities, 0, integral=photospheres['integral']))
+        for key in ['r', 'l']:
+            levels[    f'{key}'].append(1.)
+            colors[    f'{key}'].append(contour_colors[1])
+            linestyles[f'{key}'].append(['-'])
     if (photospheres['effective']):
         opacities = dict.fromkeys(['electron_scattering', 'bound_free', 
             'CHIANTI', 'free_free', 'hydrogen', 'molecular', 'synchrotron']) 
-        quantities_r.append(PS_r.calc_tau(
-            opacities, 0, integral=photospheres['integral']))
-        quantities_l.append(PS_l.calc_tau(
-            opacities, 0, integral=photospheres['integral']))
-        levels_r.append(1.)
-        levels_l.append(1.)
-        colors_r.append(colors[1])
-        colors_l.append(colors[1])
-        linestyles_r.append(['--'])
-        linestyles_l.append(['--'])
+        quantities['r'].append(PS_r.calc_tau(opacities, 0, integral=photospheres['integral']))
+        quantities['l'].append(PS_l.calc_tau(opacities, 0, integral=photospheres['integral']))
+        for key in ['r', 'l']:
+            levels[    f'{key}'].append(1.)
+            colors[    f'{key}'].append(contour_colors[1])
+            linestyles[f'{key}'].append(['--'])
 
-    linewidths_r += len(levels_r) * [2.0]
-    linewidths_l += len(levels_l) * [2.0]
+    for key in ['r', 'l']: linewidths[f'{key}'] += len(levels[f'{key}']) * [2.0]
+
     plt_args['contours_right'] = {
-        'quantities' : quantities_r, 
-        'levels'     : levels_r, 
-        'colors'     : colors_r, 
-        'linewidths' : linewidths_r,
-        'linestyles' : linestyles_r
+        'quantities' : quantities['r'], 
+        'levels'     : levels['r'], 
+        'colors'     : colors['r'], 
+        'linewidths' : linewidths['r'],
+        'linestyles' : linestyles['r']
     }
     plt_args['contours_left'] = {
-        'quantities' : quantities_l, 
-        'levels'     : levels_l, 
-        'colors'     : colors_l, 
-        'linewidths' : linewidths_l,
-        'linestyles' : linestyles_l
+        'quantities' : quantities['l'], 
+        'levels'     : levels['l'], 
+        'colors'     : colors['l'], 
+        'linewidths' : linewidths['l'],
+        'linestyles' : linestyles['l']
     }
     return plt_args
 
@@ -199,6 +202,8 @@ class Phi_Slice():
         self.Field = ana.Field(self.H.params, hr.CONSTANTS, cgs=True)
         # Initialize Radiation class
         self.Rad   = rad.Radiation(self.H.params, hr.CONSTANTS, cgs=True)
+        # Initialize Analytic class
+        self.Analytic = theory.Analytic(hr.CONSTANTS, cgs=self.cgs)
 
     def calc_gridsize(self):
         self.nr   = int(self.H.params['nb1'] * self.H.params['bs1'] * self.H.upscalex1 / self.H.lowres1)
@@ -430,6 +435,28 @@ class Phi_Slice():
         rhov2 = rho * v2
         return rhov2 / (b2/(4. * np.pi))
     
+    def calc_J_cross_B(self, iphi): 
+        Coords = coords.Coordinates(
+            self.H.grid['r'] / self.Rg, self.H.grid['theta'], self.H.grid['phi'], 
+            self.H.params, hr.CONSTANTS)
+        J = self.Field.calc_J(self.H.data['uu'], self.H.data['B'], 
+                              self.H.grid['gcov'], self.H.grid['gdet'], frame='fluid') / self.Field.B0
+        b = self.Field.calc_b(self.H.data['B'], self.H.data['uu'], self.H.grid['gcov'])/ self.Field.B0
+        J_cart = Coords.int_to_cart_vec(J)
+        b_cart = Coords.int_to_cart_vec(b)
+        J_cross_B_vec3 = np.zeros_like(self.H.data['uu'][1:])
+        J_cross_B_vec3[0] = J_cart[1] * b_cart[2] - J_cart[2] * b_cart[1]
+        J_cross_B_vec3[1] = J_cart[2] * b_cart[0] - J_cart[0] * b_cart[2]
+        J_cross_B_vec3[2] = J_cart[0] * b_cart[1] - J_cart[1] * b_cart[0]
+        return np.sqrt(J_cross_B_vec3[0] * J_cross_B_vec3[0] + J_cross_B_vec3[1] * J_cross_B_vec3[1] + J_cross_B_vec3[2] * J_cross_B_vec3[2])[0, :, :, 0]
+        #J_cross_B_vec3 = np.einsum('ijk...,j...,k...->i...', 
+        #    ana.Tools.calc_Levi_Civita(3, self.H.grid['gdet']), 
+        #    Coords.int_to_cart_vec(J)[1:], 
+        #    Coords.int_to_cart_vec(b)[1:])
+        #J_cross_B_vec4 = np.zeros_like(self.H.data['uu'])
+        #J_cross_B_vec4[1:] = J_cross_B_vec3
+        #return ana.Tools.dot(J_cross_B_vec4, J_cross_B_vec4, self.H.grid['gcov'])[0, :, :, 0]
+ 
     # Magnetic Fields
     def calc_Bphi(self, iphi):
         B = self.get_vars2D(['B'], iphi)
@@ -896,10 +923,11 @@ class Phi_Slice():
 
     # Coulomb cooling rate
     def calc_qie(self, iphi, **kwargs):
-        rho, Ti, Te = self.get_vars2D(['rho', 'Ti', 'Te'], iphi)
-        uu, gcov    = self.get_vars2D(['uu', 'gcov'], iphi)
+        rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
+        uu, gcov    = self.H.data['uu'], self.H.grid['gcov']
         u_t         = np.einsum('ij...,j...->i...', gcov, uu)[0] / self.c
-        return -u_t * self.Fluid.calc_qie(rho, Te, Ti, **kwargs)
+        qie = self.Fluid.calc_qie(rho, Te, Ti, **kwargs)
+        return (-u_t * qie)[0, :, :, iphi]
 
     # Synchrotron cooling rate
     def calc_qsync(self, iphi, **kwargs):
@@ -1058,6 +1086,27 @@ class Phi_Slice():
                             (Tmu_t_cyl_flat[3]).ravel(), 
                             (R_uni, Z_uni), method='cubic')
         return -Tz_t_uni
+    
+    # Plasma timescales
+    # Ion-electron temperature equilibration
+    def calc_teq(self, iphi, **kwargs):
+        rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
+        return self.Fluid.calc_teq(rho, Te, Ti, **kwargs)[0, :, :, iphi]
+    
+    # Ion-ion collisions
+    def calc_tii(self, iphi, **kwargs):
+        rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
+        return self.Fluid.calc_tii(rho, Te, Ti, **kwargs)[0, :, :, iphi]
+    
+    # Electron-electron collisions
+    def calc_tee(self, iphi, **kwargs):
+        rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
+        return self.Fluid.calc_tee(rho, Te, Ti, **kwargs)[0, :, :, iphi]
+    
+    # Inverse Compton
+    def calc_tIC(self, iphi, **kwargs):
+        rho, Te, u_rad = self.H.data['rho'], self.H.data['Te'], self.H.data['u_rad']
+        return self.Rad.calc_tIC(rho, Te, u_rad, **kwargs)[0, :, :, iphi]
 
     # Optical depths
     def calc_tau(self, opacities, iphi, **kwargs):
@@ -1092,6 +1141,11 @@ class Phi_Slice():
         Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
                            hr.CONSTANTS, mechanism='emission', XRB=True)
         return Opac.opacities['free_free_emi']
+
+    # Orbital frequency
+    def calc_OmegaK(self):
+        return self.Analytic.calc_OmegaK(
+            self.MBH, self.H.params['a'], self.r)[0, :, 0, :]
 
 # Compute quantities at constant theta
 class Theta_Slice(Phi_Slice):
@@ -1229,7 +1283,7 @@ class Midplane_Slice():
         rho0, c = self.rho0, self.c    
         B02     = self.Field.B0 * self.Field.B0  
         keys    = ['rho', 'B', 'uu', 'gcov']
-        rho, B, uu, gcov = self.get_vars2D(keys, iphi)
+        rho, B, uu, gcov = self.get_vars2D(keys)
     
         # Calculate sigma
         b     = self.Field.calc_b(B, uu, gcov)
