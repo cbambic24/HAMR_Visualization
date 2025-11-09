@@ -44,7 +44,8 @@ class Accretion():
         rho, uu = self.data['rho'], self.data['uu']
         Mdot = (-rho * uu[1] * self.sigma_cut(**kwargs) * (
             self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+            self.in_or_out(**kwargs) * self.Bernoulli_cut(**kwargs) * (
+            self.gdet * self.dx2 * self.dx3)))).sum(-1).sum(-1)
         return self.upscale64(Mdot, self.Rg * self.Rg)
     
     # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
@@ -66,7 +67,7 @@ class Accretion():
                 self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
         else:
             norm = (self.th > np.pi/2.) * norm
-            return -(norm * self.B[1] * (self.Rg * self.Rg) * (
+            return -(norm * B[1] * (self.Rg * self.Rg) * (
                 self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
         
     # Calculate Phi_mid (Equation 2 in Begelman, Scepi & Dexter 2022)
@@ -141,7 +142,7 @@ class Accretion():
         if 'pgas' in kwargs:
             pgas = kwargs.get('pgas')
         else:
-            gamma_adi = 5./3.
+            gamma_adi = kwargs.get('gamma_adi', 5./3.)
             pgas = (gamma_adi - 1.) * self.data['u_gas']
         stress_energy_HD = Flu.calc_THD(**self.data, **self.grid, pgas=pgas, 
                                         EOS=self.kwargs.get('EOS'), **kwargs)
@@ -200,6 +201,49 @@ class Accretion():
                     (np.abs(np.cos(th)) > HoR))
         else:
             return 1.0
+        
+    def in_or_out(self, **kwargs):
+        inward  = kwargs.get('in',  False)
+        outward = kwargs.get('out', False)
+        if (not inward and not outward):
+            return 1.0
+        elif (inward and not outward):
+            return (self.data['uu'][1] < 0.)
+        elif (outward and not inward):
+            return (self.data['uu'][1] > 0.)
+        elif (inward and outward):
+            raise ValueError("Cannot specify both inward and outward.")
+    
+    def Bernoulli_cut(self, **kwargs):
+        unbound = kwargs.get('unbound', False)
+        bound   = kwargs.get('bound',   False)
+        if (bound or unbound and not (bound * unbound)):
+            if 'Be' in kwargs:
+                Be = kwargs.get('Be')
+            else:
+                Be = self.calc_Bernoulli(**kwargs)
+            return (Be < 1.) if bound else (Be > 1.)
+        else:
+            return 1.0
+
+    def calc_Bernoulli(self, **kwargs):
+        c      = self.c
+        rho0c2 = self.rho0 * c * c 
+        B02    = self.B0 * self.B0
+        if 'pgas' in kwargs:
+            pgas = kwargs.get('pgas')
+        else:
+            gamma_adi = kwargs.get('gamma_adi', 5./3.)
+            pgas = (gamma_adi - 1.) * self.data['u_gas']
+        if 'b2' in kwargs:
+            b2 = kwargs.get('b2')
+        else:
+            Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
+            b2  = Fld.calc_b2(b=self.data['B'], **self.data, 
+                              **self.grid, from_B=True) 
+        w = self.data['rho']*c*c + pgas + self.data['u_gas'] + (b2/B02)*rho0c2
+        u_t = np.einsum('ij...,j...->i...', self.grid['gcov'], self.data['uu'])[0]
+        return -w * u_t / (self.data['rho'] * c * c) - 1.
 
     # If optically_thin = True, return where tau < tau_cut
     def tau_cut(self, **kwargs):
