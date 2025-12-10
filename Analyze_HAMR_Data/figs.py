@@ -158,7 +158,11 @@ class Cartesian():
             contours['quantities'], contours['levels'], 
             contours['linewidths'], contours['linestyles'], 
             contours['colors']):
-            ax.contour(X, Y, quantity, levels=[level], 
+            if not (isinstance(level, np.ndarray) or isinstance(level, list)):
+                plt_level = [level]
+            else:
+                plt_level = level
+            ax.contour(X, Y, quantity, levels=plt_level, 
                 linewidths=linewidth, linestyles=linestyle, colors=color)
         return None
 
