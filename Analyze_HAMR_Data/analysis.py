@@ -407,20 +407,26 @@ class AccretionBK(Accretion):
         super().__init__(grid, data, self.params, CONSTANTS, **kwargs)
 
     def calc_Mtot(self, **kwargs):
-        Mtot = super().calc_Mtot(**kwargs)
-        return self.fold(Mtot)
+        if kwargs.get('unfold', False):
+            return self.unfold(super().calc_Mtot(**kwargs))
+        else:
+            return super().calc_Mtot(**kwargs)
 
     def calc_Mdot(self, **kwargs):
-        Mdot = super().calc_Mdot(**kwargs)
-        return self.fold(Mdot)
+        if kwargs.get('unfold', False):
+            return self.unfold(super().calc_Mdot(**kwargs))
+        else:
+            return super().calc_Mdot(**kwargs)
     
     def calc_PhiBHBK(self, **kwargs):
         PhiBH = super().calc_PhiBH(**kwargs)
         return self.fold(PhiBH)
     
     def calc_Edot(self, **kwargs):
-        Edot = super().calc_Edot(**kwargs)
-        return self.fold(Edot)
+        if kwargs.get('unfold', False):
+            return self.unfold(super().calc_Edot(**kwargs))
+        else:
+            return super().calc_Edot(**kwargs)
 
     def calc_LdotBK(self, **kwargs):
         Ldot = super().calc_Ldot(**kwargs)
@@ -854,7 +860,7 @@ class Fluid():
         hotE_coldI  = hotE  * coldI
         coldE_hotI  = coldE * hotI
         hotE_hotI   = hotE  * hotI
-            
+
         return (
             np.where(coldE_coldI, self.coldE_coldI(Theta_e, Theta_i), 0.) +
             np.where(hotE_coldI,  self.hotE_coldI( Theta_e, Theta_i), 0.) +
@@ -928,8 +934,27 @@ class Fluid():
         else:    
             return qie # erg/cm^3 s
 
-    def heating_Qi_Qe(self, rho, u_gas, **kwargs):
-        print("Implement the electron-to-ion heating ratio from Rowan+2017.")
+    def calc_delta_e(self, rho, u_gas, Te, Ti, B, gcov, **kwargs):
+        # Equation 13 of Chael et al. (2018)
+        c = self.c
+        if 'pgas' not in kwargs:
+            pgas = self.calc_pgas(u_gas, Te, Ti)
+        else:
+            pgas = kwargs.get('pgas')
+        if 'b2' not in kwargs:
+            if 'uu' not in kwargs:
+                raise ValueError("Must supply uu to construct b2.")
+            Fld = Field(self.params, self.CONSTANTS, cgs=self.cgs)
+            b2  = Fld.calc_b2(b=B, B=B, gcov=gcov, 
+                              uu=kwargs.get('uu'), from_B=True)
+        else:
+            b2  = kwargs.get('b2')
+        sigma_w = b2 / (4. * np.pi * (rho * c * c + u_gas + pgas))
+        n_i     = rho / (self.mu_i * self.mp)
+        Beta_i  = n_i * self.kB * Ti / (b2 / (8. * np.pi))
+        Beta_max= 1. / (4. * sigma_w)
+        delta_e = 0.5 * np.exp(-(1. - Beta_i/Beta_max)/(0.8 + sigma_w ** 0.5))
+        return delta_e
 
 class Tools():
     def dot(a, b, gcov, **kwargs):
@@ -1034,9 +1059,9 @@ class Tools():
         
     def div_tnsr(tnsr, gdet, dx1, dx2, dx3, **kwargs):
         return (1. / gdet) * (
-            np.gradient((gdet * tnsr[:, 1]), axis=2) / (2. * dx1) + 
-            np.gradient((gdet * tnsr[:, 2]), axis=3) / (2. * dx2) + 
-            np.gradient((gdet * tnsr[:, 3]), axis=4) / (2. * dx3)
+            np.gradient((gdet * tnsr[:, 1]), dx1, axis=2) + 
+            np.gradient((gdet * tnsr[:, 2]), dx2, axis=3) + 
+            np.gradient((gdet * tnsr[:, 3]), dx3, axis=4)
         )
     
     def dot_cpp(a, b, gcov, **kwargs):
