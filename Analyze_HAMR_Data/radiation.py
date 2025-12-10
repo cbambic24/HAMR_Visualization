@@ -114,9 +114,14 @@ class Radiation():
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
                 'molecular', 'synchrotron']) # 'iron_line' not used
-        Opac = Opacity(opacities, rho, Te, u_rad, 
-                       self.params, self.CONSTANTS, 
-                       mechansim='emission', **kwargs)
+        if not kwargs.get('RIAF', False):
+            Opac = Opacity(opacities, rho, Te, u_rad, 
+                           self.params, self.CONSTANTS, 
+                           mechansim='emission', **kwargs)
+        else:
+            Opac = RIAF_Opacity(opacities, rho, Te, u_rad, 
+                                self.params, self.CONSTANTS, 
+                                mechansim='emission', **kwargs)
         kappa_em = Opac.opacities['emission_total']
         Te_dbl   = np.float64(Te.copy())
         return kappa_em * rho * self.aRAD * (Te_dbl ** 4) * self.c
@@ -146,9 +151,14 @@ class Radiation():
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
                 'molecular', 'synchrotron']) # 'iron_line' not used
-        Opac = Opacity(opacities, rho, Te, u_rad, 
-                       self.params, self.CONSTANTS, 
-                       mechansim='absorption', **kwargs)
+        if not kwargs.get('RIAF', False):
+            Opac = Opacity(opacities, rho, Te, u_rad, 
+                           self.params, self.CONSTANTS, 
+                           mechansim='absorption', **kwargs)
+        else:
+            Opac = RIAF_Opacity(opacities, rho, Te, u_rad, 
+                                self.params, self.CONSTANTS, 
+                                mechansim='absorption', **kwargs)
         kappa_abs = Opac.opacities['absorption_total']
         return kappa_abs * rho * u_rad * self.c
     
@@ -168,9 +178,10 @@ class Radiation():
         [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
         
         XRB  = 1 if kwargs.get('XRB') else 0
+        RIAF = 1 if kwargs.get('RIAF', False) else 0 
         qemi = np.zeros(rho.shape, dtype=dtype)
         Radiationc.calc_q_emi_tot(qemi, rho, Te, Tr, b2, 
-            XRB, nb, nx1, nx2, nx3)
+            XRB, RIAF, nb, nx1, nx2, nx3)
         return qemi
             
     # C++ accelerated 
@@ -188,9 +199,10 @@ class Radiation():
         dtype    = np.float64 # C++ layer expects double
         [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
         XRB  = 1 if kwargs.get('XRB') else 0
+        RIAF = 1 if kwargs.get('RIAF', False) else 0 
         qabs = np.zeros(rho.shape, dtype=dtype)
         Radiationc.calc_q_abs_tot(qabs, rho, Te, Tr, b2, 
-            XRB, nb, nx1, nx2, nx3)
+            XRB, RIAF, nb, nx1, nx2, nx3)
         return qabs
     
     # Necessary for C++ acceleration

@@ -513,29 +513,39 @@ Radiation::Radiation(const std::unordered_map<std::string, double>& params,
 
 // Total absorption and emission rates
 void Radiation::qAbs(double* qabs, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  float *b2, int XRB, int RIAF, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  Opacity opac(this->params, this->CONSTANTS);
+  Opacity* opac = nullptr;
+  if (!RIAF) {
+    opac = new Opacity(this->params, this->CONSTANTS);
+  } else {
+    opac = new RIAF_Opacity(this->params, this->CONSTANTS);
+  }
   int n;
   double kappaAbs;
   #pragma omp parallel for private(n, kappaAbs) firstprivate(opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappaAbs = opac.kappaAbsTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
+    kappaAbs = opac->kappaAbsTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
     qabs[n]  = kappaAbs * rho[n] * aRAD * Tr[n] * Tr[n] * Tr[n] * Tr[n] * c;  
   }
 }
 
 void Radiation::qEmi(double* qemi, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  float *b2, int XRB, int RIAF, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  Opacity opac(this->params, this->CONSTANTS);
+  Opacity* opac = nullptr;
+  if (!RIAF) {
+    opac = new Opacity(this->params, this->CONSTANTS);
+  } else {
+    opac = new RIAF_Opacity(this->params, this->CONSTANTS);
+  }
   int n;
   double kappaEmi;
   #pragma omp parallel for private(n, kappaEmi) firstprivate(opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappaEmi = opac.kappaEmiTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
+    kappaEmi = opac->kappaEmiTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
     qemi[n]  = kappaEmi * rho[n] * aRAD * Te[n] * Te[n] * Te[n] * Te[n] * c;  
   }
 }

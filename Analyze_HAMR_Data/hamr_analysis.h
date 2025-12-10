@@ -150,10 +150,10 @@ class Radiation {
         const std::unordered_map<std::string, double>& CONSTANTS);
     
     void qAbs(double* qabs, float* rho, float* Te, float* Tr, float *b2, 
-        int XRB, int nb, int nx1, int nx2, int nx3);
+        int XRB, int RIAF, int nb, int nx1, int nx2, int nx3);
 
     void qEmi(double* qemi, float* rho, float* Te, float* Tr, float *b2, 
-        int XRB, int nb, int nx1, int nx2, int nx3);
+        int XRB, int RIAF, int nb, int nx1, int nx2, int nx3);
 
     ~Radiation();
 
@@ -163,11 +163,6 @@ class Radiation {
     double async, bsync, csync, dsync, esync;
     int index_3D, gridsize_3D;
     std::unordered_map<std::string, double> params, CONSTANTS; 
-
-    double kappaAbsTotal(float rho, float Te, float Tr, float b2, 
-        double async, double bsync, double csync, double dsync, double esync); 
-    double kappaEmiTotal(float rho, float Te, float Tr, float b2, 
-        double async, double bysnc, double csync, double dsync, double esync);
 
 };
 
