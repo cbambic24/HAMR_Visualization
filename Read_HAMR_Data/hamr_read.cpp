@@ -44,6 +44,10 @@ Read::Read(std::string dir, int axisym, int by_block, int export_raytracing,
   nNuM1 = 18;
   // nTr: tr1, tr2
   nTr = 2; 
+  // nDiss: diss, radSrc
+  // Note that nvar is set by DISSTRK * nDiss and
+  // DISSTRK = 1 or 2
+  nDiss = 1; 
   
   // maximum refinement level
   maxLevel.x1 = int(amr.at("max_levelx1"));
@@ -84,16 +88,20 @@ Read::Read(std::string dir, int axisym, int by_block, int export_raytracing,
   bs2 = int(params.at("bs2"));
   bs3 = int(params.at("bs3"));
 
-  // physics flags
-  RADM1 = int(physics.at("RAD_M1"));
-  RES   = int(physics.at("RESISTIVE"));
-  TWOT  = int(physics.at("TWO_T"));
-  PNUM  = int(physics.at("P_NUM"));
-  DOYE  = int(physics.at("DO_YE"));
-  DONUC = int(physics.at("DO_NUCLEAR"));
-  NUM1  = int(physics.at("NEUTRINOS_M1"));
-  DOTR  = int(physics.at("DOTRACER"));
+  // start/end blocks to select specific blocks
+  blkStrt = int(block_info.at("start_block"));
+  blkEnd  = int(block_info.at("end_block"));
 
+  // physics flags
+  RADM1   = int(physics.at("RAD_M1"));
+  RES     = int(physics.at("RESISTIVE"));
+  TWOT    = int(physics.at("TWO_T"));
+  PNUM    = int(physics.at("P_NUM"));
+  DOYE    = int(physics.at("DO_YE"));
+  DONUC   = int(physics.at("DO_NUCLEAR"));
+  NUM1    = int(physics.at("NEUTRINOS_M1"));
+  DOTR    = int(physics.at("DOTRACER"));
+  DISSTRK = int(physics.at("DUMP_DISS"));
 };
 
 void Read::readGrid(float* x1, float* x2, float* x3, 
@@ -120,6 +128,8 @@ void Read::readGrid(float* x1, float* x2, float* x3,
   FILE* fin;
   int read_data, read_file;
   ReadIn readIn; 
+  
+  std::cout << "Loading grid" << std::endl;
 
   #pragma omp parallel for private(n, iGlob, jGlob, kGlob, ii, \
     iStrt, iEnd, iStp, index_3D, \
@@ -137,10 +147,6 @@ void Read::readGrid(float* x1, float* x2, float* x3,
     kInRange = false;
     
     filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
-
-    if (omp_get_thread_num() == 0) {
-      std::cout << "Loading " + filename + " on rank 0." << std::endl;
-    }
 
     checkFileExists(filename);
     checkGridFileSize(filename);
@@ -275,6 +281,8 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
   FILE* fin;
   int read_data;
   ReadIn readIn; 
+  
+  std::cout << "Loading grid coordinates" << std::endl;
 
   #pragma omp parallel for private(n, iGlob, jGlob, kGlob, \
     iStrt, iEnd, iStp, index_3D, gridsize_3D, iInRange, jInRange, kInRange, \
@@ -288,10 +296,6 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
     kInRange = false;
   
     filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
-
-    if (omp_get_thread_num() == 0) {
-      std::cout << "Loading " + filename + " on rank 0." << std::endl;
-    }
 
     checkFileExists(filename);
     checkGridFileSize(filename);
@@ -393,10 +397,12 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     float* Ye, float* xAlpha, float* xAtm, 
     float* uNu1, float* uNu2, float* uNu3, 
     float* uuNu1, float* uuNu2, float* uuNu3,
-    float* nuNum1, float* nuNum2, float* nuNum3, float* tr1, float* tr2) {
+    float* nuNum1, float* nuNum2, float* nuNum3, 
+    float* tr1, float* tr2, float* diss, float* radSrc) {
   
   nvar = nPrim + RADM1 * nRadM1 + RES * nRes + TWOT * nTwoT + 
-    PNUM * nPnum + DOYE * nYe + DONUC * nNUC + NUM1 * nNuM1 + DOTR * nTr;
+    PNUM * nPnum + DOYE * nYe + DONUC * nNUC + NUM1 * nNuM1 + 
+    DOTR * nTr   + DISSTRK * nDiss;
 
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
@@ -412,6 +418,9 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
   FILE* fin;
   int read_data;
   ReadIn readIn; 
+
+  std::cout << "Loading primitive variables for " << 
+  dir + "/dumps" + std::to_string(fnum) << std::endl;
 
   // count the number of output files that need to be read (fileCount)
   // this corresponds to the number of GPUs used in computation
@@ -458,14 +467,15 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     
     checkFileExists(filename);
     fin = fopen(filename.c_str(), "rb");
-    if (omp_get_thread_num() == 0) {
-      std::cout << "Loading " + filename + " on rank 0." << std::endl;
-    }
-    read_data = 0;
 
+    read_data = 0;
+      
     nStrt = std::accumulate(blocksInFile.begin(), 
-                            blocksInFile.begin() + iFile + 1, 0);
-    nEnd = nStrt + blocksInFile[iFile + 1];
+      blocksInFile.begin() + iFile + 1, 0);
+    nEnd  = nStrt + blocksInFile[iFile + 1];
+
+    nStrt = std::max(nStrt, blkStrt);
+    nEnd  = std::min(nEnd,  blkEnd);
 
     for (n = nStrt; n < nEnd; n++) {
       readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
@@ -569,6 +579,16 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
                     DONUC * nNUC + NUM1 * nNuM1;
                   tr1[index_3D] = tempArray[vStrt];
                   tr2[index_3D] = tempArray[vStrt + 1];
+                }
+                
+                if (DISSTRK) {
+                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
+                    TWOT * nTwoT + PNUM * nPnum + DOYE * nYe + 
+                    DONUC * nNUC + NUM1 * nNuM1 + DOTR * nTr;
+                  diss[index_3D] = tempArray[vStrt];
+                  if (DISSTRK == 2) {
+                    radSrc[index_3D] = tempArray[vStrt + 1];
+                  }
                 }
               }
             } // read_data

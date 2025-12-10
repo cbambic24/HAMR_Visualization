@@ -37,6 +37,8 @@ class Read {
 
     // block indices
     int i_min, i_max, j_min, j_max, k_min, k_max;
+    // block start and end
+    int blkStrt, blkEnd;
     // number of total active blocks and block sizes
     int nb, bs1, bs2, bs3;
     // number of blocks in all files
@@ -79,7 +81,8 @@ class Read {
         float* Ye, float* xAlpha, float* xAtm, 
         float* uNu1, float* uNu2, float* uNu3, 
         float* uuNu1, float* uuNu2, float* uuNu3,
-        float* nuNum1, float* nuNum2, float* nuNum3, float* tr1, float* tr2);
+        float* nuNum1, float* nuNum2, float* nuNum3, 
+        float* tr1, float* tr2, float* diss, float* radSrc);
 
     // default destructor
     ~Read();
@@ -90,9 +93,9 @@ class Read {
     int fileCount; // number of prim files (GPUs for computation)   
     
     // physics flags
-    int RADM1, RES, TWOT, PNUM, DOYE, DONUC, NUM1, DOTR;
+    int RADM1, RES, TWOT, PNUM, DOYE, DONUC, NUM1, DOTR, DISSTRK;
     // number of primitives for each physics flag
-    int nPrim, nRadM1, nRes, nTwoT, nPnum, nYe, nNUC, nNuM1, nTr;
+    int nPrim, nRadM1, nRes, nTwoT, nPnum, nYe, nNUC, nNuM1, nTr, nDiss;
     std::vector<int> blocksInFile;
     
     void checkFileExists(std::string filename);

@@ -131,6 +131,12 @@ class Read():
             self.phi_max   = kwargs.get('phi_max', 2.0*np.pi)
         else:
             self.do_box    = 0
+            
+        self.start_block   = kwargs.get('start_block', None)
+        self.end_block     = kwargs.get('end_block',   None)
+        self.select_block  = 0
+        if ('start_block' in kwargs or 'end_block' in kwargs):
+            self.select_block = 1 if self.by_block else 0
 
         self.BYTES_PER_VAR = 4
 
@@ -270,6 +276,12 @@ class Read():
                                  (np.pi/2.0) * (params['startx2'] + 1.0))
             self.phi_min   = max(self.phi_min, params['startx3'])
 
+        # read individual blocks
+        if (self.start_block is None): self.start_block = 0
+        if (self.end_block is None):   self.end_block   = nb
+        self.start_block = max(self.start_block, 0)
+        self.end_block   = min(self.end_block,   nb)
+
         self.check_raytracing_settings()
 
         amr['max_levelx1'] = np.max(self.block[self.n_ord, amr['LEVEL1']])
@@ -383,9 +395,12 @@ class Read():
             'j_min' : j_min,
             'j_max' : j_max,
             'k_min' : k_min,
-            'k_max' : k_max
+            'k_max' : k_max,
         }
-            
+
+        self.block_info['start_block'] = self.start_block
+        self.block_info['end_block']   = self.end_block
+
         self.Toolsc = hamr_readc.PyTools()
 
         if (direct):
@@ -460,7 +475,17 @@ class Read():
                     'gdet'  : gdet,
                     'dxdxp' : dxdxp
                 }
-
+        if (self.select_block):
+            for key in self.grid.keys():
+                nslots = len(list(self.grid[f'{key}'].shape))
+                tnsr   = True if nslots > 4 else False
+                strt, end = self.start_block, self.end_block
+                if not tnsr:
+                    self.grid[f'{key}'] = self.grid[f'{key}'][strt:end]
+                elif tnsr:
+                    self.grid[f'{key}'] = (
+                        self.grid[f'{key}'][:,:,strt:end]).copy(order='C')
+        
         if (self.cgs_grid):
             self.restore_units_grid()
 
@@ -580,6 +605,15 @@ class Read():
         else: 
             tr1, tr2 = rho, rho
 
+        if (physics['DUMP_DISS']):
+            if (physics['DUMP_DISS'] == 1):
+                diss    = np.zeros([dim, nx, ny, nz], dtype=np.float32)
+                rad_src = rho
+            elif (physics['DUMP_DISS'] == 2):
+                diss, rad_src  = Tools.zeroNd([dim, nx, ny, nz], 2)
+        else:
+            diss, rad_src = rho, rho
+
         self.block_info = {
             'i_min' : i_min,
             'i_max' : i_max,
@@ -589,6 +623,9 @@ class Read():
             'k_max' : k_max
         }
 
+        self.block_info['start_block'] = self.start_block
+        self.block_info['end_block']   = self.end_block
+        
         Readc = hamr_readc.PyRead(self.dir, self.axisym, self.by_block,
             self.export_raytracing, amr, self.amr_info, self.block_info, 
             self.options, params, physics)
@@ -596,7 +633,7 @@ class Read():
         Readc.read_prims(fnum, rho, u_gas, uu, B, 
             E, u_rad, uu_rad, Te, Ti, p_num, Ye, X_alpha, X_atm, 
             u_nu1, u_nu2, u_nu3, uu_nu1, uu_nu2, uu_nu3, 
-            n_nu1, n_nu2, n_nu3, tr1, tr2)
+            n_nu1, n_nu2, n_nu3, tr1, tr2, diss, rad_src)
         
         self.data = {
             'rho'   : rho,
@@ -641,6 +678,22 @@ class Read():
             self.data['tr1'] = tr1
             self.data['tr2'] = tr2
 
+        if (physics['DUMP_DISS']):
+            self.data['dissipation'] = diss
+            if (physics['DUMP_DISS'] == 2):
+                self.data['rad_src'] = rad_src
+
+        if (self.select_block):
+            strt, end = self.start_block, self.end_block
+            for key in self.data.keys():
+                nslots = len(list(self.data[f'{key}'].shape))
+                vec    = True if nslots > 4 else False
+                if not vec:
+                    self.data[f'{key}'] = self.data[f'{key}'][strt:end]
+                elif vec:
+                    self.data[f'{key}'] = (
+                        self.data[f'{key}'][:, strt:end]).copy(order='C')
+
         if (self.cgs_data):
             self.restore_units_prims()
 
@@ -670,6 +723,19 @@ class Read():
 
             self.data['Te'] *= mu_e * mp * c * c / kB 
             self.data['Ti'] *= mu_i * mp * c * c / kB 
+        
+        if (physics['DUMP_DISS']):
+            if (self.MBH == 0.0):
+                raise TypeError("Must define black hole mass in Read class.")
+            G    = CONSTANTS['G']
+            Msun = CONSTANTS['Msun']
+            c    = CONSTANTS['c']
+            Rg = G*self.MBH*Msun/(c*c)
+
+            # Dissipation/radiation production rates in erg/cm^3 s
+            self.data['dissipation'] *= rho0 * c * c * (c / Rg)
+            if (physics['DUMP_DISS'] == 2):
+                self.data['rad_src'] *= rho0 * c * c * (c / Rg)
 
     def restore_units_grid(self):
         # Output grid variables in CGS units

@@ -56,11 +56,11 @@ cdef extern from "../Analyze_HAMR_Data/hamr_analysis.h":
             unordered_map[string, double] CONSTANTS) except +
 
         void qAbs(double* qabs, float* rho, float* Te, 
-            float* Tr, float *b2, int XRB, 
+            float* Tr, float *b2, int XRB, int RIAF,
             int nb, int nx1, int nx2, int nx3)
 
         void qEmi(double* qemi, float* rho, float* Te, 
-            float* Tr, float *b2, int XRB, 
+            float* Tr, float *b2, int XRB, int RIAF,
             int nb, int nx1, int nx2, int nx3)
 
 cdef extern from "hamr_read.h":
@@ -93,7 +93,7 @@ cdef extern from "hamr_read.h":
             float* uNu1, float* uNu2, float* uNu3, 
             float* uuNu1, float* uuNu2, float* uuNu3,
             float* nuNum1, float* nuNum2, float* nuNum3, 
-            float* tr1, float* tr2)
+            float* tr1, float* tr2, float* diss, float* radSrc)
     
     cdef cppclass Tools:
         Tools() except + 
@@ -256,10 +256,10 @@ cdef class PyRadiation:
         np.ndarray[np.float32_t, ndim=4, mode="c"] Te,
         np.ndarray[np.float32_t, ndim=4, mode="c"] Tr,
         np.ndarray[np.float32_t, ndim=4, mode="c"] b2,
-        int XRB, int nb, int nx1, int nx2, int nx3):
+        int XRB, int RIAF, int nb, int nx1, int nx2, int nx3):
         return self.c_radiation.qAbs(&qabs[0,0,0,0], 
             &rho[0,0,0,0], &Te[0,0,0,0], &Tr[0,0,0,0], &b2[0,0,0,0], 
-            XRB, nb, nx1, nx2, nx3)
+            XRB, RIAF, nb, nx1, nx2, nx3)
     
     def calc_q_emi_tot(self,
         np.ndarray[np.float64_t, ndim=4, mode="c"] qemi,
@@ -267,10 +267,10 @@ cdef class PyRadiation:
         np.ndarray[np.float32_t, ndim=4, mode="c"] Te,
         np.ndarray[np.float32_t, ndim=4, mode="c"] Tr,
         np.ndarray[np.float32_t, ndim=4, mode="c"] b2,
-        int XRB, int nb, int nx1, int nx2, int nx3):
+        int XRB, int RIAF, int nb, int nx1, int nx2, int nx3):
         return self.c_radiation.qEmi(&qemi[0,0,0,0], 
             &rho[0,0,0,0], &Te[0,0,0,0], &Tr[0,0,0,0], &b2[0,0,0,0], 
-            XRB, nb, nx1, nx2, nx3)
+            XRB, RIAF, nb, nx1, nx2, nx3)
      
 # wrapper class for C++
 cdef class PyRead:
@@ -349,7 +349,9 @@ cdef class PyRead:
         np.ndarray[np.float32_t, ndim=4, mode="c"] nuNum2,
         np.ndarray[np.float32_t, ndim=4, mode="c"] nuNum3,
         np.ndarray[np.float32_t, ndim=4, mode="c"] tr1,
-        np.ndarray[np.float32_t, ndim=4, mode="c"] tr2):
+        np.ndarray[np.float32_t, ndim=4, mode="c"] tr2,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] diss,
+        np.ndarray[np.float32_t, ndim=4, mode="c"] radSrc):
         return self.c_read.readPrims(fnum, 
             &rho[0,0,0,0], &uGas[0,0,0,0], &uu[0,0,0,0,0],
             &B[0,0,0,0,0], &E[0,0,0,0,0], &uRad[0,0,0,0],
@@ -359,7 +361,7 @@ cdef class PyRead:
             &uNu1[0,0,0,0], &uNu2[0,0,0,0], &uNu3[0,0,0,0],
             &uuNu1[0,0,0,0,0], &uuNu2[0,0,0,0,0], &uuNu3[0,0,0,0,0],
             &nuNum1[0,0,0,0], &nuNum2[0,0,0,0], &nuNum3[0,0,0,0],
-            &tr1[0,0,0,0], &tr2[0,0,0,0])
+            &tr1[0,0,0,0], &tr2[0,0,0,0], &diss[0,0,0,0], &radSrc[0,0,0,0])
 
 # wrapper class for C++
 cdef class PyTools:
