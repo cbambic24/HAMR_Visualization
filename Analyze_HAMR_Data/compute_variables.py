@@ -165,7 +165,7 @@ class Phi_Slice():
         self.H = hr.Read(directory, **kwargs)
         self.H.read_grid(fnum, direct=True)
         self.H.read_prims(fnum, skip_read_params=True)
-
+        print(f"File: {fnum}, Tracers = {hr.physics['DOTRACER']}, Dissipation = {hr.physics['DUMP_DISS']}", flush=True)
         self.cgs  = kwargs.get('cgs_data', True)
         self.MBH  = kwargs.get('MBH', 10.0)
         self.Msun = hr.CONSTANTS['Msun']
@@ -378,7 +378,19 @@ class Phi_Slice():
         u, gcov = self.get_vars2D(['uu', 'gcov'], iphi)
         u_t = np.einsum('ij...,j...->i...', gcov, u)[0]
         return u_t
+
+    def calc_ion_density(self, iphi):
+        if 'tr1' not in self.H.data.keys():
+            raise ValueError("tr1 is required to calculate ion density")
+        rho, tr1 = self.get_vars2D(['rho', 'tr1'], iphi)
+        return tr1 * rho
     
+    def calc_lepton_density(self, iphi):
+        if 'tr2' not in self.H.data.keys():
+            raise ValueError("tr2 is required to calculate lepton density")
+        rho, tr2 = self.get_vars2D(['rho', 'tr2'], iphi)
+        return tr2 * rho
+
     # Pressures
     def calc_pgas(self, iphi):
         u_gas, Te, Ti = self.get_vars2D(['u_gas', 'Te', 'Ti'], iphi)
@@ -943,10 +955,37 @@ class Phi_Slice():
         sync_args = {
             'opacities' : opacities, 
             'b2'        : b2, 
-            'XRB'       : True
+            'XRB'       : True,
+            'RIAF'      : kwargs.get('RIAF', False)
         }
         return -u_t * self.Rad.calc_q_emi(rho, Te, u_rad, **sync_args)
-        
+
+    # Dissipation rate in the coordinate frame
+    def calc_qdiss(self, iphi):
+        qdiss, uu, gcov = self.get_vars2D(['dissipation', 'uu', 'gcov'], iphi)
+        u_t             = np.einsum('ij...,j...->i...', gcov, uu)[0] / self.c
+        return -u_t * qdiss
+
+    # Radiation source term in the coordinate frame (G_t)
+    # Note that the radiation is sourced by -G_t
+    def calc_qrad(self, iphi):
+        qrad = self.get_vars2D(['rad_src'], iphi)
+        return -qrad
+    
+    # Ion heating fraction
+    def calc_delta_i(self, iphi):
+        rho, Te, Ti, u_gas = self.get_vars2D(['rho', 'Te', 'Ti', 'u_gas'], iphi)
+        B, uu, gcov        = self.get_vars2D(['B', 'uu', 'gcov'], iphi)
+        delta_e            = self.Fluid.calc_delta_e(rho, u_gas, Te, Ti, B, gcov, uu=uu)
+        return 1. - delta_e
+
+    # 1 - (n_e / n_i)
+    def calc_ion_fraction(self, iphi):
+        if 'tr1' not in self.H.data.keys() or 'tr2' not in self.H.data.keys():
+            raise ValueError("tr1 and tr2 is required to calculate ion fraction")
+        tr1, tr2 = self.get_vars2D(['tr1', 'tr2'], iphi)
+        return (tr1 > tr2) * (tr1 > 0.) * (1. - (tr2 / tr1))
+
     # Volume
     def calc_Vol(self, iphi):
         gdet = self.get_vars2D(['gdet'], iphi)
@@ -1130,8 +1169,12 @@ class Phi_Slice():
         else:
             b2 = kwargs.get('b2')
         opacities = dict.fromkeys(['synchrotron'])
-        Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
-                           hr.CONSTANTS, mechanism='emission', b2=b2, XRB=True)
+        if not kwargs.get('RIAF', False):
+            Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
+                               hr.CONSTANTS, mechanism='emission', b2=b2, XRB=True)
+        else:
+            Opac = rad.RIAF_Opacity(opacities, rho, Te, u_rad, self.H.params, 
+                                    hr.CONSTANTS, mechanism='emission', b2=b2, XRB=True)
         return Opac.opacities['synchrotron_emi']
     
     def calc_kappa_ff(self, iphi, **kwargs):
