@@ -32,6 +32,7 @@ def main(**kwargs):
     lowres1   = kwargs.get('lowres1')
     lowres2   = kwargs.get('lowres2')
     lowres3   = kwargs.get('lowres3')
+    x_max     = kwargs.get('x_max')
     reduced   = kwargs.get('reduced')
     shared    = kwargs.get('shared')
     title     = kwargs.get('title')
@@ -81,7 +82,7 @@ def main(**kwargs):
         'lowres1'  : lowres1,
         'lowres2'  : lowres2,
         'lowres3'  : lowres3,
-        'r_max'    : 80.,
+        'r_max'    : np.sqrt(2.) * x_max,
         'k_min'    : 0,
         'k_max'    : 1
     }
@@ -89,46 +90,59 @@ def main(**kwargs):
     read_args_l = read_args_r.copy()
 
     plt_args = {
-        'cmap'     : cmr.iceburn,
+        'cmap'     : cmr.prinsenvlag_r,
         'FS'       : FS,
         'lim'      : [-1.e9, 1.e9],
         'log'      : True,
         'sym'      : True,
-        'linthresh': 1.e5,
+        'linthresh': 1.e7,
         'fix_pole' : 'constant'
     }
 
     plt_args2 = plt_args.copy()
-    plt_args2['lim']        = [1.e-1, 1.e1]
+    plt_args2['lim']        = [0.2, 5]
     plt_args2['sym']        = False
 
     if (vec or draw_contour): colors = ['black', 'forestgreen', 'crimson']
     if vec:
         vec_args = {
-           'dens'               : 10.0,
-           'linewidth'          : 0.6,
+           'dens'               : 2.0,
+           'linewidth'          : 0.2,
            'color'              : colors[0],
-           'broken_streamlines' : True,
-           'arrowsize'          : 1.0
+           'broken_streamlines' : False,
+           'arrowsize'          : 0.0
         }
+        vec_args2 = vec_args.copy()
+        vec_args2['broken_streamlines'] = True
+        vec_args2['dens']               = 4.0
+        vec_args2['linewidth']          = 0.5
+        #vec_args = {
+        #   'dens'               : 10.0,
+        #   'linewidth'          : 0.6,
+        #   'color'              : colors[0],
+        #   'broken_streamlines' : True,
+        #   'arrowsize'          : 1.0
+        #}
 
     for file_num in file_list_local:
         PS_r = cv.Phi_Slice(data_dir, file_num, **read_args_r)
         X, Z = PS_r.calc_XZ(0)
-        ipi  = int(PS_r.nphi / 2 - 1)
+        ipi  = int(PS_r.nphi / 2)
         read_args_l['k_min'], read_args_l['k_max'] = ipi, ipi + 1
         PS_l = cv.Phi_Slice(data_dir, file_num, **read_args_l)
 
         BR, Bphi, Bz                = PS_r.calc_B_cyl_vec(0, lr=True)
         BR['l'], Bphi['l'], Bz['l'] = PS_l.calc_B_cyl_vec(0, lr=False)
         bpol_btor = {
-            'r' : np.abs(PS_r.calc_bpol_btor(0)),
-            'l' : np.abs(PS_l.calc_bpol_btor(0))
+            'r' : np.abs(PS_r.calc_bpol_btor(0)) * ((PS_r.th[0, 0, :, 0] > np.pi/6.) * (PS_r.th[0, 0, :, 0] < np.pi * (5./6.))),
+            'l' : np.abs(PS_l.calc_bpol_btor(0)) * ((PS_l.th[0, 0, :, 0] > np.pi/6.) * (PS_l.th[0, 0, :, 0] < np.pi * (5./6.)))
         }
 
         if (draw_contour): 
             plt_args = cv.get_contours(plt_args, PS_r, PS_l, 
                 colors, sigma_contour, photospheres)
+            plt_args2['contours_left']  = plt_args['contours_left']
+            plt_args2['contours_right'] = plt_args['contours_right']
             
         Cart = figs.Cartesian(PS_r.H.params)
         fig  = plt.figure(figsize = figsize)
@@ -139,26 +153,35 @@ def main(**kwargs):
                 axes.append(fig.add_subplot(gs[i, j]))
 
         Cart.plot_xz(fig, axes[0], X, Z, BR, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
-                     extend=cv.check_extend(BR['r'], plt_args['lim']), **plt_args)
+                     extend='both', **plt_args)
+                     #extend=cv.check_extend(BR['r'], plt_args['lim']), **plt_args)
         Cart.plot_xz(fig, axes[1], X, Z, Bphi, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
-                     extend=cv.check_extend(Bphi['r'], plt_args['lim']), **plt_args)
+                     extend='both', **plt_args)
+                     #extend=cv.check_extend(Bphi['r'], plt_args['lim']), **plt_args)
         Cart.plot_xz(fig, axes[2], X, Z, Bz, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
-                     extend=cv.check_extend(Bz['r'], plt_args['lim']), **plt_args)
-        Cart.plot_xz(fig, axes[3], X, Z, bpol_btor, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
-                     extend=cv.check_extend(bpol_btor['r'], plt_args['lim']), **plt_args2)
+                     extend='both', **plt_args)
+                     #extend=cv.check_extend(Bz['r'], plt_args['lim']), **plt_args)
+        im, cax = Cart.plot_xz(fig, axes[3], X, Z, bpol_btor, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
+                     extend='both', **plt_args2)
+                     #extend=cv.check_extend(bpol_btor['r'], plt_args2['lim']), **plt_args2)
+        
+        cax.yaxis.set_ticks([0.2, 1, 5])
+        cax.yaxis.set_ticklabels([r'$0.2$', r'$1$', r'$5$'])
         
         if vec: 
-            X_uni, Z_uni = PS_r.calc_XZ_uni(22., 100)
+            y_max = (4. / 5.) * x_max
+            X_uni, Z_uni = PS_r.calc_XZ_uni(y_max, 100)
             mask = {
-                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > 22.,
-                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > 22.
+                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > y_max,
+                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > y_max
             }
             vec_args['mask'] = mask
         if fieldlines:
             Bx, Bz           = PS_r.calc_B_cyl(0, lr=True)
             Bx['l'], Bz['l'] = PS_l.calc_B_cyl(0, lr=False)
             Bx['l']         *= -1.
-            Cart.plot_xz_vec(fig, axes[1], X, Z, X_uni, Z_uni, Bx, Bz, **vec_args)
+            Cart.plot_xz_vec(fig, axes[3], X, Z, X_uni, Z_uni, Bx, Bz, **vec_args)
+            Cart.plot_xz_vec(fig, axes[2], X, Z, X_uni, Z_uni, Bx, Bz, **vec_args2)
         if streamlines:
             if fieldlines: vec_args['color'] = colors[1]
             uux, uuz           = PS_r.calc_uu_cyl(0, lr=True)
@@ -176,17 +199,17 @@ def main(**kwargs):
         labels = [r'$B^R \: (\rm{G})$', r'$B^{\varphi} \: (\rm{G})$',
                   r'$B^z \: (\rm{G})$', r'$b_{\rm pol} / b_{\rm tor}$']
         for i, (ax, label) in enumerate(zip(axes, labels)):
-            ax.set_xlim([-20, 20])
-            ax.set_ylim([-16, 16])
-            ax.set_aspect('equal')
+            y_max = (4. / 5.) * x_max
+            ax.set_xlim([-x_max, x_max])
+            ax.set_ylim([-y_max, y_max])
+            ax.set_aspect('equal')   
 
             ax.set_xlabel(r'$x \: (R_g)$', fontsize=FS)
             ax.set_ylabel(r'$z \: (R_g)$', fontsize=FS)
     
             opt = dict(ha='left', va='center', color='black',
-                bbox=dict(facecolor='none', edgecolor='none'))
+                bbox=dict(facecolor='none', edgecolor='none')) 
 
-            opt['color'] = 'white' if i == 3 else 'black'
             ax.text(0.05, 0.90, label, fontsize=FS+12, transform=ax.transAxes, **opt)
             ax.add_patch(patches.Circle((0,0), PS_r.H.params['Rin'], color='k', zorder=3))
             
@@ -216,6 +239,9 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
+    parser.add_argument('--x_max', type=float, default=40.,
+                        required=False,
+                        help = """maximum x-extent in Rg (default: 40)""")
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities

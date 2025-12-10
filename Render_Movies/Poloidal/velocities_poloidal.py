@@ -32,6 +32,7 @@ def main(**kwargs):
     lowres1   = kwargs.get('lowres1')
     lowres2   = kwargs.get('lowres2')
     lowres3   = kwargs.get('lowres3')
+    x_max     = kwargs.get('x_max')
     reduced   = kwargs.get('reduced')
     shared    = kwargs.get('shared')
     title     = kwargs.get('title')
@@ -81,7 +82,7 @@ def main(**kwargs):
         'lowres1'  : lowres1,
         'lowres2'  : lowres2,
         'lowres3'  : lowres3,
-        'r_max'    : 80.,
+        'r_max'    : np.sqrt(2.) * x_max,
         'k_min'    : 0,
         'k_max'    : 1
     }
@@ -105,12 +106,12 @@ def main(**kwargs):
     plt_args3 = plt_args.copy()
     plt_args3['log']        = False
 
-    if (vec or draw_contour): colors = ['white', 'limegreen', 'magenta']
+    if (vec or draw_contour): colors = ['black', 'forestgreen', 'crimson']
     if vec:
         vec_args = {
            'dens'               : 10.0,
            'linewidth'          : 0.6,
-           'color'              : colors[0],
+           'color'              : 'white',
            'broken_streamlines' : True,
            'arrowsize'          : 1.0
         }
@@ -118,7 +119,7 @@ def main(**kwargs):
     for file_num in file_list_local:
         PS_r = cv.Phi_Slice(data_dir, file_num, **read_args_r)
         X, Z = PS_r.calc_XZ(0)
-        ipi  = int(PS_r.nphi / 2 - 1)
+        ipi  = int(PS_r.nphi / 2)
         read_args_l['k_min'], read_args_l['k_max'] = ipi, ipi + 1
         PS_l = cv.Phi_Slice(data_dir, file_num, **read_args_l)
 
@@ -144,17 +145,18 @@ def main(**kwargs):
         Cart.plot_xz(fig, axes[0], X, Z, vR, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
                      extend=cv.check_extend(vR['r'], plt_args['lim']), **plt_args)
         Cart.plot_xz(fig, axes[1], X, Z, vphi, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
-                     extend=cv.check_extend(vphi['r'], plt_args['lim']), **plt_args)
+                     extend=cv.check_extend(vphi['r'], plt_args['lim']), **plt_args3)
         Cart.plot_xz(fig, axes[2], X, Z, vz, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
                      extend=cv.check_extend(vz['r'], plt_args['lim']), **plt_args)
         Cart.plot_xz(fig, axes[3], X, Z, vpol_vtor, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
                      extend=cv.check_extend(vpol_vtor['r'], plt_args['lim']), **plt_args2)
         
         if vec: 
-            X_uni, Z_uni = PS_r.calc_XZ_uni(22., 100)
+            y_max = (4. / 5.) * x_max
+            X_uni, Z_uni = PS_r.calc_XZ_uni(y_max, 100)
             mask = {
-                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > 22.,
-                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > 22.
+                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > y_max,
+                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > y_max
             }
             vec_args['mask'] = mask
         if fieldlines:
@@ -179,9 +181,10 @@ def main(**kwargs):
         labels = [r'$v^R / c$', r'$v^{\varphi} / c$',
                   r'$v^z / c$', r'$v_{\rm pol} / v_{\rm tor}$']
         for i, (ax, label) in enumerate(zip(axes, labels)):
-            ax.set_xlim([-20, 20])
-            ax.set_ylim([-16, 16])
-            ax.set_aspect('equal')
+            y_max = (4. / 5.) * x_max
+            ax.set_xlim([-x_max, x_max])
+            ax.set_ylim([-y_max, y_max])
+            ax.set_aspect('equal')  
 
             ax.set_xlabel(r'$x \: (R_g)$', fontsize=FS)
             ax.set_ylabel(r'$z \: (R_g)$', fontsize=FS)
@@ -189,7 +192,7 @@ def main(**kwargs):
             opt = dict(ha='left', va='center', color='black',
                 bbox=dict(facecolor='none', edgecolor='none'))
 
-            opt['color'] = 'white' if i == 3 else 'black'
+            opt['color'] = 'white' if i == 3 or i == 1 else 'black'
             ax.text(0.05, 0.90, label, fontsize=FS+12, transform=ax.transAxes, **opt)
             ax.add_patch(patches.Circle((0,0), PS_r.H.params['Rin'], color='k', zorder=3))
 
@@ -219,6 +222,9 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
+    parser.add_argument('--x_max', type=float, default=40.,
+                        required=False,
+                        help = """maximum x-extent in Rg (default: 40)""")
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities

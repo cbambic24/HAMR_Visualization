@@ -20,7 +20,7 @@ style.use('dark_background')
 matplotlib.rcParams['figure.dpi'] = 300
 import figs
 
-figsize = [32.0, 18.0]
+figsize = [40.0, 30.0]
 FS      = 60
 plt.rcParams['xtick.labelsize'] = FS
 plt.rcParams['ytick.labelsize'] = FS
@@ -32,6 +32,7 @@ def main(**kwargs):
     lowres1   = kwargs.get('lowres1')
     lowres2   = kwargs.get('lowres2')
     lowres3   = kwargs.get('lowres3')
+    x_max     = kwargs.get('x_max')
     reduced   = kwargs.get('reduced')
     shared    = kwargs.get('shared')
     title     = kwargs.get('title')
@@ -81,7 +82,7 @@ def main(**kwargs):
         'lowres1'  : lowres1,
         'lowres2'  : lowres2,
         'lowres3'  : lowres3,
-        'r_max'    : 80.,
+        'r_max'    : np.sqrt(2.) * x_max,
         'k_min'    : 0,
         'k_max'    : 1
     }
@@ -89,89 +90,126 @@ def main(**kwargs):
     read_args_l = read_args_r.copy()
 
     plt_args = {
-        'cmap'     : cmr.iceburn,
+        'cmap'     : cmr.prinsenvlag_r,
         'FS'       : FS,
-        'lim'      : [1.e4, 1.e12],
+        'lim'      : [1.e-2, 1.e2],
         'log'      : True,
         'fix_pole' : 'constant'
     }
+    
+    plt_args2 = plt_args.copy()
+    plt_args2['cmap'] = cmr.torch
+    plt_args2['lim']  = [1., 1.e3]
 
-    if (vec or draw_contour): colors = ['white', 'limegreen', 'magenta']
+    if (vec or draw_contour): colors = ['black', 'forestgreen', 'crimson']
     if vec:
         vec_args = {
-           'dens'               : 10.0,
-           'linewidth'          : 0.6,
+           'dens'               : 4.0,
+           'linewidth'          : 2.0,
            'color'              : colors[0],
            'broken_streamlines' : True,
-           'arrowsize'          : 1.0
+           'arrowsize'          : 0.0
         }
+
+    opt = dict(ha='left', va='center', color='white',
+           bbox=dict(facecolor='none', edgecolor='none'))
 
     for file_num in file_list_local:
         PS_r = cv.Phi_Slice(data_dir, file_num, **read_args_r)
         X, Z = PS_r.calc_XZ(0)
-        ipi  = int(PS_r.nphi / 2 - 1)
+        ipi  = int(PS_r.nphi / 2)
         read_args_l['k_min'], read_args_l['k_max'] = ipi, ipi + 1
         PS_l = cv.Phi_Slice(data_dir, file_num, **read_args_l)
-        Ti = {
-            'r' : PS_r.calc_Ti(0),
-            'l' : PS_l.calc_Ti(0)
+        Omega  = PS_r.calc_OmegaK()
+
+        Omegateq = {
+            'r' : Omega * PS_r.calc_teq(0, cooling=True, cpp=True),
+            'l' : Omega * PS_l.calc_teq(0, cooling=True, cpp=True)
+        }
+        Omegatii = {
+            'r' : Omega * PS_r.calc_tii(0, cooling=True, cpp=True),
+            'l' : Omega * PS_l.calc_tii(0, cooling=True, cpp=True)
+        }
+        teq_tIC = {
+            'r' : np.nan_to_num(PS_r.calc_teq(0, cooling=True, cpp=True) / PS_r.calc_tIC(0, cooling=True)),
+            'l' : np.nan_to_num(PS_l.calc_teq(0, cooling=True, cpp=True) / PS_l.calc_tIC(0, cooling=True))
+        }
+        Ti_Te = {
+            'r' : PS_r.calc_Ti(0) / PS_r.calc_Te(0),
+            'l' : PS_l.calc_Ti(0) / PS_l.calc_Te(0)
         }
 
         if (draw_contour): 
             plt_args = cv.get_contours(plt_args, PS_r, PS_l, 
                 colors, sigma_contour, photospheres)
-            
+            plt_args2['contours_left']  = plt_args['contours_left']
+            plt_args2['contours_right'] = plt_args['contours_right']
+
         Cart = figs.Cartesian(PS_r.H.params)
         fig  = plt.figure(figsize = figsize)
-        gs   = gridspec.GridSpec(1, 1, figure = fig)
-        ax   = fig.add_subplot(gs[0, 0])
+        gs   = gridspec.GridSpec(2, 2, figure = fig)
+        axes = []
+        for i in range(2):
+            for j in range(2):
+                axes.append(fig.add_subplot(gs[i, j]))
 
-        Cart.plot_xz(fig, ax, X, Z, Ti, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
-                     extend=cv.check_extend(Ti['r'], plt_args['lim']), **plt_args)
-        
+        Cart.plot_xz(fig, axes[0], X, Z, Omegatii, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
+                     extend=cv.check_extend(Omegatii['r'], plt_args['lim']), **plt_args)
+        Cart.plot_xz(fig, axes[1], X, Z, Omegateq, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
+                     extend=cv.check_extend(Omegateq['r'], plt_args['lim']), **plt_args)
+        Cart.plot_xz(fig, axes[2], X, Z, teq_tIC, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
+                     extend=cv.check_extend(teq_tIC['r'], plt_args['lim']), **plt_args)
+        Cart.plot_xz(fig, axes[3], X, Z, Ti_Te, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
+                     extend=cv.check_extend(Ti_Te['r'], plt_args['lim']), **plt_args2)
+
         if vec: 
-            X_uni, Z_uni = PS_r.calc_XZ_uni(22., 100)
+            y_max = (4. / 5.) * x_max
+            X_uni, Z_uni = PS_r.calc_XZ_uni(y_max, 100)
             mask = {
-                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > 22.,
-                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > 22.
+                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > y_max,
+                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > y_max
             }
             vec_args['mask'] = mask
         if fieldlines:
             Bx, Bz           = PS_r.calc_B_cyl(0, lr=True)
             Bx['l'], Bz['l'] = PS_l.calc_B_cyl(0, lr=False)
             Bx['l']         *= -1.
-            Cart.plot_xz_vec(fig, ax, X, Z, X_uni, Z_uni, Bx, Bz, **vec_args)
+            Cart.plot_xz_vec(fig, axes[2], X, Z, X_uni, Z_uni, Bx, Bz, **vec_args)
         if streamlines:
             if fieldlines: vec_args['color'] = colors[1]
             uux, uuz           = PS_r.calc_uu_cyl(0, lr=True)
             uux['l'], uuz['l'] = PS_l.calc_uu_cyl(0, lr=False)
             uux['l']          *= -1.
-            Cart.plot_xz_vec(fig, ax, X, Z, X_uni, Z_uni, uux, uuz, **vec_args)
+            Cart.plot_xz_vec(fig, axes[2], X, Z, X_uni, Z_uni, uux, uuz, **vec_args)
         if rad_streamlines:
             if fieldlines or streamlines:  vec_args['color'] = colors[1]
             if fieldlines and streamlines: vec_args['color'] = colors[2]
             uuRx, uuRz           = PS_r.calc_uu_rad_cyl(0, lr=True)
             uuRx['l'], uuRz['l'] = PS_l.calc_uu_rad_cyl(0, lr=False)
             uuRx['l']           *= -1.
-            Cart.plot_xz_vec(fig, ax, X, Z, X_uni, Z_uni, uuRx, uuRz, **vec_args)
+            Cart.plot_xz_vec(fig, axes[2], X, Z, X_uni, Z_uni, uuRx, uuRz, **vec_args)
 
-        ax.set_xlim([-20, 20])
-        ax.set_ylim([-11, 11])
-        ax.set_aspect('equal')
-
-        ax.set_xlabel(r'$x \: (R_g)$', fontsize=FS)
-        ax.set_ylabel(r'$z \: (R_g)$', fontsize=FS)
+        labels = [r'$\Omega t_{ii}$', r'$\Omega t_{\rm eq}$', 
+                  r'$t_{\rm eq}/ t_{\rm IC}$', r'$T_i / T_e$']
         
-        opt = dict(ha='left', va='center', color='white',
-            bbox=dict(facecolor='none', edgecolor='none'))
+        for i, (ax, label) in enumerate(zip(axes, labels)):
+            y_max = (4. / 5.) * x_max
+            ax.set_xlim([-x_max, x_max])
+            ax.set_ylim([-y_max, y_max])
+            ax.set_aspect('equal') 
 
-        ax.text(0.05, 0.90, r'$T_i \: (\rm{K})$', 
-                fontsize=FS+12, transform=ax.transAxes, **opt)
-        opt['bbox'] = dict(facecolor='black', alpha=0.4, edgecolor='none')
-        ax.text(0.05, 0.10, r'$t = $' + cv.get_nice_time(PS_r.H.params['t']) + r' $R_g/c$', 
-                fontsize=FS+6, transform=ax.transAxes, **opt)    
-        ax.add_patch(patches.Circle((0,0), PS_r.H.params['Rin'], color='k', zorder=3))
+            ax.set_xlabel(r'$x \: (R_g)$', fontsize=FS)
+            ax.set_ylabel(r'$z \: (R_g)$', fontsize=FS)
 
+            opt['bbox']  = dict(facecolor='black', alpha=0.6, edgecolor='none') 
+            ax.text(0.05, 0.90, label, fontsize=FS+12, transform=ax.transAxes, **opt)
+            ax.add_patch(patches.Circle((0,0), PS_r.H.params['Rin'], color='k', zorder=3))
+            
+        opt['color'] = 'white'
+        opt['bbox']  = dict(facecolor='black', alpha=0.6, edgecolor='none') 
+        axes[0].text(0.05, 0.10, r'$t = $' + cv.get_nice_time(PS_r.H.params['t']) + r' $R_g/c$', 
+            fontsize=FS+6, transform=axes[0].transAxes, **opt)    
+        
         print("Saving figure ...")
         print("Saving file %d on rank %d" %(file_num, rank), flush=True)
         fig.tight_layout()
@@ -179,7 +217,7 @@ def main(**kwargs):
         plt.close()
 
 if __name__ == '__main__':
-    parser  = argparse.ArgumentParser(description="Poloidal slice of ion temperature.")
+    parser  = argparse.ArgumentParser(description="Poloidal slice of cooling rates.")
     parser.add_argument('sim', type=str, help = """simulation name""")
     parser.add_argument('start_file', type=int, help = """dump number
                         of start file in movie extraction""")
@@ -194,16 +232,17 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
+    parser.add_argument('--x_max', type=float, default=40.,
+                        required=False,
+                        help = """maximum x-extent in Rg (default: 40)""")
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
-                        should be included in movie extraction 
-                        (default: True).""")
+                        should be included in movie extraction.""")
     parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if two-temperature 
-                        physics should be included in movie extraction 
-                        (default: True).""")    
+                        physics should be included in movie extraction.""")
     parser.add_argument('--fieldlines', action='store_true', required=False,
                         default=False,
                         help="""boolean to determine if magnetic-field lines 
@@ -243,7 +282,7 @@ if __name__ == '__main__':
                         help="""title of simulation used for Movie directory
                         if different from the simulation title in proj-shared""")
     parser.add_argument('--movie_title', type=str, required=False, 
-                        default='Ion_Temperature', 
-                        help="""title of movie (default: Ion_Temperature)""")
+                        default='Cooling_Rates', 
+                        help="""title of movie (default: Cooling_Rates)""")
     args = parser.parse_args()
     main(**vars(args))

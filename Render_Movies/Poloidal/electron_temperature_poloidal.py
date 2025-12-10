@@ -32,6 +32,7 @@ def main(**kwargs):
     lowres1   = kwargs.get('lowres1')
     lowres2   = kwargs.get('lowres2')
     lowres3   = kwargs.get('lowres3')
+    x_max     = kwargs.get('x_max')
     reduced   = kwargs.get('reduced')
     shared    = kwargs.get('shared')
     title     = kwargs.get('title')
@@ -81,7 +82,7 @@ def main(**kwargs):
         'lowres1'  : lowres1,
         'lowres2'  : lowres2,
         'lowres3'  : lowres3,
-        'r_max'    : 80.,
+        'r_max'    : np.sqrt(2.) * x_max,
         'k_min'    : 0,
         'k_max'    : 1
     }
@@ -96,7 +97,7 @@ def main(**kwargs):
         'fix_pole' : 'constant'
     }
 
-    if (vec or draw_contour): colors = ['white', 'limegreen', 'magenta']
+    if (vec or draw_contour): colors = ['white', 'magenta', 'limegreen']
     if vec:
         vec_args = {
            'dens'               : 10.0,
@@ -109,7 +110,7 @@ def main(**kwargs):
     for file_num in file_list_local:
         PS_r = cv.Phi_Slice(data_dir, file_num, **read_args_r)
         X, Z = PS_r.calc_XZ(0)
-        ipi  = int(PS_r.nphi / 2 - 1)
+        ipi  = int(PS_r.nphi / 2)
         read_args_l['k_min'], read_args_l['k_max'] = ipi, ipi + 1
         PS_l = cv.Phi_Slice(data_dir, file_num, **read_args_l)
         Te = {
@@ -129,11 +130,12 @@ def main(**kwargs):
         Cart.plot_xz(fig, ax, X, Z, Te, r=PS_r.r, theta=PS_r.th, phi=PS_r.phi, 
                      extend=cv.check_extend(Te['r'], plt_args['lim']), **plt_args)
         
-        if vec: 
-            X_uni, Z_uni = PS_r.calc_XZ_uni(22., 100)
+        if vec:
+            y_max = (11. / 20.) * x_max
+            X_uni, Z_uni = PS_r.calc_XZ_uni(y_max, 100)
             mask = {
-                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > 22.,
-                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > 22.
+                'r' : np.sqrt(X['r'] * X['r'] + Z['r'] * Z['r']) > y_max,
+                'l' : np.sqrt(X['l'] * X['l'] + Z['l'] * Z['l']) > y_max
             }
             vec_args['mask'] = mask
         if fieldlines:
@@ -155,8 +157,9 @@ def main(**kwargs):
             uuRx['l']           *= -1.
             Cart.plot_xz_vec(fig, ax, X, Z, X_uni, Z_uni, uuRx, uuRz, **vec_args)
 
-        ax.set_xlim([-20, 20])
-        ax.set_ylim([-11, 11])
+        y_max = (11. / 20.) * x_max
+        ax.set_xlim([-x_max, x_max])
+        ax.set_ylim([-y_max, y_max])
         ax.set_aspect('equal')
 
         ax.set_xlabel(r'$x \: (R_g)$', fontsize=FS)
@@ -194,6 +197,9 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
+    parser.add_argument('--x_max', type=float, default=40.,
+                        required=False,
+                        help = """maximum x-extent in Rg (default: 40)""")
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
