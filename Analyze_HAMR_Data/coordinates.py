@@ -548,6 +548,7 @@ class Coordinates():
     # See Sadowski+2013 Equation 10 (with - signs on t-i components)
     # Boost is from the unprimed to the primed frame
     # uu is the velocity of the primed frame as measured in the unprimed frame
+    # uu is assumed dimensionless
     def calc_Lorentz_boost(self, uu, **kwargs):
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
@@ -564,8 +565,8 @@ class Coordinates():
         v2 = v[1] * v[1] + v[2] * v[2] + v[3] * v[3]
         for mu in range(3):
             for nu in range(3):
-                Lambda[mu+1, nu+1] = ((uu[0] - 1.) / v2) * (
-                    v[mu + 1] * v[nu + 1] + (mu == nu))
+                Lambda[mu+1, nu+1] = (((uu[0] - 1.) / v2) * (
+                    v[mu + 1] * v[nu + 1]) + (mu == nu))
         return Lambda
 
     # Compute dot product between two vectors in the desired
