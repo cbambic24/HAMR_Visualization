@@ -12,20 +12,14 @@ class Accretion():
         self.grid                    = grid
         self.data                    = data
         self.cgs                     = kwargs.get('cgs', False)
-        self.MBH                     = kwargs.get('MBH', 1.0)
-        if (self.cgs):
-            self.rho0 = pars['density_scale'] # g/cm^3 
-            self.c    = CONSTANTS['c']        # cm/s
-            self.G    = CONSTANTS['G']        # cm^3/g s^2
-            self.Msun = CONSTANTS['Msun']     # g
-            self.B0   = np.sqrt(4 * np.pi * self.rho0) * self.c # G
-        else:
-            self.rho0 = 1.0
-            self.c    = 1.0
-            self.G    = 1.0
-            self.Msun = 1.0
-            self.B0   = 1.0
-            self.MBH  = 1.0
+        
+        self.MBH  = kwargs.get('MBH', 1.0) if self.cgs else 1. # g
+        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
+        self.G    = CONSTANTS['G']         if self.cgs else 1. # cm^3/g s^2
+        self.Msun = CONSTANTS['Msun']      if self.cgs else 1. # g
+        B0        = np.sqrt(4 * np.pi * self.rho0) * self.c
+        self.B0   = B0                     if self.cgs else 1. # G
 
         self.Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c) 
         self.pars      = pars
@@ -270,7 +264,8 @@ class Accretion():
     # Calculate optical depth if required for tau_cut  
     # Returns optical depth to electron scattering 
     # if opacities = ['electron_scattering']
-    # otherwise, returns effective absorption+scattering opacity
+    # otherwise, returns effective absorption+scattering 
+    # optical depth
     def calc_tau(self, **kwargs):
         c     = self.c
         kappa = self.calc_kappa(**kwargs)
@@ -448,15 +443,11 @@ class AccretionBK(Accretion):
 
 class Field():
     def __init__(self, pars, CONSTANTS, **kwargs):
-        self.cgs = kwargs.get('cgs', False)
-        if (self.cgs):
-            self.rho0 = pars['density_scale'] # g/cm^3 
-            self.c    = CONSTANTS['c']        # cm/s
-            self.B0   = np.sqrt(4 * np.pi * self.rho0) * self.c
-        else:
-            self.rho0 = 1.0
-            self.c    = 1.0
-            self.B0   = 1.0
+        self.cgs  = kwargs.get('cgs', False)
+        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
+        B0        = np.sqrt(4 * np.pi * self.rho0) * self.c
+        self.B0   = B0                     if self.cgs else 1. # G
 
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
 
@@ -684,31 +675,20 @@ class Field():
 
 class Fluid():
     def __init__(self, pars, CONSTANTS, **kwargs):
-        self.cgs = kwargs.get('cgs', False)
-        if (self.cgs):
-            self.rho0 = pars['density_scale'] # g/cm^3 
-            self.c    = CONSTANTS['c']        # cm/s
-            self.kB   = CONSTANTS['kB']       # erg/K
-            # Equation 11 in Sadowski+ (2017)
-            self.mu_i = 4.0 / (
-                    4.0 * CONSTANTS['X_AB'] + CONSTANTS['Y_AB'])
-            # Equation 10 in Sadowski+ (2017)
-            self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB'])
-            self.mp   = CONSTANTS['mp']     # g
-            self.mi   = ((CONSTANTS['X_AB'] + 
-                          CONSTANTS['Y_AB']) * CONSTANTS['mp']) # g 
-            self.me   = CONSTANTS['me']     # g
-            self.sigT = CONSTANTS['sigmaT'] # cm^2
-        else:
-            self.rho0 = 1.0
-            self.c    = 1.0
-            self.kB   = 1.0
-            self.mu_i = 1.0
-            self.mu_e = 1.0
-            self.mp   = 1.0
-            self.mi   = 1.0
-            self.me   = 1.0
-            self.sigT = 1.0
+        self.cgs  = kwargs.get('cgs', False)
+        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
+        self.kB   = CONSTANTS['kB']        if self.cgs else 1. # erg/K
+        # Equation 11 in Sadowski+ (2017)
+        self.mu_i = (4.0 / (4.0 * CONSTANTS['X_AB'] + CONSTANTS['Y_AB']) 
+                     if self.cgs else 1.)
+        # Equation 10 in Sadowski+ (2017)
+        self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB']) if self.cgs else 1.
+        self.mp   = CONSTANTS['mp']        if self.cgs else 1. # g
+        self.mi   = (((CONSTANTS['X_AB']+CONSTANTS['Y_AB']) * CONSTANTS['mp'])
+                     if self.cgs else 1.) # g 
+        self.me   = CONSTANTS['me']        if self.cgs else 1. # g
+        self.sigT = CONSTANTS['sigmaT']    if self.cgs else 1. # cm^2
 
         self.Theta_min = 2.e-2
         self.kwargs    = kwargs
@@ -963,6 +943,12 @@ class Tools():
             return Tools.dot_cpp(a, b, gcov, **kwargs)
         a_cov = np.einsum('ij...,j...->i...', gcov, a)
         return np.einsum('i...,i...->...', a_cov, b)
+    
+    def contract_vector(a, gcov, **kwargs):
+        # contract 4-vector with metric/a tensor g (g_ij a^j)
+        if (kwargs.get('cpp', False)):
+            return Tools.contract_vector_cpp(a, gcov, **kwargs)
+        return np.einsum('ij...,j...->i...', gcov, a)
 
     def construct_dyadic(u, gcov, **kwargs):
         if kwargs.get('cpp', False):
@@ -1160,3 +1146,4 @@ class Tools():
 
 if __name__ == "__main__":
     print("Executing analysis.")
+
