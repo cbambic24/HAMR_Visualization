@@ -49,7 +49,7 @@ def main(**kwargs):
         # Equation 10 in Sadowski+ (2017)
         mu_e = 2.0 / (1.0 + x_AB)
         mi   = (x_AB + y_AB) * mp  
-        me   = hr.CONSTANTS['me'] 
+        me   = hr.CONSTANTS['me']
 
         # Given in Kaaz et al. (2024)
         mu_g = 4.0 / (6.0 * x_AB + y_AB + 2.)
@@ -349,6 +349,7 @@ def init_profiles(data_dir, file_num, keys,
     nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
     nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
     nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
+    
     if (nphi % nslices != 0):
         raise ValueError(f'nslices must evenly divide nphi = {nphi}')
     iphi_stp = int(nphi / nslices)
