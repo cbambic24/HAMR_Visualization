@@ -9,19 +9,14 @@ from analysis import Tools
 
 class Coordinates():
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
-        self.MBH = kwargs.get('MBH', 1.0)
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
-        if (kwargs.get('cgs', False)):
-            self.c    = CONSTANTS['c']        # cm/s
-            self.G    = CONSTANTS['G']        # cm^3/g s^2
-            self.Msun = CONSTANTS['Msun']     # g
-        else:
-            self.c    = 1.0
-            self.G    = 1.0
-            self.Msun = 1.0
-            self.MBH  = 1.0
 
-        Rg = (self.G * self.MBH * self.Msun) / (self.c * self.c)
+        self.cgs  = kwargs.get('cgs', False)
+        self.MBH  = kwargs.get('MBH', 1.0) if self.cgs else 1. # g
+        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
+        self.G    = CONSTANTS['G']         if self.cgs else 1. # cm^3/g s^2
+        self.Msun = CONSTANTS['Msun']      if self.cgs else 1. # g
+        Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c)
 
         self.r  = r / Rg
         self.th = theta
@@ -559,15 +554,40 @@ class Coordinates():
         Lambda[0, 1:] = -uu[1:]
 
         if not kwargs.get('inverse', False):
-            v  = uu / uu[0]
+            v = uu / uu[0]
         elif kwargs.get('inverse', False):
-            v = - uu / uu[0]
+            v = -uu / uu[0]
         v2 = v[1] * v[1] + v[2] * v[2] + v[3] * v[3]
         for mu in range(3):
             for nu in range(3):
                 Lambda[mu+1, nu+1] = (((uu[0] - 1.) / v2) * (
                     v[mu + 1] * v[nu + 1]) + (mu == nu))
         return Lambda
+
+    def boost_vector(self, vec, uu_c, **kwargs):
+        if (kwargs.get('cpp', False)):
+            return self.boost_vector_cpp(vec, uu_c, **kwargs)
+        Lambda = self.calc_Lorentz_boost(uu_c, **kwargs)
+        return np.einsum('ij...,j...->i...', Lambda, vec)
+
+    def boost_vector_cpp(self, vec, uu_c, **kwargs):
+        import hamr_readc
+        Toolsc = hamr_readc.PyTools()
+        dims   = list(vec.shape)
+        dtype  = np.float32 # C++ layer expects float 
+        if (len(dims) != 5 or dims[0] != 4):
+            raise ValueError("This 4-vector with shape " +
+                             str(dims) + " cannot be passed to C++.")
+        [ndim, nb, nx1, nx2, nx3] = dims
+        vec_boost = np.zeros(vec.shape, dtype=dtype)
+        uu_dims   = list(uu_c.shape)
+        if (len(uu_dims) != 5 or uu_dims[0] != 4):
+            raise ValueError("The 4-velocity with shape " +
+                             str(uu_dims) + " cannot be passed to C++.")
+        inverse = 1 if kwargs.get('inverse', False) else 0
+        Toolsc.boost_vector(np.float32(vec), vec_boost, np.float32(uu_c), 
+            nb, nx1, nx2, nx3, inverse)
+        return vec_boost
 
     # Compute dot product between two vectors in the desired
     # coordinate system. Assumes vec_a, vec_b, and gcov are in
