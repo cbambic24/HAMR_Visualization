@@ -3,24 +3,15 @@ from analysis import Tools
 
 class Radiation():
     def __init__(self, pars, CONSTANTS, **kwargs):
-        self.cgs = kwargs.get('cgs', False)
-        if (self.cgs):
-            self.rho0 = pars['density_scale'] # g/cm^3 
-            self.c    = CONSTANTS['c']        # cm/s
-            self.kB   = CONSTANTS['kB']       # erg/K
-            self.me   = CONSTANTS['me']       # g
-            self.sigT = CONSTANTS['sigmaT']   # cm^2
-            # Equation 10 in Sadowski+ (2017)
-            self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB'])
-            self.aRAD = CONSTANTS['aRAD'] # erg/cm^3/K^4
-        else:
-            self.rho0 = 1.0
-            self.c    = 1.0
-            self.kB   = 1.0
-            self.me   = 1.0
-            self.sigT = 1.0
-            self.mu_e = 1.0
-            self.aRAD = 1.0
+        self.cgs  = kwargs.get('cgs', False)
+        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
+        self.kB   = CONSTANTS['kB']        if self.cgs else 1. # erg/K
+        self.me   = CONSTANTS['me']        if self.cgs else 1. # g
+        self.sigT = CONSTANTS['sigmaT']    if self.cgs else 1. # cm^2
+        # Equation 10 in Sadowski+ (2017)
+        self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB']) if self.cgs else 1.
+        self.aRAD = CONSTANTS['aRAD']      if self.cgs else 1. # erg/cm^3/K^4
 
         self.kwargs    = kwargs
         self.CONSTANTS = CONSTANTS
@@ -281,7 +272,7 @@ class Opacity():
                 self.b2 = kwargs.get('b2')
             else:
                 raise ValueError("""Missing keyword argument b2
-                                  for calculating synchrotron opacity.""")
+                                 for calculating synchrotron opacity.""")
             self.synchrotron_opacity(process, **kwargs)
         if ('bound_free' in self.opacities or 'CHIANTI'  in self.opacities or 
             'hydrogen'  in self.opacities or 'free_free' in self.opacities or
@@ -500,19 +491,19 @@ class Opacity():
         Opacityc = hamr_readc.PyOpacity(self.params, self.CONSTANTS)
         dtype    = np.float64 # C++ layer expects double
         [nb, nx1, nx2, nx3] = self.check_dims()
-        
+
         XRB = 1 if kwargs.get('XRB') else 0
         if process == 'absorption' or process == 'both':
             proc = 'absorption'
             kappa_abs = np.zeros(self.rho.shape, dtype=dtype)
             Opacityc.calc_kappa_abs_tot(kappa_abs, self.rho, self.Te, self.Tr, 
-                                     self.b2, XRB, nb, nx1, nx2, nx3)
+                                     np.float32(self.b2), XRB, nb, nx1, nx2, nx3)
             self.opacities['%s_total' %proc] = kappa_abs
         if process == 'emission' or process == 'both':
             proc = 'emission'
             kappa_emi = np.zeros(self.rho.shape, dtype=dtype)
             Opacityc.calc_kappa_emi_tot(kappa_emi, self.rho, self.Te, self.Tr, 
-                                     self.b2, XRB, nb, nx1, nx2, nx3)
+                                     np.float32(self.b2), XRB, nb, nx1, nx2, nx3)
             self.opacities['%s_total' %proc] = kappa_emi
 
     def sum_opacities(self, keys):
