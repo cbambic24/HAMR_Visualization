@@ -110,6 +110,7 @@ class Cartesian():
             sym=kwargs.get('sym_left', False),
             linthresh=kwargs.get('linthresh_left', False))
         contours_l     = kwargs.get('contours_left', False)
+        extend_l       = kwargs.get('extend_left', 'neither')
 
         vmin_r, vmax_r = self.get_vmin_vmax(Dr,
             lim=kwargs.get('lim_right', False), 
@@ -119,6 +120,7 @@ class Cartesian():
             sym=kwargs.get('sym_right', False),
             linthresh=kwargs.get('linthresh_right', False))
         contours_r     = kwargs.get('contours_right', False)
+        extend_r       = kwargs.get('extend_right', 'neither')
 
         if 'fix_pole' in kwargs:
             self.check_fix_pole(**kwargs) 
@@ -138,8 +140,9 @@ class Cartesian():
                                 norm = norm_r, cmap = cmaps[1], 
                                 shading = 'gouraud')
         
-        cax_r = self.get_cax(fig, ax, im, FS, **kwargs)
-        cax_l = self.get_cax(fig, ax, im, FS, cbar_loc='top', **kwargs)
+        cax_r = self.get_cax(fig, ax, im, FS, extend=extend_r, **kwargs)
+        cax_l = self.get_cax(fig, ax, im, FS, extend=extend_l, 
+                             cbar_loc='top', **kwargs)
 
         if 'fix_pole' in kwargs:
             FP.remove_poles_xz_mirror(X, Z, Dl, Dr)
@@ -159,7 +162,7 @@ class Cartesian():
             contours['linewidths'], contours['linestyles'], 
             contours['colors']):
             if not (isinstance(level, np.ndarray) or isinstance(level, list)):
-                plt_level = [level]
+                plt_level = [level] 
             else:
                 plt_level = level
             ax.contour(X, Y, quantity, levels=plt_level, 
