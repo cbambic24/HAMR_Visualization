@@ -1,6 +1,7 @@
 import sys
 import os
 import argparse
+import glob
 import numpy as np
 read_path   = '/lustre/orion/ast178/proj-shared/cbambic/HAMR_Visualization/Read_HAMR_Data'
 asys_path   = '/lustre/orion/ast178/proj-shared/cbambic/HAMR_Visualization/Analyze_HAMR_Data'
@@ -159,13 +160,47 @@ def get_contours(plt_args, PS_r, PS_l, contour_colors, sigma_contour, photospher
     }
     return plt_args
 
+def grid(ax, **kwargs):
+    ax.grid(which='major', color=kwargs.get('color', 'white'), linestyle='-',
+            linewidth=0.5, alpha=kwargs.get('alpha', 0.3))
+    ax.grid(which='minor', color=kwargs.get('color', 'white'), linestyle='-',
+            linewidth=0.5, alpha=kwargs.get('alpha', 0.3))
+
+# Create profiles dictionary [file_number][key]
+def load_profiles(averages_dir, fnums, **kwargs):
+    reduced      = kwargs.get('reduced', False)
+    profiles_dir = (f'{averages_dir}/Full_Resolution/Profiles' if not reduced 
+                    else f'{averages_dir}/Reduced_Resolution/Profiles')
+    print(f"Loading from {profiles_dir}...")
+    profs = glob.glob("Profiles*", root_dir=profiles_dir)
+    prof_nums = [
+        int(prof_name.strip('Profiles_').strip('.npz')) for prof_name in profs
+    ]
+    prof_nums.sort()
+    nzeros    = len(str(prof_nums[-1]))
+    if 'profiles' not in kwargs:
+        profiles = {}
+    else:
+        profiles = kwargs.get('profiles')
+    for fnum in fnums:
+        profile_file = (
+            f'{profiles_dir}/Profiles_%s.npz' %str(fnum).zfill(nzeros))
+        if not kwargs.get('keys', False):
+            profiles[f'{fnum}'] = np.load(profile_file)
+            files = profiles[f'{fnum}'].files
+        else:
+            if 'profiles' not in kwargs:
+                profiles[f'{fnum}'] = {}
+            for key in kwargs.get('keys'):
+                 profiles[f'{fnum}'][f'{key}']=np.load(profile_file)[f'{key}']
+    return profiles
+
 # Compute quantities at constant phi
 class Phi_Slice():
     def __init__(self, directory, fnum, **kwargs):
         self.H = hr.Read(directory, **kwargs)
         self.H.read_grid(fnum, direct=True)
         self.H.read_prims(fnum, skip_read_params=True)
-        print(f"File: {fnum}, Tracers = {hr.physics['DOTRACER']}, Dissipation = {hr.physics['DUMP_DISS']}", flush=True)
         self.cgs  = kwargs.get('cgs_data', True)
         self.MBH  = kwargs.get('MBH', 10.0)
         self.Msun = hr.CONSTANTS['Msun']
@@ -199,9 +234,9 @@ class Phi_Slice():
         # Initialize Fluid class
         self.Fluid = ana.Fluid(self.H.params, hr.CONSTANTS, cgs=self.cgs)
         # Initialize Field class
-        self.Field = ana.Field(self.H.params, hr.CONSTANTS, cgs=True)
+        self.Field = ana.Field(self.H.params, hr.CONSTANTS, cgs=self.cgs)
         # Initialize Radiation class
-        self.Rad   = rad.Radiation(self.H.params, hr.CONSTANTS, cgs=True)
+        self.Rad   = rad.Radiation(self.H.params, hr.CONSTANTS, cgs=self.cgs)
         # Initialize Analytic class
         self.Analytic = theory.Analytic(hr.CONSTANTS, cgs=self.cgs)
 
@@ -1159,6 +1194,22 @@ class Phi_Slice():
         Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
                            hr.CONSTANTS, mechanism='emission')
         return Opac.opacities['electron_scattering']
+
+    def calc_kappa_eff(self, iphi, **kwargs):
+        rho, Te, u_rad = self.get_vars2D(['rho', 'Te', 'u_rad'], iphi)
+        opacities = dict.fromkeys(['electron_scattering', 'bound_free', 
+            'CHIANTI', 'free_free', 'hydrogen', 'molecular', 'synchrotron'])
+        if 'b2' not in kwargs:
+            B, uu, gcov = self.get_vars2D(['B', 'uu', 'gcov'], iphi)
+            b2 = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)
+        else:
+            b2 = kwargs.get('b2')
+        Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
+            hr.CONSTANTS, mechanism='absorption', b2=b2, XRB=True)
+        kappa_abs = Opac.opacities['absorption_total']
+        kappa_es  = Opac.opacities['electron_scattering']
+        kappa_eff = np.sqrt(kappa_abs * (kappa_abs + kappa_es))
+        return kappa_eff
     
     def calc_kappa_sync(self, iphi, **kwargs):
         rho, Te, u_rad = self.get_vars2D(['rho', 'Te', 'u_rad'], iphi)
@@ -1659,41 +1710,235 @@ class Midplane_Slice():
         kappa = Opac.opacities['free_free_emi']
         return (kappa[:, 0, :] + kappa[:, 1, :]) / 2.
 
-class Read_Profiles():
-    def __init__(self, prof_dir, **kwargs):
-        fnums    = list(range(2291, 2300))
-        # quantities calclated via volume average
-        keys   = [
-            'rho',  'Ti',   'Te',
-            'Pmag', 'Pthm', 'Prad',
-            'Eion', 'Eelc', 'vR', 'vphi', 'vz'
-        ]
+class Slices():
+    # Retrieve file numbers based on file_number, start_file, and end file
+    def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        reduced    = kwargs.get('reduced', False)
+        slices_dir = (f'{averages_dir}/Full_Resolution/Slices' if not reduced 
+                      else f'{averages_dir}/Reduced_Resolution/Slices')
+        single_file = True if (file_number != -1) else False
+        if (single_file):
+            fnums = list([file_number])
+        else:
+            slcs = glob.glob("Slices*", root_dir=slices_dir)
+            slice_nums = [int(slice_name.strip('Slices_').strip('.npz')) for slice_name in slcs]
+            slice_nums.sort()
+            if ((start_file != -1) and (end_file != -1)):
+                fnums = list(range(start_file, end_file + 1))
+            elif ((start_file != -1) and (end_file == -1)):
+                last_file = slice_nums[-1]
+                fnums = list(range(start_file, last_file + 1))
+            elif ((start_file == -1) and (end_file != -1)):
+                first_file = slice_nums[0]
+                fnums = list(range(first_file, last_file + 1))
+            else:
+                fnums = list(range(slice_nums[0], slice_nums[-1] + 1))
+            fnums = self.check_slices_exist(fnums, slice_nums)
+        return fnums
 
-        self.profiles = {}
+    def check_slices_exist(self, fnums, slice_nums):
+        removed_files = []
         for fnum in fnums:
-            profile_file = (prof_dir + 'Profiles_%d.npy' %int(fnum))
-            self.profiles['%s' %str(fnum)] = np.load(
-                profile_file, allow_pickle=True).ravel()[0]
-            # dx1 = dr / r and r is dimensionless (r / Rg)
-            self.dx1 = self.profiles['%s' %str(fnum)]['dx1']
-            self.r   = self.profiles['%s' %str(fnum)]['r']
-            for key in keys:
-                self.profiles['%s' %str(fnum)]['%s' %key] = (
-                    self.profiles['%s' %str(fnum)]['%s' %key] / (
-                    self.profiles['%s' %str(fnum)]['Vol'] ))
-        return None
+            if fnum not in slice_nums:
+                print(f"Slice {fnum} is missing.")
+                removed_files.append(fnum)
+        for removed_file in removed_files:
+            fnums.remove(removed_file)
+        return fnums
 
-    def get_pressure(self):
-        return self.time_avg('Pthm', self.profiles)
+    # Create slices dictionary [file_number][key]
+    def load_slices(self, averages_dir, fnums, **kwargs):
+        reduced      = kwargs.get('reduced', False)
+        slices_dir = (f'{averages_dir}/Full_Resolution/Slices' if not reduced 
+                      else f'{averages_dir}/Reduced_Resolution/Slices')
+        print(f"Loading from {slices_dir}...")
+        slcs = glob.glob("Slices*", root_dir=slices_dir)
+        slice_nums = [
+            int(slice_name.strip('Slices_').strip('.npz')) for slice_name in slcs
+        ]
+        slice_nums.sort()
+        nzeros = len(str(int(len(slice_nums))))
+        if 'slices' not in kwargs:
+            slices = {}
+        else:
+            slices = kwargs.get('slices')
+        for fnum in fnums:
+            slice_file = (
+                f'{slices_dir}/Slices_%s.npz' %str(fnum).zfill(nzeros))
+            if not kwargs.get('keys', False):
+                slices[f'{fnum}'] = np.load(slice_file)
+                files = slices[f'{fnum}'].files
+            else:
+                if 'slices' not in kwargs:
+                    slices[f'{fnum}'] = {}
+                for key in kwargs.get('keys'):
+                    slices[f'{fnum}'][f'{key}']=np.load(slice_file)[f'{key}']
+        return slices
 
-    def time_avg(self, quant, profiles):
-        keys  = profiles.keys()
-        q_avg = np.zeros(len(profiles[next(iter(profiles))]['r']))
-        for key in keys:
-            q_avg += profiles['%s' %key]['%s' %quant] / len(keys)
+    def check_AMR(self, fnums, slices):
+        self.nr, self.nth, self.nums = [], [], []
+        for fnum in fnums:
+            self.nums.append(fnum)
+            self.nr.append(len(slices[f'{fnum}']['r']))
+            self.nth.append(len(slices[f'{fnum}']['theta']))
+        self.AMRx1 = (self.nr.count(self.nr[0]) != len(self.nr))
+        self.AMRx2 = (self.nth.count(self.nth[0]) != len(self.nth))
+        if (self.AMRx1 and self.AMRx2):
+            self.fnums0 = self.nums[self.nr == max(self.nr)][0]
+        elif (self.AMRx1 and not self.AMRx2):
+            self.fnums0 = self.nums[self.nr == max(self.nr)][0]
+        elif (not self.AMRx1 and self.AMRx2):
+            self.fnums0 = self.nums[self.nth == max(self.nth)][0]
+        else:
+            self.fnums0 = self.nums[0]
+
+    def time_avg(self, quant, slices, **kwargs):
+        fnums = slices.keys() if 'fnums' not in kwargs else kwargs.get('fnums')
+        if not hasattr(self, "AMRx1") or not hasattr(self, "AMRx2"):
+            self.check_AMR(fnums, slices)
+        q_avg = np.zeros([len(slices[f'{self.fnums0}']['r']), 
+                          len(slices[f'{self.fnums0}']['theta'])])
+        nt    = len(fnums)
+        if not self.AMRx1 or not self.AMRx2:
+            for fnum in fnums:
+                vol    = slices[f'{fnum}']['Vol'] if kwargs.get('vol', False) else 1.
+                q_avg += slices[f'{fnum}'][f'{quant}'] / (nt * vol)
+        else:
+            for fnum in fnums:
+                vol    = self.upscale(slices[f'{fnum}']['Vol']) if kwargs.get('vol', False) else 1.
+                q_avg += self.upscale(slices[f'{fnum}'][f'{quant}']) / (nt * vol)
         return q_avg
 
-    # Interpolate q(r_old) to q_new(r_new)
-    def interp(self, q, r_old, r_new):
-        spl = CubicSpline(r_old, q)
-        return spl(r_new)
+    def upscale(self, q):
+        level_x1 = (max(self.nr) / len(q[:, 0])) - 1
+        level_x2 = (max(self.nth)/ len(q[0, :])) - 1
+        if (level_x1 == 0 and level_x2 == 0): 
+            return q
+        else:
+            q_up = np.zeros([max(self.nr), max(self.nth)])
+            for i in range(len(q[:, 0])):
+                for j in range(len(q[0, :])):
+                    istrt = int(i       * (2 ** level_x1))
+                    iend  = int((i + 1) * (2 ** level_x1))
+                    jstrt = int(j       * (2 ** level_x2))
+                    jend  = int((j + 1) * (2 ** level_x2))
+                q_up[istrt:iend, jstrt:jend] = q[i, j]
+            return q_up
+
+class Profiles():
+    # Retrieve file numbers based on file_number, start_file, and end file
+    def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        reduced      = kwargs.get('reduced', False)
+        profiles_dir = (f'{averages_dir}/Full_Resolution/Profiles' if not reduced 
+                        else f'{averages_dir}/Reduced_Resolution/Profiles')
+        single_file = True if (file_number != -1) else False
+        if (single_file):
+            fnums = list([file_number])
+        else:
+            profs = glob.glob("Profiles*", root_dir=profiles_dir)
+            prof_nums = [int(prof_name.strip('Profiles_').strip('.npz')) for prof_name in profs]
+            prof_nums.sort()
+            if ((start_file != -1) and (end_file != -1)):
+                fnums = list(range(start_file, end_file + 1))
+            elif ((start_file != -1) and (end_file == -1)):
+                last_file = prof_nums[-1]
+                fnums = list(range(start_file, last_file + 1))
+            elif ((start_file == -1) and (end_file != -1)):
+                first_file = prof_nums[0]
+                fnums = list(range(first_file, last_file + 1))
+            else:
+                fnums = list(range(prof_nums[0], prof_nums[-1] + 1))
+            fnums = self.check_profiles_exist(fnums, prof_nums)
+        return fnums
+
+    def check_profiles_exist(self, fnums, prof_nums):
+        removed_files = []
+        for fnum in fnums:
+            if fnum not in prof_nums:
+                print(f"Profile {fnum} is missing.")
+                removed_files.append(fnum)
+        for removed_file in removed_files:
+            fnums.remove(removed_file)
+        return fnums
+    
+    # Create profiles dictionary [file_number][key]
+    def load_profiles(self, averages_dir, fnums, **kwargs):
+        reduced      = kwargs.get('reduced', False)
+        profiles_dir = (f'{averages_dir}/Full_Resolution/Profiles' if not reduced 
+                        else f'{averages_dir}/Reduced_Resolution/Profiles')
+        print(f"Loading from {profiles_dir}...")
+        profs = glob.glob("Profiles*", root_dir=profiles_dir)
+        prof_nums = [
+            int(prof_name.strip('Profiles_').strip('.npz')) for prof_name in profs
+        ]
+        prof_nums.sort()
+        nzeros = len(str(int(len(prof_nums))))
+        if 'profiles' not in kwargs:
+            profiles = {}
+        else:
+            profiles = kwargs.get('profiles')
+        for fnum in fnums:
+            profile_file = (
+                f'{profiles_dir}/Profiles_%s.npz' %str(fnum).zfill(nzeros))
+            if not kwargs.get('keys', False):
+                profiles[f'{fnum}'] = np.load(profile_file)
+                files = profiles[f'{fnum}'].files
+            else:
+                if 'profiles' not in kwargs:
+                    profiles[f'{fnum}'] = {}
+                for key in kwargs.get('keys'):
+                    profiles[f'{fnum}'][f'{key}']=np.load(profile_file)[f'{key}']
+        return profiles
+    
+    def time_avg(self, quant, profiles, **kwargs):
+        fnums = profiles.keys() if 'fnums' not in kwargs else kwargs.get('fnums')
+        if not hasattr(self, "AMR"):
+            self.check_AMR(fnums, profiles)
+        q_avg = np.zeros(len(profiles[f'{self.fnums0}']['r']))
+        nt    = len(fnums)
+        if not self.AMR:
+            for fnum in fnums:
+                vol    = profiles[f'{fnum}']['Vol'] if kwargs.get('vol', False) else 1.
+                q_avg += profiles[f'{fnum}'][f'{quant}'] / (nt * vol)
+        else:
+            for fnum in fnums:
+                vol    = self.upscale(profiles[f'{fnum}']['Vol']) if kwargs.get('vol', False) else 1.
+                q_avg += self.upscale(profiles[f'{fnum}'][f'{quant}']) / (nt * vol)
+        return q_avg
+
+    def upscale(self, q):
+        level = (max(self.nr) / len(q)) - 1
+        if (level == 0): 
+            return q
+        else:
+            q_up = np.zeros(max(self.nr))
+            for i in range(len(q)):
+                istrt = int(i       * (2 ** level))
+                iend  = int((i + 1) * (2 ** level))
+                q_up[istrt:iend] = q[i]
+            return q_up
+
+    def check_AMR(self, fnums, profiles):
+        self.nr, self.nums = [], []
+        for fnum in fnums:
+            self.nums.append(fnum)
+            self.nr.append(len(profiles[f'{fnum}']['r']))
+        self.AMR = (self.nr.count(self.nr[0]) != len(self.nr))
+        if (self.AMR):
+            self.fnums0 = self.nums[self.nr == max(self.nr)][0]
+        else:
+            self.fnums0 = self.nums[0] 
+
+class Time_Series(Profiles):
+    def calc_time_series(self, key, profiles, **kwargs):
+        fnums = profiles.keys()
+        time  = np.zeros(len(fnums))
+        q     = np.zeros(len(fnums))
+        r0    = kwargs.get('r0', 0.)
+        for i, fnum in enumerate(fnums):
+            r       = profiles[f'{fnum}']['r']
+            idx     = np.argmin(np.abs(r - r0))
+            time[i] = profiles[f'{fnum}']['t']
+            vol     = profiles[f'{fnum}']['Vol'] if kwargs.get('vol', False) else 1.
+            q[i]    = (profiles[f'{fnum}'][f'{key}']/vol)[idx]
+        return time, q
