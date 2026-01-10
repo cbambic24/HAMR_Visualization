@@ -86,17 +86,12 @@ def main(**kwargs):
     # radiation 4-momentum) all necessary for stress profiles
     vec_keys = [
         'uR',   'uphi',  'uz',
-        'u_R',  'u_phi', 'u_z',
-        'wuR',  'wuphi', 'wuz',
+        'wuR',  'wuphi', 'wuz', 'wu_phi', 'wur', 'wuth',
         'vR',   'vphi',  'vz', 
-        'bR',   'bphi',  'bz',
-        'b_R',  'b_phi', 'b_z'
+        'bR',   'bphi',  'bz',  'b_phi',  'br',  'bth'
     ]
+
     if (radiation):
-        vec_keys  += [
-            'uR_rad',  'uphi_rad',  'uz_rad',
-            'u_R_rad', 'u_phi_rad', 'u_z_rad'
-        ]
         flux_keys += ['R_tR', 'R_tz', 'R_tt', 'R_t1', 
                       'Be_Rad', 'R_tR_Fluid', 'R_tz_Fluid']
     
@@ -141,6 +136,7 @@ def main(**kwargs):
     for file_num in file_list_local:
         slices, nphi, iphi_stp = init_slices(data_dir, file_num, slice_keys,
             save_dir, nslices, restart, nzeros, **read_args)
+        slices['done'] = False
 
         # Loop over whole data slice that fits on single node.
         # Process slivers of data slice assigned to each core in parallel.
@@ -267,24 +263,29 @@ def main(**kwargs):
             if (radiation):
                 # Radiation stress-tensor in the fluid frame necessary
                 # for the calculation of the radiative diffusion timescale
-                stress_energy_RAD = Radi.calc_TRAD(**H.data, **H.grid, 
-                                                   upper_lower=True, cpp=True)
-                Lambda            = Coords.calc_Lorentz_boost(H.data['uu'] / c)
-                Lambda_inv        = Coords.calc_Lorentz_boost(H.data['uu'] / c, 
-                                                              inverse=True)
-                stress_energy_RAD_Fluid = np.einsum('ij...,kl...,jl...->ik...', 
-                                                    Lambda, Lambda_inv, stress_energy_RAD)
+                uu_rad     = ana.Tools.contract_vector(
+                    H.data['uu_rad'], H.grid['gcov'], cpp=True)
+                uu_rad_fld = Coords.boost_vector(uu_rad, H.data['uu'] / c, 
+                                                 inverse=True, cpp=True)
+                uu_t_rad_fld = uu_rad_fld[0]
+                del uu_rad, uu_rad_fld
+
+                uurad_fld = Coords.boost_vector(H.data['uu_rad'], 
+                                                H.data['uu'] / c, cpp=True)
+                u_rad    = H.data['u_rad']
                 R_vec    = np.zeros_like(H.data['uu'])
-                R_vec[0] = stress_energy_RAD_Fluid[0, 0]
-                R_vec[1] = stress_energy_RAD_Fluid[1, 0]
-                R_vec[2] = stress_energy_RAD_Fluid[2, 0]
+                R_vec[0] = (
+                    (4./3.) * u_rad * (uurad_fld[0]/c) * (uu_t_rad_fld/c) + 
+                    (1./3.) * u_rad
+                )
+                R_vec[1] = (4./3.) * u_rad * (uurad_fld[1]/c) * (uu_t_rad_fld/c)
+                R_vec[2] = (4./3.) * u_rad * (uurad_fld[2]/c) * (uu_t_rad_fld/c)
                 R_cyl    = Coords.int_to_cyl_vec(R_vec)
                 slices['R_tR_Fluid'] += ph_sum(R_cyl[1], H.grid, H.data, 
                                                H.params, hr.CONSTANTS, **acc_args)[0]
                 slices['R_tz_Fluid'] += ph_sum(R_cyl[3], H.grid, H.data, 
                                                H.params, hr.CONSTANTS, **acc_args)[0]
-
-                del R_cyl, R_vec, stress_energy_RAD_Fluid, Lambda, Lambda_inv
+                del R_cyl, R_vec, u_rad, uurad_fld, uu_t_rad_fld
 
             # Opacities
             if (radiation):
@@ -302,8 +303,9 @@ def main(**kwargs):
                 kappa_es  = Opac.opacities['electron_scattering']
                 kappa_eff = np.sqrt(kappa_abs * (kappa_abs + kappa_es))
 
-            uu_cov = np.einsum('ij...,j...->i...', H.grid['gcov'], H.data['uu'])
-            b_cov  = np.einsum('ij...,j...->i...', H.grid['gcov'], b)
+            uu_cov = ana.Tools.contract_vector(
+                H.data['uu'], H.grid['gcov'], cpp=True)
+            b_cov  = ana.Tools.contract_vector(b, H.grid['gcov'], cpp=True)
             
             # Bernoulli parameter for outflows
             # Numerator of Bernoulli parameter
@@ -311,8 +313,6 @@ def main(**kwargs):
             slices['Be'] += ph_sum(w * uu_cov[0], H.grid, H.data, 
                                    H.params, hr.CONSTANTS, **acc_args)[0] 
             if (radiation):
-                uu_rad_cov = np.einsum('ij...,j...->i...', 
-                                       H.grid['gcov'], H.data['uu_rad'])
                 w = (H.data['rho'] * c * c + pgas + H.data['u_gas'] 
                      + b2 / (4.*np.pi) + (4./3.) * H.data['u_rad']) 
                 slices['Be_Rad'] += ph_sum(w * uu_cov[0], H.grid, H.data, 
@@ -320,8 +320,8 @@ def main(**kwargs):
             
             if (cooling and (radiation or two_temp)):
                 # Need uu_t / c for cooling rates
-                uu_t = np.einsum('ij...,j...->i...', 
-                                 H.grid['gcov'], H.data['uu'] / c)[0]
+                uu_t = ana.Tools.contract_vector(
+                    H.data['uu'] / c, H.grid['gcov'], cpp=True)[0]
             
             # Deallocate magnetic field in the lab frame and radiation 4-momentum
             # as well as metric tensor and inverse
@@ -425,33 +425,26 @@ def main(**kwargs):
             if (two_temp):
                 H.data['Ti'] = H.data['rho']
                 H.data['Te'] = H.data['rho']
+            if (radiation):
+                H.data['uu_rad'] = H.data['rho']
 
             # Compute theta and phi averages of vector quantities
             uu_cyl     = Coords.int_to_cyl_vec(H.data['uu'], cpp=True)
+            uu_sph     = Coords.int_to_ortho_sph_vec(H.data['uu'], cpp=True)
             uu_cov_cyl = Coords.int_to_cyl_one_form(uu_cov, cpp=True)
             b_cyl      = Coords.int_to_cyl_vec(b, cpp=True)
+            b_sph      = Coords.int_to_ortho_sph_vec(b, cpp=True)
             b_cov_cyl  = Coords.int_to_cyl_one_form(b_cov, cpp=True)
-            if (radiation):
-                uu_rad_cyl       = Coords.int_to_cyl_vec(H.data['uu_rad'], cpp=True)
-                uu_rad_cov_cyl   = Coords.int_to_cyl_one_form(uu_rad_cov, cpp=True)
-                H.data['uu_rad'] = H.data['rho']
 
             quants = [
                 uu_cyl[1],     uu_cyl[2],     uu_cyl[3],
-                uu_cov_cyl[1], uu_cov_cyl[2], uu_cov_cyl[3],
-                w * uu_cyl[1], w * uu_cyl[2], w * uu_cyl[3],
+                w * uu_cyl[1], w * uu_cyl[2], w * uu_cyl[3], 
+                w * uu_cov_cyl[2], w * uu_sph[1], w * uu_sph[2],
                 np.nan_to_num(uu_cyl[1] / uu_cyl[0]),
                 np.nan_to_num(uu_cyl[2] / uu_cyl[0]),
                 np.nan_to_num(uu_cyl[3] / uu_cyl[0]),
-                b_cyl[1], b_cyl[2], b_cyl[3],
-                b_cov_cyl[1], b_cov_cyl[2], b_cov_cyl[3]
+                b_cyl[1], b_cyl[2], b_cyl[3], b_cov_cyl[2], b_sph[1], b_sph[2]
             ]
-
-            if (radiation):
-                quants += [
-                    uu_rad_cyl[1],     uu_rad_cyl[2],     uu_rad_cyl[3],
-                    uu_rad_cov_cyl[1], uu_rad_cov_cyl[2], uu_rad_cov_cyl[3]
-                ]
 
             # Mass fluxes
             quants += [
@@ -462,17 +455,14 @@ def main(**kwargs):
             ]
 
             for i, (key, quant) in enumerate(zip(vec_keys, quants)):
-                if ((i <= 23 and radiation) or (i <= 17 and not radiation)):
+                if (i < 18):
                     slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, 
-                                               **acc_args)[0]
+                        H.params, hr.CONSTANTS, **acc_args)[0]
                 else:
                     slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, 
-                                               **sigma_cut_args)[0]
+                        H.params, hr.CONSTANTS, **sigma_cut_args)[0]
 
-            del uu_cyl, b_cyl, sigma
-            if (radiation): del uu_rad_cyl
+            del uu_cyl, b_cyl, uu_sph, b_sph, uu_cov_cyl, b_cov_cyl, sigma
 
             # Put spherical radius in dictionary 
             slices['r']     = H.grid['r'][0, :, 0, 0] / Rg
@@ -494,9 +484,10 @@ def main(**kwargs):
                 f'for file {file_num}', flush=True) 
 
         slices['slice_num_restart'] = slice_num + 1
+        slices['saved'] = True
+        slices['done']  = True
         fnum_str = str(file_num).zfill(nzeros)
         np.savez(save_dir + f'/Slices_{fnum_str}', **slices)
-        slices['saved'] = True
 
         print(f'Done with all slices for file number {file_num}.',flush=True) 
 

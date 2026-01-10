@@ -20,6 +20,7 @@ def main(**kwargs):
     lowres1   = kwargs.get('lowres1')
     lowres2   = kwargs.get('lowres2')
     lowres3   = kwargs.get('lowres3')
+    r_max     = kwargs.get('r_max')
     reduced   = kwargs.get('reduced')
     restart   = kwargs.get('restart')
     shared    = kwargs.get('shared')
@@ -85,17 +86,12 @@ def main(**kwargs):
     # radiation 4-momentum) all necessary for stress profiles
     vec_keys = [
         'uR',   'uphi',  'uz',
-        'u_R',  'u_phi', 'u_z',
-        'wuR',  'wuphi', 'wuz',
+        'wuR',  'wuphi', 'wuz', 'wu_phi', 'wur', 'wuth',
         'vR',   'vphi',  'vz', 
-        'bR',   'bphi',  'bz',
-        'b_R',  'b_phi', 'b_z'
+        'bR',   'bphi',  'bz',  'b_phi',  'br',  'bth'
     ]
+
     if (radiation):
-        vec_keys  += [
-            'uR_rad',  'uphi_rad',  'uz_rad',
-            'u_R_rad', 'u_phi_rad', 'u_z_rad'
-        ]
         flux_keys += ['R_tR', 'R_tz', 'R_tt', 'R_t1', 
                       'Be_Rad', 'R_tR_Fluid', 'R_tz_Fluid']
     
@@ -127,10 +123,14 @@ def main(**kwargs):
         'lowres3'  : lowres3
     }
 
+    if (r_max != 0.):
+        read_args['r_max'] = r_max
+
     slice_keys = keys + flux_keys + vec_keys
     
     slices, nphi, iphi_stp = init_slices(data_dir, file_num, slice_keys,
         save_dir, nslices, restart, nzeros, **read_args)
+    slices['done'] = False
 
     # Loop over whole data slice that fits on single node.
     # Process slivers of data slice assigned to each core in parallel.
@@ -211,7 +211,7 @@ def main(**kwargs):
         THD_vec    = np.zeros_like(H.data['uu'])
         THD_vec[1] = stress_energy_HD_10
         THD_vec[2] = stress_energy_HD_20
-        THD_cyl    = Coords.int_to_cyl_vec(THD_vec)
+        THD_cyl    = Coords.int_to_cyl_vec(THD_vec, cpp=True)
         slice_loc['THD_tR'] = ph_sum(THD_cyl[1], H.grid, H.data, 
                                      H.params, hr.CONSTANTS, **acc_args)[0]
         slice_loc['THD_tz'] = ph_sum(THD_cyl[3], H.grid, H.data, 
@@ -228,7 +228,7 @@ def main(**kwargs):
         TEM_vec    = np.zeros_like(H.data['uu'])
         TEM_vec[1] = stress_energy_EM_10
         TEM_vec[2] = stress_energy_EM_20
-        TEM_cyl    = Coords.int_to_cyl_vec(TEM_vec)
+        TEM_cyl    = Coords.int_to_cyl_vec(TEM_vec, cpp=True)
         slice_loc['TEM_tR'] = ph_sum(TEM_cyl[1], H.grid, H.data, 
                                      H.params, hr.CONSTANTS, **acc_args)[0]
         slice_loc['TEM_tz'] = ph_sum(TEM_cyl[3], H.grid, H.data, 
@@ -250,7 +250,7 @@ def main(**kwargs):
             R_vec[0] = stress_energy_RAD_00
             R_vec[1] = stress_energy_RAD_10
             R_vec[2] = stress_energy_RAD_20
-            R_cyl    = Coords.int_to_cyl_vec(R_vec)
+            R_cyl    = Coords.int_to_cyl_vec(R_vec, cpp=True)
             # R^t_t necessary for thermal and radative diffusion timescales
             slice_loc['R_tt'] = ph_sum(R_cyl[0], H.grid, H.data, 
                                        H.params, hr.CONSTANTS, **acc_args)[0]
@@ -267,43 +267,52 @@ def main(**kwargs):
         if (radiation):
             # Radiation stress-tensor in the fluid frame necessary
             # for the calculation of the radiative diffusion timescale
-            stress_energy_RAD = Radi.calc_TRAD(**H.data, **H.grid, 
-                                                upper_lower=True, cpp=True)
-            Lambda     = Coords.calc_Lorentz_boost(H.data['uu'] / c)
-            Lambda_inv = Coords.calc_Lorentz_boost(H.data['uu'] / c, 
-                                                   inverse=True)
-            stress_energy_RAD_Fluid = np.einsum('ij...,kl...,jl...->ik...', 
-                Lambda, Lambda_inv, stress_energy_RAD)
+            uu_rad     = ana.Tools.contract_vector(
+                H.data['uu_rad'], H.grid['gcov'], cpp=True)
+            uu_rad_fld = Coords.boost_vector(uu_rad, H.data['uu'] / c, 
+                                             inverse=True, cpp=True)
+            uu_t_rad_fld = uu_rad_fld[0]
+            del uu_rad, uu_rad_fld
+
+            uurad_fld = Coords.boost_vector(H.data['uu_rad'], 
+                                            H.data['uu'] / c, cpp=True)
+            u_rad    = H.data['u_rad']
             R_vec    = np.zeros_like(H.data['uu'])
-            R_vec[0] = stress_energy_RAD_Fluid[0, 0]
-            R_vec[1] = stress_energy_RAD_Fluid[1, 0]
-            R_vec[2] = stress_energy_RAD_Fluid[2, 0]
+            R_vec[0] = (
+                (4./3.) * u_rad * (uurad_fld[0]/c) * (uu_t_rad_fld/c) + 
+                (1./3.) * u_rad
+            )
+            R_vec[1] = (4./3.) * u_rad * (uurad_fld[1]/c) * (uu_t_rad_fld/c)
+            R_vec[2] = (4./3.) * u_rad * (uurad_fld[2]/c) * (uu_t_rad_fld/c)
             R_cyl    = Coords.int_to_cyl_vec(R_vec)
             slice_loc['R_tR_Fluid'] = ph_sum(R_cyl[1], H.grid, H.data, 
-                H.params, hr.CONSTANTS, **acc_args)[0]
+                                             H.params, hr.CONSTANTS, **acc_args)[0]
             slice_loc['R_tz_Fluid'] = ph_sum(R_cyl[3], H.grid, H.data, 
-                H.params, hr.CONSTANTS, **acc_args)[0]
-
-            del R_cyl, R_vec, stress_energy_RAD_Fluid, Lambda, Lambda_inv
+                                             H.params, hr.CONSTANTS, **acc_args)[0]
+            del R_cyl, R_vec, u_rad, uurad_fld, uu_t_rad_fld
+            H.data['uu_rad'] = H.data['rho']
 
         # Opacities
         if (radiation):
             # Calculate opacities including all processes
+            # Consider testing the C++ acceleration of this
             opacities = dict.fromkeys(['electron_scattering', 'bound_free', 
                 'CHIANTI', 'free_free', 'hydrogen', 'molecular', 'synchrotron'])
             if (two_temp):
                 Opac = rad.Opacity(opacities, **H.data, pars=H.params, 
-                    CONSTANTS=hr.CONSTANTS, b2=b2, XRB=True)
+                    CONSTANTS=hr.CONSTANTS, b2=b2, XRB=True, cpp=True)
             else:
                 Opac = rad.Opacity(opacities, **H.data, 
                     Te=(mu_g * mp / kB) * (pgas / H.data['rho']), 
-                    pars=H.params, CONSTANTS=hr.CONSTANTS, b2=b2, XRB=True)
+                    pars=H.params, CONSTANTS=hr.CONSTANTS, 
+                    b2=b2, XRB=True, cpp=True)
             kappa_abs = Opac.opacities['absorption_total']
             kappa_es  = Opac.opacities['electron_scattering']
             kappa_eff = np.sqrt(kappa_abs * (kappa_abs + kappa_es))
-
-        uu_cov = np.einsum('ij...,j...->i...', H.grid['gcov'], H.data['uu'])
-        b_cov  = np.einsum('ij...,j...->i...', H.grid['gcov'], b)
+            del Opac.opacities
+        
+        uu_cov = ana.Tools.contract_vector_cpp(H.data['uu'], H.grid['gcov'])
+        b_cov  = ana.Tools.contract_vector_cpp(b,            H.grid['gcov'])
 
         # Bernoulli parameter for outflows
         # Numerator of Bernoulli parameter
@@ -311,24 +320,17 @@ def main(**kwargs):
         slice_loc['Be'] = ph_sum(w * uu_cov[0], H.grid, H.data, 
                                  H.params, hr.CONSTANTS, **acc_args)[0] 
         if (radiation):
-            uu_rad_cov = np.einsum('ij...,j...->i...', 
-                                    H.grid['gcov'], H.data['uu_rad'])
             w = (H.data['rho'] * c * c + pgas + H.data['u_gas'] 
                     + b2 / (4.*np.pi) + (4./3.) * H.data['u_rad']) 
             slice_loc['Be_Rad'] = ph_sum(w * uu_cov[0], H.grid, H.data, 
                 H.params, hr.CONSTANTS, **acc_args)[0]
-        
-        if (cooling and (radiation or two_temp)):
-            # Need uu_t / c for cooling rates
-            uu_t = np.einsum('ij...,j...->i...', 
-                                H.grid['gcov'], H.data['uu'] / c)[0]
         
         # Deallocate magnetic field in the lab frame and radiation 4-momentum
         # as well as metric tensor and inverse
         H.data['B']    = H.data['rho']
         H.grid['gcov'] = H.data['rho']
         H.grid['gcon'] = H.data['rho']
-
+        
         # Magnetic and Thermodynamic Structure
         if (two_temp):
             # Calculate gamma (ratio of specific heats)
@@ -391,17 +393,19 @@ def main(**kwargs):
         if (cooling and two_temp):
             qie  = Fluid.calc_qie( **H.data, cpp=True)
             slice_loc['qie']  = ph_sum(qie,  H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
+                hr.CONSTANTS, weight=uu_cov[0]/c, **acc_args)[0]
+            del qie
         if (cooling and radiation):
             qIC  = Radi.calc_qIC(  **H.data)
             qemi = Radi.calc_q_emi(**H.data, b2=b2, XRB=True, cpp=True) 
             qabs = Radi.calc_q_abs(**H.data, b2=b2, XRB=True, cpp=True)
             slice_loc['qIC']  = ph_sum(qIC,  H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
+                hr.CONSTANTS, weight=uu_cov[0]/c, **acc_args)[0]
             slice_loc['qemi'] = ph_sum(qemi, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
+                hr.CONSTANTS, weight=uu_cov[0]/c, **acc_args)[0]
             slice_loc['qabs'] = ph_sum(qabs, H.grid, H.data, H.params, 
-                hr.CONSTANTS, weight=uu_t, **acc_args)[0]
+                hr.CONSTANTS, weight=uu_cov[0]/c, **acc_args)[0]
+            del qIC, qemi, qabs
 
         # phi integral over gdet including sigma cut
         slice_loc['Vol_sigma_cut'] = ph_sum(1.0, H.grid, H.data, 
@@ -414,11 +418,15 @@ def main(**kwargs):
         else:
             w = (H.data['rho'] * c * c + pgas + H.data['u_gas'] + b2) 
 
+        H.data['u_gas'] = H.data['rho']
         if (two_temp): del Theta_e, Theta_i, gam_e, gam_i, pgas
         else:          del pgas, T_gas
 
-        if (radiation): del kappa_eff, kappa_abs
-        else:           del b2
+        if (radiation): 
+            del kappa_eff, kappa_abs, b2
+            H.data['u_rad'] = H.data['rho']
+        else:           
+            del b2
 
         # Deallocate temperatures and energy densities 
         # in preparation for large transformation matrices
@@ -428,31 +436,23 @@ def main(**kwargs):
 
         # Compute theta and phi averages of vector quantities
         uu_cyl     = Coords.int_to_cyl_vec(H.data['uu'], cpp=True)
+        uu_sph     = Coords.int_to_ortho_sph_vec(H.data['uu'], cpp=True)
         uu_cov_cyl = Coords.int_to_cyl_one_form(uu_cov, cpp=True)
         b_cyl      = Coords.int_to_cyl_vec(b, cpp=True)
+        b_sph      = Coords.int_to_ortho_sph_vec(b, cpp=True)
         b_cov_cyl  = Coords.int_to_cyl_one_form(b_cov, cpp=True)
-        if (radiation):
-            uu_rad_cyl       = Coords.int_to_cyl_vec(H.data['uu_rad'], cpp=True)
-            uu_rad_cov_cyl   = Coords.int_to_cyl_one_form(uu_rad_cov, cpp=True)
-            H.data['uu_rad'] = H.data['rho']
-
+        del b, b_cov
+        
         quants = [
             uu_cyl[1],     uu_cyl[2],     uu_cyl[3],
-            uu_cov_cyl[1], uu_cov_cyl[2], uu_cov_cyl[3],
-            w * uu_cyl[1], w * uu_cyl[2], w * uu_cyl[3],
+            w * uu_cyl[1], w * uu_cyl[2], w * uu_cyl[3], 
+            w * uu_cov_cyl[2], w * uu_sph[1], w * uu_sph[2],
             np.nan_to_num(uu_cyl[1] / uu_cyl[0]),
             np.nan_to_num(uu_cyl[2] / uu_cyl[0]),
             np.nan_to_num(uu_cyl[3] / uu_cyl[0]),
-            b_cyl[1], b_cyl[2], b_cyl[3],
-            b_cov_cyl[1], b_cov_cyl[2], b_cov_cyl[3]
+            b_cyl[1], b_cyl[2], b_cyl[3], b_cov_cyl[2], b_sph[1], b_sph[2]
         ]
-
-        if (radiation):
-            quants += [
-                uu_rad_cyl[1],     uu_rad_cyl[2],     uu_rad_cyl[3],
-                uu_rad_cov_cyl[1], uu_rad_cov_cyl[2], uu_rad_cov_cyl[3]
-            ]
-
+        
         # Mass fluxes
         quants += [
             H.data['rho'] * uu_cyl[1], 
@@ -462,15 +462,19 @@ def main(**kwargs):
         ]
 
         for i, (key, quant) in enumerate(zip(vec_keys, quants)):
-            if ((i <= 23 and radiation) or (i <= 17 and not radiation)):
+            if (i < 18):
                 slice_loc[f'{key}'] = ph_sum(quant, H.grid, H.data, 
                     H.params, hr.CONSTANTS, **acc_args)[0]
             else:
                 slice_loc[f'{key}'] = ph_sum(quant, H.grid, H.data, 
                     H.params, hr.CONSTANTS, **sigma_cut_args)[0]
-
-        del uu_cyl, b_cyl, sigma
-        if (radiation): del uu_rad_cyl
+        
+        # Deallocate memory before MPI gather
+        H.data['uu']   = H.data['rho']
+        H.grid['gdet'] = H.data['rho']
+        H.data['rho']  = 0.
+        del w, uu_cov, uu_cyl, b_cyl, uu_sph, b_sph
+        del uu_cov_cyl, b_cov_cyl, sigma
 
         if (rank == 0):
             # Put spherical radius in dictionary 
@@ -498,12 +502,14 @@ def main(**kwargs):
 
             slices['k_max'] = k_min + (k_max - k_min) * size 
             slices['slice_num_restart'] = slice_num + 1
+            slices['saved'] = True
             fnum_str = str(file_num).zfill(nzeros)
+            if (slices['k_max'] == nphi): 
+                slices['done'] = True
             np.savez(save_dir + f'/Slices_{fnum_str}', **slices)
 
             snum = int(slice_num + 1)
             print(f'Finished with slice {snum:d} of {nslices:d}', flush=True)
-            slices['saved'] = True
 
     print(f'Done with all slices for file number {file_num}.')
 
@@ -546,6 +552,11 @@ def init_slices(data_dir, file_num, keys,
         raise ValueError(f'nslices must evenly divide nphi = {nphi}')
     iphi_stp = int(nphi / nslices)
 
+    if 'r_max' in kwargs:
+        H.gridsizex1 = int(
+            H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
+        i_min, nr = H.get_rbox_coords()
+
     # Logic to allow restarts if profile extraction is interrupted.
     if not restart:
         first_call = True
@@ -582,6 +593,9 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
+    parser.add_argument('--r_max', type=float, default=0.,
+                        required=False,
+                        help = """radial extent in Rg (default: R_max)""")
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
