@@ -24,7 +24,7 @@ class Fluid {
   private:
     double rho0, c, kB, mu_i, mu_e, mp, mi, me, sigT, ThetaMin, xAB, yAB;
     double cksigmaT, me_mi;
-    int index_3D, gridsize_3D;
+    int gridsize_3D;
 
 };
 
@@ -76,13 +76,14 @@ class Opacity {
         float* Tr, float* b2, int emi, int XRB, 
         int nb, int nx1, int nx2, int nx3);
     
-    ~Opacity();
+    virtual ~Opacity();
 
   protected:
     double rho0, c, kB, aRAD, mu_i, mu_e, mp, mi, me, sigT;
     double xAB, yAB, zAB, eStatC, h, kappaMol;
     double ne;
-    int index_3D, gridsize_3D;
+    int gridsize_3D;
+    std::unordered_map<std::string, double> params, CONSTANTS;
     
     virtual double kappaSyncAbs(float rho, float Te, float Tr, float b2, 
         double async, double bsync, double csync, double dsync, double esync);
@@ -133,7 +134,7 @@ class RIAF_Opacity : public Opacity {
         float* Tr, float* b2, int emi, int XRB, 
         int nb, int nx1, int nx2, int nx3);
     
-    ~RIAF_Opacity();
+   ~RIAF_Opacity();
 
   private:
     double xi, kappa_emi, pime3c5_ekh, ksi;
@@ -149,10 +150,10 @@ class Radiation {
     Radiation(const std::unordered_map<std::string, double>& params,
         const std::unordered_map<std::string, double>& CONSTANTS);
     
-    void qAbs(double* qabs, float* rho, float* Te, float* Tr, float *b2, 
+    void qAbs(double* qabs, float* rho, float* Te, float* Tr, float* b2, 
         int XRB, int RIAF, int nb, int nx1, int nx2, int nx3);
 
-    void qEmi(double* qemi, float* rho, float* Te, float* Tr, float *b2, 
+    void qEmi(double* qemi, float* rho, float* Te, float* Tr, float* b2, 
         int XRB, int RIAF, int nb, int nx1, int nx2, int nx3);
 
     ~Radiation();
@@ -161,7 +162,7 @@ class Radiation {
     double rho0, c, kB, aRAD, mu_i, mu_e, mp, mi, me, sigT; 
     double xAB, yAB, zAB, eStatC, kappaMol;
     double async, bsync, csync, dsync, esync;
-    int index_3D, gridsize_3D;
+    int gridsize_3D;
     std::unordered_map<std::string, double> params, CONSTANTS; 
 
 };

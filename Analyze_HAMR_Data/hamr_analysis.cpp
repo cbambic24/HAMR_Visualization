@@ -141,6 +141,9 @@ Opacity::Opacity(const std::unordered_map<std::string, double>& params,
   eStatC = CONSTANTS.at("e");
   h    = CONSTANTS.at("h");
   kappaMol = 3.0 * zAB;
+
+  this->params = params;
+  this->CONSTANTS = CONSTANTS;
 };
 
 Opacity::Opacity (Opacity& opac) {
@@ -160,7 +163,7 @@ Opacity::Opacity (Opacity& opac) {
   eStatC = opac.eStatC;
   h    = opac.h; 
   kappaMol = opac.kappaMol;
-  
+
   // copy variables used within member functions
   e_2pimc   = opac.e_2pimc;
   ne        = opac.ne;
@@ -290,36 +293,38 @@ double Opacity::kappaEmiTotal(float rho, float Te, float Tr,
 // Opacities exposed to Cython/Python
 // Total absorption and emission opacities
 void Opacity::kappaAbsTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  float* b2, int XRB, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   int n;
   getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  #pragma omp parallel for private(n)
+  Opacity opac(this->params, this->CONSTANTS);
+  #pragma omp parallel for private(n) firstprivate(opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappa[n] = kappaSyncAbs(rho[n], Te[n], Tr[n], b2[n], 
+    kappa[n] = opac.kappaSyncAbs(rho[n], Te[n], Tr[n], b2[n], 
       async, bsync, csync, dsync, esync) + ( 
-      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
-      (1.0 / (kappaBoundFreeAbs(rho[n], Te[n], Tr[n]) + 
-	      kappaFreeFreeAbs( rho[n], Te[n], Tr[n]) + 
-      kappaCHIANTIAbs(rho[n], Te[n], Tr[n])))))); 
+      (1.0 / ((1.0 / (opac.kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
+      (1.0 / (opac.kappaBoundFreeAbs(rho[n], Te[n], Tr[n]) + 
+	      opac.kappaFreeFreeAbs( rho[n], Te[n], Tr[n]) + 
+      opac.kappaCHIANTIAbs(rho[n], Te[n], Tr[n])))))); 
   }
 }
 
 void Opacity::kappaEmiTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  float* b2, int XRB, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   int n;
   getABCDESynch(XRB, async, bsync, csync, dsync, esync);
-  #pragma omp parallel for private(n)
+  Opacity opac(this->params, this->CONSTANTS);
+  #pragma omp parallel for private(n) firstprivate(opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappa[n] = kappaSyncEmi(rho[n], Te[n], Tr[n], b2[n], 
+    kappa[n] = opac.kappaSyncEmi(rho[n], Te[n], Tr[n], b2[n], 
       async, bsync, csync, dsync, esync) + ( 
-      (1.0 / ((1.0 / (kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
-      (1.0 / (kappaBoundFreeEmi(rho[n], Te[n], Tr[n]) + 
-	      kappaFreeFreeEmi( rho[n], Te[n], Tr[n]) + 
-      kappaCHIANTIEmi(rho[n], Te[n], Tr[n])))))); 
+      (1.0 / ((1.0 / (opac.kappaH(rho[n], Te[n], Tr[n]) + kappaMol)) + 
+      (1.0 / (opac.kappaBoundFreeEmi(rho[n], Te[n], Tr[n]) + 
+	      opac.kappaFreeFreeEmi( rho[n], Te[n], Tr[n]) + 
+      opac.kappaCHIANTIEmi(rho[n], Te[n], Tr[n])))))); 
   }
 }
 
@@ -423,7 +428,7 @@ double RIAF_Opacity::kappaEmiTotal(float rho, float Te, float Tr,
 // Opacities exposed to Cython/Python
 // Total absorption and emission opacities
 void RIAF_Opacity::kappaAbsTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  float* b2, int XRB, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   int n;
@@ -438,7 +443,7 @@ void RIAF_Opacity::kappaAbsTotal(double* kappa, float* rho, float* Te, float* Tr
 }
 
 void RIAF_Opacity::kappaEmiTotal(double* kappa, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int nb, int nx1, int nx2, int nx3) {
+  float* b2, int XRB, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   int n;
@@ -513,40 +518,44 @@ Radiation::Radiation(const std::unordered_map<std::string, double>& params,
 
 // Total absorption and emission rates
 void Radiation::qAbs(double* qabs, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int RIAF, int nb, int nx1, int nx2, int nx3) {
+  float* b2, int XRB, int RIAF, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   Opacity* opac = nullptr;
-  if (!RIAF) {
-    opac = new Opacity(this->params, this->CONSTANTS);
-  } else {
-    opac = new RIAF_Opacity(this->params, this->CONSTANTS);
-  }
+
   int n;
   double kappaAbs;
-  #pragma omp parallel for private(n, kappaAbs) firstprivate(opac)
+  #pragma omp parallel for private(n, kappaAbs, opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappaAbs = opac->kappaAbsTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
-    qabs[n]  = kappaAbs * rho[n] * aRAD * Tr[n] * Tr[n] * Tr[n] * Tr[n] * c;  
+    if (!RIAF) {
+      opac = new Opacity(this->params, this->CONSTANTS);
+    } else {
+      opac = new RIAF_Opacity(this->params, this->CONSTANTS);
+    }
+    kappaAbs = opac->kappaAbsTotal(rho[n], Te[n], Tr[n], b2[n], XRB);
+    qabs[n]  = kappaAbs * rho[n] * aRAD * Tr[n] * Tr[n] * Tr[n] * Tr[n] * c;
+    delete opac;
   }
 }
 
 void Radiation::qEmi(double* qemi, float* rho, float* Te, float* Tr,
-  float *b2, int XRB, int RIAF, int nb, int nx1, int nx2, int nx3) {
+  float* b2, int XRB, int RIAF, int nb, int nx1, int nx2, int nx3) {
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
   Opacity* opac = nullptr;
-  if (!RIAF) {
-    opac = new Opacity(this->params, this->CONSTANTS);
-  } else {
-    opac = new RIAF_Opacity(this->params, this->CONSTANTS);
-  }
+
   int n;
   double kappaEmi;
-  #pragma omp parallel for private(n, kappaEmi) firstprivate(opac)
+  #pragma omp parallel for private(n, kappaEmi, opac)
   for (n = 0; n < gridsize_3D; n++) {
-    kappaEmi = opac->kappaEmiTotal(rho[n], Te[n], Tr[n], b2[n], XRB); 
-    qemi[n]  = kappaEmi * rho[n] * aRAD * Te[n] * Te[n] * Te[n] * Te[n] * c;  
+    if (!RIAF) {
+      opac = new Opacity(this->params, this->CONSTANTS);
+    } else {
+      opac = new RIAF_Opacity(this->params, this->CONSTANTS);
+    }
+    kappaEmi = opac->kappaEmiTotal(rho[n], Te[n], Tr[n], b2[n], XRB);
+    qemi[n]  = kappaEmi * rho[n] * aRAD * Te[n] * Te[n] * Te[n] * Te[n] * c;
+    delete opac;
   }
 }
 
