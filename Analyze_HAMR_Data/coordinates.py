@@ -49,7 +49,25 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, x, y, z)
     def sph_to_cart_one_form(self, one_form, **kwargs):
-        return self.cart_to_sph_vec(one_form, **kwargs)
+        shape = list(one_form.shape)
+        shape.insert(0, 4)
+        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
+        dxdr[0, 0] = 1.0
+        dxdr[1, 1] = (np.sin(self.th) * np.cos(self.ph))
+        dxdr[2, 1] = (np.sin(self.th) * np.sin(self.ph))
+        dxdr[3, 1] = (np.cos(self.th))
+        dxdr[1, 2] = ((1. / self.r) * (np.cos(self.th) * np.cos(self.ph)))
+        dxdr[2, 2] = ((1. / self.r) * (np.cos(self.th) * np.sin(self.ph)))
+        dxdr[3, 2] = (-(1. / self.r) * np.sin(self.th))
+        dxdr[1, 3] = (-(1. / self.r) * np.sin(self.ph) / np.sin(self.th))
+        dxdr[2, 3] = ((1. / self.r) * np.cos(self.ph) / np.sin(self.th))
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dxdr, one_form)
+        else:
+            return Tools.contract_vector_cpp(one_form, dxdr)
     
     # (t, r, theta, phi) -> (t, x, y, z)
     def sph_to_cart_tnsr(self, tnsr, **kwargs):
@@ -73,7 +91,23 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, x, y, z)
     def sph_to_cart_cotnsr(self, cotnsr, **kwargs):
-        return self.cart_to_sph_tnsr(cotnsr, **kwargs)
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
+        dxdr[0, 0] = 1.0
+        dxdr[1, 1] = (np.sin(self.th) * np.cos(self.ph))
+        dxdr[2, 1] = (np.sin(self.th) * np.sin(self.ph))
+        dxdr[3, 1] = (np.cos(self.th))
+        dxdr[1, 2] = ((1. / self.r) * (np.cos(self.th) * np.cos(self.ph)))
+        dxdr[2, 2] = ((1. / self.r) * (np.cos(self.th) * np.sin(self.ph)))
+        dxdr[3, 2] = (-(1. / self.r) * np.sin(self.th))
+        dxdr[1, 3] = (-(1. / self.r) * np.sin(self.ph) / np.sin(self.th))
+        dxdr[2, 3] = ((1. / self.r) * np.cos(self.ph) / np.sin(self.th))
+
+        return np.einsum('kl...,ki...,lj...->ij...', cotnsr, dxdr, dxdr)
 
     # -------------------------------------
     # Cartesian (orthonormal) to Spherical
@@ -102,7 +136,25 @@ class Coordinates():
     
     # (t, x, y, z) -> (t, r, theta, phi)
     def cart_to_sph_one_form(self, one_form, **kwargs):
-        return self.sph_to_cart_vec(one_form, **kwargs)
+        shape = list(one_form.shape)
+        shape.insert(0, 4)
+        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
+        drdx[0, 0] = 1.0
+        drdx[1, 1] = (np.sin(self.th) * np.cos(self.ph))
+        drdx[2, 1] = (self.r * np.cos(self.th) * np.cos(self.ph))
+        drdx[3, 1] = (-self.r * np.sin(self.th) * np.sin(self.ph))
+        drdx[1, 2] = (np.sin(self.th) * np.sin(self.ph))
+        drdx[2, 2] = (self.r * np.cos(self.th) * np.sin(self.ph))
+        drdx[3, 2] = (self.r * np.sin(self.th) * np.cos(self.ph))
+        drdx[1, 3] = (np.cos(self.th))
+        drdx[2, 3] = (-self.r * np.sin(self.th))
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', drdx, one_form)
+        else:
+            return Tools.contract_vector_cpp(one_form, drdx)
 
     # (t, x, y, z) -> (t, r, theta, phi)
     def cart_to_sph_tnsr(self, tnsr, **kwargs):
@@ -125,7 +177,23 @@ class Coordinates():
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dxdr, dxdr)
     
     def cart_to_sph_cotnsr(self, cotnsr, **kwargs):
-        return self.sph_to_cart_tnsr(cotnsr, **kwargs)
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
+        drdx[0, 0] = 1.0
+        drdx[1, 1] = (np.sin(self.th) * np.cos(self.ph))
+        drdx[2, 1] = (self.r * np.cos(self.th) * np.cos(self.ph))
+        drdx[3, 1] = (-self.r * np.sin(self.th) * np.sin(self.ph))
+        drdx[1, 2] = (np.sin(self.th) * np.sin(self.ph))
+        drdx[2, 2] = (self.r * np.cos(self.th) * np.sin(self.ph))
+        drdx[3, 2] = (self.r * np.sin(self.th) * np.cos(self.ph))
+        drdx[1, 3] = (np.cos(self.th))
+        drdx[2, 3] = (-self.r * np.sin(self.th))
+
+        return np.einsum('kl...,ki...,lj...->ij...', cotnsr, drdx, drdx)
 
     # -------------------------------------
     # Spherical to Cylindrical (orthonormal)
@@ -151,7 +219,22 @@ class Coordinates():
     
     # (t, r, theta, phi) -> (t, R, phi, z)
     def sph_to_cyl_one_form(self, one_form, **kwargs):
-        return self.cyl_to_sph_vec(one_form, **kwargs)
+        shape = list(one_form.shape)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[3, 1] = np.cos(self.th)
+        dzdr[1, 2] = (1. / self.r) * np.cos(self.th)
+        dzdr[3, 2] = -(1. / self.r) * np.sin(self.th)
+        dzdr[2, 3] = (1. / self.r) * (1. / np.sin(self.th))
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dzdr, one_form)
+        else:
+            return Tools.contract_vector_cpp(one_form, dzdr)
 
     # (t, r, theta, phi) -> (t, R, phi, z)
     def sph_to_cyl_tnsr(self, tnsr, **kwargs):
@@ -172,7 +255,20 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, R, phi, z)
     def sph_to_cyl_cotnsr(self, cotnsr, **kwargs):
-        return self.cyl_to_sph_tnsr(cotnsr, **kwargs)
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[3, 1] = np.cos(self.th)
+        dzdr[1, 2] = (1. / self.r) * np.cos(self.th)
+        dzdr[3, 2] = -(1. / self.r) * np.sin(self.th)
+        dzdr[2, 3] = (1. / self.r) * (1. / np.sin(self.th))
+
+        return np.einsum('kl...,ki...,lj...->ij...', cotnsr, dzdr, dzdr)
 
     # -------------------------------------
     # Cylindrical (orthonormal) to Spherical
@@ -199,7 +295,22 @@ class Coordinates():
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_sph_one_form(self, one_form, **kwargs):
-        return self.sph_to_cyl_vec(one_form, **kwargs)
+        shape = list(one_form.shape)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.th)
+        drdz[2, 1] = self.r * np.cos(self.th)
+        drdz[3, 2] = self.r * np.sin(self.th)
+        drdz[1, 3] = np.cos(self.th)
+        drdz[2, 3] = -self.r * np.sin(self.th)
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', drdz, one_form)
+        else:
+            return Tools.contract_vector_cpp(one_form, drdz)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_sph_tnsr(self, tnsr, **kwargs):
@@ -221,7 +332,20 @@ class Coordinates():
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_sph_cotnsr(self, cotnsr, **kwargs):
-        return self.sph_to_cyl_tnsr(cotnsr, **kwargs)
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.th)
+        drdz[2, 1] = self.r * np.cos(self.th)
+        drdz[3, 2] = self.r * np.sin(self.th)
+        drdz[1, 3] = np.cos(self.th)
+        drdz[2, 3] = -self.r * np.sin(self.th)
+
+        return np.einsum('kl...,ki...,lj...->ij...', cotnsr, drdz, drdz)
 
     # -------------------------------------
     # Internal to Spherical
@@ -245,6 +369,7 @@ class Coordinates():
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_sph_one_form(self, one_form, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.sph_to_int_vec(one_form, **kwargs)
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
@@ -264,6 +389,7 @@ class Coordinates():
     
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_sph_cotnsr(self, cotnsr, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.sph_to_int_tnsr(cotnsr, **kwargs)
 
     # -------------------------------------
@@ -288,6 +414,7 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
     def sph_to_int_one_form(self, one_form, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.int_to_sph_vec(one_form, **kwargs)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
@@ -307,6 +434,7 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, x1, x2, x3) 
     def sph_to_int_cotnsr(self, cotnsr, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.int_to_sph_tnsr(cotnsr, **kwargs)
 
     # -------------------------------------
@@ -378,6 +506,7 @@ class Coordinates():
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_ortho_sph_one_form(self, one_form, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.ortho_sph_to_int_vec(one_form, **kwargs)
 
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
@@ -397,6 +526,7 @@ class Coordinates():
     
     # (t, x1, x2, x3) -> (t, r, theta, phi) 
     def int_to_ortho_sph_cotnsr(self, cotnsr, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.ortho_sph_to_int_tnsr(cotnsr, **kwargs) 
 
     # -------------------------------------
@@ -422,6 +552,7 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, x1, x2, x3)
     def ortho_sph_to_int_one_form(self, one_form, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.int_to_ortho_sph_vec(one_form, **kwargs)
 
     # (t, r, theta, phi) -> (t, x1, x2, x3)
@@ -441,6 +572,7 @@ class Coordinates():
     
     # (t, r, theta, phi) -> (t, x1, x2, x3)
     def ortho_sph_to_int_cotnsr(self, cotnsr, **kwargs):
+        # Matrix is diagonal so no transpose necessary
         return self.int_to_ortho_sph_tnsr(cotnsr, **kwargs) 
     
     # -------------------------------------
@@ -467,7 +599,22 @@ class Coordinates():
     
     # (t, r, theta, phi) -> (t, R, phi, z)
     def ortho_sph_to_cyl_one_form(self, one_form, **kwargs):
-        return self.cyl_to_ortho_sph_vec(one_form, **kwargs)
+        shape = list(one_form.shape)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[3, 1] = np.cos(self.th)
+        dzdr[1, 2] = np.cos(self.th)
+        dzdr[3, 2] = -np.sin(self.th)
+        dzdr[2, 3] = (1. / np.sin(self.th))
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', dzdr, one_form)
+        else:
+            return Tools.contract_vector_cpp(one_form, dzdr)
 
     # (t, r, theta, phi) -> (t, R, phi, z)
     def ortho_sph_to_cyl_tnsr(self, tnsr, **kwargs):
@@ -488,7 +635,20 @@ class Coordinates():
 
     # (t, r, theta, phi) -> (t, R, phi, z)
     def ortho_sph_to_cyl_cotnsr(self, cotnsr, **kwargs):
-        return self.cyl_to_ortho_sph_tnsr(cotnsr, **kwargs)
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        
+        # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
+        dzdr[0, 0] = 1.
+        dzdr[1, 1] = np.sin(self.th)
+        dzdr[3, 1] = np.cos(self.th)
+        dzdr[1, 2] = np.cos(self.th)
+        dzdr[3, 2] = -np.sin(self.th)
+        dzdr[2, 3] = (1. / np.sin(self.th))
+
+        return np.einsum('kl...,ki...,lj...->ij...', cotnsr, dzdr, dzdr)
 
     # -------------------------------------
     # Cylindrical (orthonormal) to Spherical (orthonormal)
@@ -515,7 +675,22 @@ class Coordinates():
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_ortho_sph_one_form(self, one_form, **kwargs):
-        return self.ortho_sph_to_cyl_vec(one_form, **kwargs)
+        shape = list(one_form.shape)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.th)
+        drdz[2, 1] = np.cos(self.th)
+        drdz[3, 2] = np.sin(self.th)
+        drdz[1, 3] = np.cos(self.th)
+        drdz[2, 3] = -np.sin(self.th)
+
+        if not kwargs.get('cpp', False):
+            return np.einsum('ij...,j...->i...', drdz, one_form)
+        else:
+            return Tools.contract_vector_cpp(one_form, drdz)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
     def cyl_to_ortho_sph_tnsr(self, tnsr, **kwargs):
@@ -527,7 +702,6 @@ class Coordinates():
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         dzdr[0, 0] = 1.
         dzdr[1, 1] = np.sin(self.th)
-        dzdr[1, 2] = 0.
         dzdr[1, 3] = np.cos(self.th)
         dzdr[2, 1] = np.cos(self.th)
         dzdr[2, 3] = -np.sin(self.th)
@@ -536,8 +710,21 @@ class Coordinates():
         return np.einsum('kl...,ki...,lj...->ij...', tnsr, dzdr, dzdr)
 
     # (t, R, phi, z) -> (t, r, theta, phi)
-    def cyl_to_sph_cotnsr(self, cotnsr, **kwargs):
-        return self.ortho_sph_to_cyl_tnsr(cotnsr, **kwargs)
+    def cyl_to_ortho_sph_cotnsr(self, cotnsr, **kwargs):
+        shape = list((self.r * self.th * self.ph).shape)
+        shape.insert(0, 4)
+        shape.insert(0, 4)
+        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+
+        # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
+        drdz[0, 0] = 1.
+        drdz[1, 1] = np.sin(self.th)
+        drdz[2, 1] = np.cos(self.th)
+        drdz[3, 2] = np.sin(self.th)
+        drdz[1, 3] = np.cos(self.th)
+        drdz[2, 3] = -np.sin(self.th)
+
+        return np.einsum('kl...,ki...,lj...->ij...', cotnsr, drdz, drdz)
 
     # Calculate the Lorentz boost matrix Lambda^mu_alpha 
     # See Sadowski+2013 Equation 10 (with - signs on t-i components)
@@ -909,7 +1096,7 @@ class Tilt(Accretion, Coordinates):
         # Tilt angle as a function of radius (1D array)
         if 'tilt_angle' in kwargs:
             self.tilt_angle = kwargs.get('tilt_angle')
-        super()._init(self, grid, data, pars, CONSTANTS, **kwargs)
+        super().__init__(self, grid, data, pars, CONSTANTS, **kwargs)
         self.two_temp = True if ('Ti' in data and 'Te' in data) else False
         self.radiation= True if ('u_rad' in data and 'uu_rad' in data) else False
 
