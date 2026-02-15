@@ -1,5 +1,6 @@
 import sys
 import os
+import glob
 import argparse
 import numpy as np
 file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -28,6 +29,7 @@ def main(**kwargs):
     radiation = kwargs.get('radiation')
     two_temp  = kwargs.get('two_temp')
     cooling   = kwargs.get('cooling')
+    vargamma  = kwargs.get('vargamma')
 
     # Define constants
     MBH = 10.0
@@ -62,12 +64,11 @@ def main(**kwargs):
     save_dir = cv.get_save_dir(sim if title == None else title, 
                                'Averages', 'Slices', reduced=reduced)
 
-    nzeros = len(str(int(os.popen(
-        f'ls -d {data_dir}/dumps* | wc -l').read())))
-        
+    nzeros = len(str(len(glob.glob(os.path.join(data_dir, 'dumps*')))))
+ 
     # Quantities (quants) for slice averaging
     keys = [
-        'rho', 'Ti', 'Pmag', 'Pthm', 'Vol'
+        'rho', 'Ti', 'Pmag', 'Pthm', 'Vol', 'w'
     ]
     if (two_temp and radiation):
         keys += ['Te', 'Prad', 'Eion', 'Eelc', 'rhokappa']
@@ -95,7 +96,7 @@ def main(**kwargs):
         flux_keys += ['R_tR', 'R_tz', 'R_tt', 'R_t1', 
                       'Be_Rad', 'R_tR_Fluid', 'R_tz_Fluid']
     
-    vec_keys += ['rhouR', 'rhouphi', 'rhouz', 'rhou1']
+    rhovec_keys = ['rhouR', 'rhouphi', 'rhouz', 'rhou1']
 
     # Calculate phi integral over gdet including sigma cut
     keys += ['Vol_sigma_cut']
@@ -126,7 +127,7 @@ def main(**kwargs):
     if (r_max != 0.):
         read_args['r_max'] = r_max
 
-    slice_keys = keys + flux_keys + vec_keys
+    slice_keys = keys + flux_keys + vec_keys + rhovec_keys + ['B1']
     
     slices, nphi, iphi_stp = init_slices(data_dir, file_num, slice_keys,
         save_dir, nslices, restart, nzeros, **read_args)
@@ -184,7 +185,7 @@ def main(**kwargs):
             sigma = b2 / H.data['rho']
 
         # Calculate gas pressure
-        if (two_temp):
+        if (two_temp and vargamma):
             pgas= Fluid.calc_pgas(**H.data)
         else:
             gamma_adi = (5. / 3.)
@@ -316,7 +317,10 @@ def main(**kwargs):
 
         # Bernoulli parameter for outflows
         # Numerator of Bernoulli parameter
-        w = (H.data['rho'] * c * c + pgas + H.data['u_gas'] + b2 / (4.*np.pi)) 
+        if (cgs):
+            w = (H.data['rho']*c*c + pgas + H.data['u_gas'] + b2/(4.*np.pi))
+        else:
+            w = (H.data['rho']*c*c + pgas + H.data['u_gas'] + b2) 
         slice_loc['Be'] = ph_sum(w * uu_cov[0], H.grid, H.data, 
                                  H.params, hr.CONSTANTS, **acc_args)[0] 
         if (radiation):
@@ -324,7 +328,11 @@ def main(**kwargs):
                     + b2 / (4.*np.pi) + (4./3.) * H.data['u_rad']) 
             slice_loc['Be_Rad'] = ph_sum(w * uu_cov[0], H.grid, H.data, 
                 H.params, hr.CONSTANTS, **acc_args)[0]
-        
+
+        # B^1 (useful for calculating vector potential)
+        slice_loc['B1'] = ph_sum(H.data['B'][1], H.grid, H.data, 
+                                 H.params, hr.CONSTANTS)[0]
+
         # Deallocate magnetic field in the lab frame and radiation 4-momentum
         # as well as metric tensor and inverse
         H.data['B']    = H.data['rho']
@@ -333,18 +341,22 @@ def main(**kwargs):
         
         # Magnetic and Thermodynamic Structure
         if (two_temp):
-            # Calculate gamma (ratio of specific heats)
-            # Equation 28 in Sadowski+ (2017)
-            Theta_e = (kB * H.data['Te']) / (me * c * c)
-            Theta_i = (kB * H.data['Ti']) / (mi * c * c)
+            if (vargamma):
+                # Calculate gamma (ratio of specific heats)
+                # Equation 28 in Sadowski+ (2017)
+                Theta_e = (kB * H.data['Te']) / (me * c * c)
+                Theta_i = (kB * H.data['Ti']) / (mi * c * c)
 
-            gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-            gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
+                gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
+                gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
+            else:
+                gam_e = 5./3.
+                gam_i = 5./3.
 
         if (two_temp and radiation):
             quants = [
                 H.data['rho'], H.data['Ti'], b2/(8. * np.pi), pgas,
-                1.0, H.data['Te'], (1./3.) * H.data['u_rad'],
+                1.0, w, H.data['Te'], (1./3.) * H.data['u_rad'],
                 (1./(gam_i-1.)) * (H.data['rho'] / (mu_i * mp)) * kB * H.data['Ti'],
                 (1./(gam_e-1.)) * (H.data['rho'] / (mu_e * mp)) * kB * H.data['Te']
             ]
@@ -352,19 +364,19 @@ def main(**kwargs):
             T_gas = pgas / H.data['rho']
             quants = [
                 H.data['rho'], T_gas, b2/(8. * np.pi), pgas,
-                1.0, (1./3.) * H.data['u_rad']
+                1.0, w, (1./3.) * H.data['u_rad']
             ]
         elif (two_temp and not radiation):
             quants = [
                 H.data['rho'], H.data['Ti'], b2/(8. * np.pi), pgas,
-                1.0, H.data['Te'],
+                1.0, w, H.data['Te'],
                 (1./(gam_i-1.)) * (H.data['rho'] / (mu_i * mp)) * kB * H.data['Ti'],
                 (1./(gam_e-1.)) * (H.data['rho'] / (mu_e * mp)) * kB * H.data['Te']
             ]
         else:
             T_gas = pgas / H.data['rho']
             quants = [
-                H.data['rho'], T_gas, b2/(8. * np.pi), pgas, 1.0
+                H.data['rho'], T_gas, b2/2., pgas, 1.0, w
             ]
 
         if (radiation and two_temp):
@@ -391,10 +403,12 @@ def main(**kwargs):
 
         # Coulomb collisional and radiative cooling
         if (cooling and two_temp):
-            qie  = Fluid.calc_qie( **H.data, cpp=True)
+            # Exclude relativistic temperatures in qie
+            non_rel = (H.data['Ti'] < 1.e12) * (H.data['Te'] < 1.e10) * (H.data['Te'] > 1.e4)
+            qie  = Fluid.calc_qie(**H.data, cpp=True, cooling=True) * non_rel
             slice_loc['qie']  = ph_sum(qie,  H.grid, H.data, H.params, 
                 hr.CONSTANTS, weight=uu_cov[0]/c, **acc_args)[0]
-            del qie
+            del qie, non_rel
         if (cooling and radiation):
             qIC  = Radi.calc_qIC(  **H.data)
             qemi = Radi.calc_q_emi(**H.data, b2=b2, XRB=True, cpp=True) 
@@ -411,16 +425,10 @@ def main(**kwargs):
         slice_loc['Vol_sigma_cut'] = ph_sum(1.0, H.grid, H.data, 
             H.params, hr.CONSTANTS, **sigma_cut_args)[0]            
 
-        # Averages required for stress profiles
-        if (radiation):
-            w = (H.data['rho'] * c * c + pgas + H.data['u_gas'] 
-                + b2 / (4.*np.pi) + (4./3.) * H.data['u_rad']) 
-        else:
-            w = (H.data['rho'] * c * c + pgas + H.data['u_gas'] + b2) 
-
         H.data['u_gas'] = H.data['rho']
-        if (two_temp): del Theta_e, Theta_i, gam_e, gam_i, pgas
-        else:          del pgas, T_gas
+        if (two_temp and vargamma): del Theta_e, Theta_i, gam_e, gam_i, pgas
+        elif (two_temp and not vargamma): del gam_e, gam_i, pgas
+        else: del pgas, T_gas
 
         if (radiation): 
             del kappa_eff, kappa_abs, b2
@@ -433,7 +441,7 @@ def main(**kwargs):
         if (two_temp):
             H.data['Ti'] = H.data['rho']
             H.data['Te'] = H.data['rho']
-
+        
         # Compute theta and phi averages of vector quantities
         uu_cyl     = Coords.int_to_cyl_vec(H.data['uu'], cpp=True)
         uu_sph     = Coords.int_to_ortho_sph_vec(H.data['uu'], cpp=True)
@@ -452,23 +460,22 @@ def main(**kwargs):
             np.nan_to_num(uu_cyl[3] / uu_cyl[0]),
             b_cyl[1], b_cyl[2], b_cyl[3], b_cov_cyl[2], b_sph[1], b_sph[2]
         ]
-        
+
+        for i, (key, quant) in enumerate(zip(vec_keys, quants)):
+            slice_loc[f'{key}'] = ph_sum(quant, H.grid, H.data, 
+                H.params, hr.CONSTANTS, **acc_args)[0]
+
         # Mass fluxes
-        quants += [
+        quants = [
             H.data['rho'] * uu_cyl[1], 
             H.data['rho'] * uu_cyl[2], 
             H.data['rho'] * uu_cyl[3],
             H.data['rho'] * H.data['uu'][1]
-        ]
+        ] 
+        for i, (key, quant) in enumerate(zip(rhovec_keys, quants)):
+            slice_loc[f'{key}'] = ph_sum(quant, H.grid, H.data, 
+                H.params, hr.CONSTANTS, **sigma_cut_args)[0]
 
-        for i, (key, quant) in enumerate(zip(vec_keys, quants)):
-            if (i < 18):
-                slice_loc[f'{key}'] = ph_sum(quant, H.grid, H.data, 
-                    H.params, hr.CONSTANTS, **acc_args)[0]
-            else:
-                slice_loc[f'{key}'] = ph_sum(quant, H.grid, H.data, 
-                    H.params, hr.CONSTANTS, **sigma_cut_args)[0]
-        
         # Deallocate memory before MPI gather
         H.data['uu']   = H.data['rho']
         H.grid['gdet'] = H.data['rho']
@@ -500,7 +507,7 @@ def main(**kwargs):
                 for key in slice_keys:
                     slices[f'{key}'] += slc[f'{key}']
 
-            slices['k_max'] = k_min + (k_max - k_min) * size 
+            slices['k_max'] = k_max
             slices['slice_num_restart'] = slice_num + 1
             slices['saved'] = True
             fnum_str = str(file_num).zfill(nzeros)
@@ -608,6 +615,10 @@ if __name__ == '__main__':
                         default=True, 
                         help="""boolean to determine if cooling rates
                         (qie, qIC, qemi) should be included.""")    
+    parser.add_argument('--vargamma', action=argparse.BooleanOptionalAction,
+                        default=True, 
+                        help="""boolean to determine if variable gamma 
+                        should be used for ion/electron energy/pressure.""")  
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if slice extraction
                         should be done on reduced data.""")
