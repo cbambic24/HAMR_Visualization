@@ -1,6 +1,5 @@
 import sys
 import os
-import glob
 import argparse
 import numpy as np
 file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +25,6 @@ def main(**kwargs):
     title     = kwargs.get('title')
     radiation = kwargs.get('radiation')
     two_temp  = kwargs.get('two_temp')
-    vargamma  = kwargs.get('vargamma')
 
     # Define constants
     MBH = 10.0
@@ -61,8 +59,9 @@ def main(**kwargs):
     save_dir = cv.get_save_dir(sim if title == None else title, 
                                'Averages', 'Profiles', reduced=reduced)
 
-    nzeros = len(str(len(glob.glob(os.path.join(data_dir, 'dumps*')))))
-
+    nzeros = len(str(int(os.popen(
+        f'ls -d {data_dir}/dumps* | wc -l').read())))
+        
     # Quantities (quants) for profile averaging
     keys = [
         'rho', 'Ti', 'Pmag', 'Pthm', 'Vol', 'Dtheta2'
@@ -108,7 +107,6 @@ def main(**kwargs):
     
     profiles, nphi, iphi_stp = init_profiles(data_dir, file_num, profile_keys,
         save_dir, nslices, restart, nzeros, **read_args)
-    profiles['done'] = False
 
     # Loop over whole data slice that fits on single node.
     # Process slivers of data slice assigned to each core in parallel.
@@ -166,7 +164,7 @@ def main(**kwargs):
             upper_lower=True, index=[1,0], cpp=True)
         
         # Calculate gas pressure
-        if (two_temp and vargamma):
+        if (two_temp):
             pgas= Fluid.calc_pgas(**H.data)
         else:
             gamma_adi = (5. / 3.)
@@ -230,17 +228,13 @@ def main(**kwargs):
         if (radiation): H.data['uu_rad'] = H.data['rho']
     
         if (two_temp):
-            if (vargamma):
-                # Calculate gamma (ratio of specific heats)
-                # Equation 28 in Sadowski+ (2017)
-                Theta_e = (kB * H.data['Te']) / (me * c * c)
-                Theta_i = (kB * H.data['Ti']) / (mi * c * c)
-    
-                gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-                gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
-            else:
-                gam_e = 5./3.
-                gam_i = 5./3.
+            # Calculate gamma (ratio of specific heats)
+            # Equation 28 in Sadowski+ (2017)
+            Theta_e = (kB * H.data['Te']) / (me * c * c)
+            Theta_i = (kB * H.data['Ti']) / (mi * c * c)
+ 
+            gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
+            gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
 
         if (two_temp and radiation):
             quants = [
@@ -262,7 +256,7 @@ def main(**kwargs):
         else:
             T_gas = pgas / H.data['rho']
             quants = [
-                H.data['rho'], T_gas, b2/2., pgas,
+                H.data['rho'], T_gas, b2/(8. * np.pi), pgas,
                 1.0, np.square(H.grid['theta'] - np.pi/2.)
             ]
 
@@ -271,11 +265,9 @@ def main(**kwargs):
                 H.grid, H.data, H.params, hr.CONSTANTS, 
                 weight=H.data['rho'], **acc_args)[0]
         
-        if (two_temp and vargamma): 
+        if (two_temp):
             del Theta_e, Theta_i, gam_e, gam_i, pgas, b2
-        elif (two_temp and not vargamma): 
-            del gam_e, gam_i, pgas, b2
-        else: 
+        else:
             del pgas, T_gas, b2
 
         # Deallocate temperatures and energy densities 
@@ -322,16 +314,14 @@ def main(**kwargs):
                 for key in profile_keys:
                     profiles[f'{key}'] += prof[f'{key}']
 
-            profiles['k_max'] = k_max
+            profiles['k_max'] = k_min + (k_max - k_min) * size 
             profiles['slice_num_restart'] = slice_num + 1
-            profiles['saved'] = True
             fnum_str = str(file_num).zfill(nzeros)
-            if (profiles['k_max'] == nphi):
-                profiles['done'] = True
             np.savez(save_dir + f'/Profiles_{fnum_str}', **profiles)
 
             snum = int(slice_num + 1)
             print(f'Finished with slice {snum:d} of {nslices:d}', flush=True)
+            profiles['saved'] = True
 
     print(f'Done with all profiles for file number {file_num}.')
 
@@ -359,7 +349,7 @@ def init_profiles(data_dir, file_num, keys,
     nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
     nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
     nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
-
+    
     if (nphi % nslices != 0):
         raise ValueError(f'nslices must evenly divide nphi = {nphi}')
     iphi_stp = int(nphi / nslices)
@@ -408,10 +398,6 @@ if __name__ == '__main__':
                         default=True, 
                         help="""boolean to determine if two-temperature 
                         physics should be included in profile extraction.""")
-    parser.add_argument('--vargamma', action=argparse.BooleanOptionalAction,
-                        default=True, 
-                        help="""boolean to determine if variable gamma 
-                        should be used for ion/electron energy/pressure.""")  
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")

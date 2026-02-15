@@ -1,6 +1,5 @@
 import sys
 import os
-import glob
 import argparse
 import numpy as np
 file_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,12 +22,10 @@ def main(**kwargs):
     lowres3   = kwargs.get('lowres3')
     reduced   = kwargs.get('reduced')
     restart   = kwargs.get('restart')
-    overwrite = kwargs.get('overwrite')
     shared    = kwargs.get('shared')
     title     = kwargs.get('title')
     radiation = kwargs.get('radiation')
     two_temp  = kwargs.get('two_temp')
-    vargamma  = kwargs.get('vargamma')
 
     # Define constants
     MBH = 10.0
@@ -63,8 +60,9 @@ def main(**kwargs):
     save_dir = cv.get_save_dir(sim if title == None else title, 
                                'Averages', 'Profiles', reduced=reduced)
 
-    nzeros = len(str(len(glob.glob(os.path.join(data_dir, 'dumps*')))))
-    
+    nzeros = len(str(int(os.popen(
+        f'ls -d {data_dir}/dumps* | wc -l').read())))
+        
     # Quantities (quants) for profile averaging
     keys = [
         'rho', 'Ti', 'Pmag', 'Pthm', 'Vol', 'Dtheta2'
@@ -72,7 +70,7 @@ def main(**kwargs):
     # Accretion rates (mass and energy) + Phi_BH
     acc_keys = [
         'Mdot', 'Edot', 'Mdot_sigma', 'Edot_sigma',
-        'Edot_Poyt', 'Edot_Fluid', 'Edot_jet'
+        'Edot_Poyt', 'Edot_Fluid', 'Phi_BH', 'Edot_jet'
     ]
     phi_keys = [
         'Phi_BH',  'Phi_sph_upp', 'Phi_sph_low', 
@@ -102,15 +100,6 @@ def main(**kwargs):
     rank = comm.Get_rank()
 
     file_list_local = cv.get_file_list_local(file_list, size, rank, data_dir)
-    if not overwrite:
-        sim_title = sim if title == None else title
-        averages_dir = cv.user_path + f'/Averages/{sim_title}'
-        # Use get_file_list_local as if on rank 0 with 1 core
-        existing_profiles = cv.get_file_list_local(file_list_local, 1, 0, 
-            averages_dir, file_type='Profiles', reduced=reduced)
-        for existing_profile in existing_profiles:
-            if (existing_profile in file_list_local):
-                file_list_local.remove(existing_profile)
 
     read_args = {
         'cgs_grid' : cgs,
@@ -128,7 +117,6 @@ def main(**kwargs):
     for file_num in file_list_local:
         profiles, nphi, iphi_stp = init_profiles(data_dir, file_num, 
             profile_keys, save_dir, nslices, restart, nzeros, **read_args)
-        profiles['done'] = False
 
         # Loop over whole data slice that fits on single node.
         # Process slivers of data slice assigned to each core in parallel.
@@ -176,7 +164,7 @@ def main(**kwargs):
                 upper_lower=True, index=[1,0], cpp=True)
             
             # Calculate gas pressure
-            if (two_temp and vargamma):
+            if (two_temp):
                 pgas= Fluid.calc_pgas(**H.data)
             else:
                 gamma_adi = (5. / 3.)
@@ -240,17 +228,13 @@ def main(**kwargs):
             if (radiation): H.data['uu_rad'] = H.data['rho']
         
             if (two_temp):
-                if (vargamma):
-                    # Calculate gamma (ratio of specific heats)
-                    # Equation 28 in Sadowski+ (2017)
-                    Theta_e = (kB * H.data['Te']) / (me * c * c)
-                    Theta_i = (kB * H.data['Ti']) / (mi * c * c)
-        
-                    gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-                    gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
-                else:
-                    gam_e = 5./3.
-                    gam_i = 5./3.
+                # Calculate gamma (ratio of specific heats)
+                # Equation 28 in Sadowski+ (2017)
+                Theta_e = (kB * H.data['Te']) / (me * c * c)
+                Theta_i = (kB * H.data['Ti']) / (mi * c * c)
+     
+                gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
+                gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
 
             if (two_temp and radiation):
                 quants = [
@@ -272,7 +256,7 @@ def main(**kwargs):
             else:
                 T_gas = pgas / H.data['rho']
                 quants = [
-                    H.data['rho'], T_gas, b2/2., pgas,
+                    H.data['rho'], T_gas, b2/(8. * np.pi), pgas,
                     1.0, np.square(H.grid['theta'] - np.pi/2.)
                 ]
 
@@ -281,10 +265,8 @@ def main(**kwargs):
                     H.grid, H.data, H.params, hr.CONSTANTS, 
                     weight=H.data['rho'], **acc_args)[0]
             
-            if (two_temp and vargamma):
+            if (two_temp):
                 del Theta_e, Theta_i, gam_e, gam_i, pgas, b2
-            elif (two_temp and not vargamma):
-                del gam_e, gam_i, pgas, b2
             else:
                 del pgas, T_gas, b2
             
@@ -318,7 +300,7 @@ def main(**kwargs):
             # Put spherical radius in dictionary 
             profiles['r']   = H.grid['r'][0, :, 0, 0] / Rg
             profiles['dx1'] = H.params['dx1']
-            profiles['k_max'] = k_max
+            profiles['k_max'] = k_min + (k_max - k_min)
 
             print(f'Rank {rank:d} done analyzing range of k: ' + 
                 f'({k_min:d}, {k_max:d}).', flush=True)
@@ -328,11 +310,9 @@ def main(**kwargs):
                 f'for file {file_num}', flush=True) 
 
         profiles['slice_num_restart'] = slice_num + 1
-        profiles['saved'] = True
-        if (profiles['k_max'] == nphi):
-            profiles['done'] = True
         fnum_str = str(file_num).zfill(nzeros)
         np.savez(save_dir + f'/Profiles_{fnum_str}', **profiles)
+        profiles['saved'] = True
         print(f'Done with all profiles for file number {file_num}.',flush=True) 
 
 def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
@@ -410,20 +390,12 @@ if __name__ == '__main__':
                         default=True, 
                         help="""boolean to determine if two-temperature 
                         physics should be included in profile extraction.""")     
-    parser.add_argument('--vargamma', action=argparse.BooleanOptionalAction,
-                        default=True, 
-                        help="""boolean to determine if variable gamma 
-                        should be used for ion/electron energy/pressure.""") 
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")
     parser.add_argument('--restart', action='store_true', required=False, 
                         help="""boolean set to determine if profile 
                         integration should continue from last slice_num""")
-    parser.add_argument('--overwrite', action=argparse.BooleanOptionalAction,
-                        default=True, 
-                        help="""boolean to determine if existing profile file 
-                        should be overwritten.""")
     parser.add_argument('--shared', action='store_true', required=False, 
                         help="""boolean set to determine if proj-shared 
                         should be used as the location of the data directory""")
