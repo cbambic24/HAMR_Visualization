@@ -1,13 +1,13 @@
 import sys
 import os
-import argparse
 import glob
 import numpy as np
-read_path   = '/lustre/orion/ast178/proj-shared/cbambic/HAMR_Visualization/Read_HAMR_Data'
-asys_path   = '/lustre/orion/ast178/proj-shared/cbambic/HAMR_Visualization/Analyze_HAMR_Data'
-run_path    = '/lustre/orion/ast178/proj-shared/cbambic/RUN'
-user_path   = '/lustre/orion/ast178/proj-shared/cbambic'
-shared_path = '/lustre/orion/ast178/proj-shared'
+asys_path   = os.path.dirname(os.path.abspath(__file__))
+vis_path    = os.path.dirname(asys_path)
+read_path   = os.path.join(vis_path, "Read_HAMR_Data")
+user_path   = os.path.dirname(vis_path)
+run_path    = os.path.join(user_path, "RUN")
+shared_path = os.path.dirname(user_path)
 sys.path.insert(0, read_path)
 sys.path.insert(0, asys_path)
 sys.path.insert(0, run_path)
@@ -45,7 +45,7 @@ def get_save_dir(sim, type, diagnostic, **kwargs):
         save_dir = user_path + f'/{type}/' + sim + f'/Reduced_Resolution/{subtype}/{diagnostic}'
     return save_dir
 
-def get_file_list_local(file_list, size, rank, data_dir):
+def get_file_list_local(file_list, size, rank, data_dir, **kwargs):
     nout             = len(file_list)
     nfiles_nproc     = int(np.floor(nout / size))
     nfiles_remaining = nout % size
@@ -53,8 +53,11 @@ def get_file_list_local(file_list, size, rank, data_dir):
         nfiles_remaining * [nfiles_nproc + 1])
     file_list_local  = ((sum(files_per_proc[:rank]) +
         np.arange(0, files_per_proc[rank])) + file_list[0]).tolist()
-    
-    file_list_local = check_dumps_exist(data_dir, file_list_local)
+
+    if not kwargs.get('file_type', False):
+        file_list_local = check_dumps_exist(data_dir, file_list_local)
+    else:
+        file_list_local = check_files_exist(data_dir, file_list_local, **kwargs)
     
     return file_list_local
 
@@ -67,6 +70,26 @@ def check_dumps_exist(path_to_dumps, file_list):
             if os.path.isdir(path_to_dumps + f'/dumps{file_num}_'):
                 found_file = path_to_dumps + f'/dumps{file_num}_'
                 print(f'The file can be found as {found_file}', flush=True) 
+    for removed_file in removed_files:
+        file_list.remove(removed_file)
+    return file_list
+
+def check_files_exist(path_to_averages, file_list, **kwargs):
+    file_type = kwargs.get('file_type', False)
+    reduced   = kwargs.get('reduced',   False)
+    if (file_type != 'Profiles' and file_type != 'Slices' and 
+        file_type != 'Heating_Profiles' and file_type != 'Heating_Slices'):
+        raise ValueError("file_type can be Profiles, Slices, " + 
+                         "Heating_Profiles, or Heating_Slices")
+    file_dir  = (f'{path_to_averages}/Full_Resolution/{file_type}' if not reduced 
+                 else f'{path_to_averages}/Reduced_Resolution/{file_type}')
+    data_list = glob.glob(f'{file_type}*', root_dir=file_dir)
+    nums = [int(name.strip(f'{file_type}_').strip('.npz')) for name in data_list]
+    nums.sort()
+    removed_files = []
+    for file_num in file_list:
+        if file_num not in nums:
+            removed_files.append(file_num)
     for removed_file in removed_files:
         file_list.remove(removed_file)
     return file_list
@@ -202,18 +225,13 @@ class Phi_Slice():
         self.H.read_grid(fnum, direct=True)
         self.H.read_prims(fnum, skip_read_params=True)
         self.cgs  = kwargs.get('cgs_data', True)
-        self.MBH  = kwargs.get('MBH', 10.0)
+        self.MBH  = kwargs.get('MBH', 10.0) if self.cgs else 1.
         self.Msun = hr.CONSTANTS['Msun']
-        if (self.cgs):
-            self.rho0 = self.H.params['density_scale']
-            self.G    = hr.CONSTANTS['G']
-            self.c    = hr.CONSTANTS['c']
-            self.Rg   = self.G * self.MBH * self.Msun / (self.c * self.c)
-        else:
-            self.rho0 = 1.
-            self.G    = 1.
-            self.c    = 1.
-            self.Rg   = 1.
+        self.rho0 = self.H.params['density_scale'] if self.cgs else 1. # g/cm^3
+        self.c    = hr.CONSTANTS['c'] if self.cgs else 1. # cm/s
+        self.G    = hr.CONSTANTS['G'] if self.cgs else 1. # cm^3/g s^2
+        self.Rg   = (self.G * self.MBH * self.Msun / (self.c * self.c)
+                     if self.cgs else 1.)
 
         self.calc_gridsize()
 
@@ -228,15 +246,29 @@ class Phi_Slice():
         self.two_temp  = True if 'Te' and 'Ti' in self.H.data else False
         self.radiation = True if 'u_rad' and 'uu_rad' in self.H.data else False
 
+        acc_args = {
+            'grid'      : self.H.grid,
+            'data'      : self.H.data,
+            'pars'      : self.H.params,
+            'CONSTANTS' : hr.CONSTANTS,
+            'cgs'       : self.cgs,
+            'MBH'       : self.MBH,
+            'radiation' : self.radiation
+        }
+        class_args = {
+            'pars'      : self.H.params,
+            'CONSTANTS' : hr.CONSTANTS,
+            'cgs'       : self.cgs
+        }
+
         # Initialize Accretion class
-        self.Acc   = ana.Accretion(self.H.grid, self.H.data, self.H.params, 
-            hr.CONSTANTS, cgs=self.cgs, MBH=self.MBH, radiation=self.radiation)
+        self.Acc   = ana.Accretion(**acc_args)
         # Initialize Fluid class
-        self.Fluid = ana.Fluid(self.H.params, hr.CONSTANTS, cgs=self.cgs)
+        self.Fluid = ana.Fluid(**class_args)
         # Initialize Field class
-        self.Field = ana.Field(self.H.params, hr.CONSTANTS, cgs=self.cgs)
+        self.Field = ana.Field(**class_args)
         # Initialize Radiation class
-        self.Rad   = rad.Radiation(self.H.params, hr.CONSTANTS, cgs=self.cgs)
+        self.Rad   = rad.Radiation(**class_args)
         # Initialize Analytic class
         self.Analytic = theory.Analytic(hr.CONSTANTS, cgs=self.cgs)
 
@@ -317,7 +349,7 @@ class Phi_Slice():
         return variables[0] if len(variables) == 1 else variables
     
     def set_Coords2D(self, iphi):
-        ones  = np.ones(self.H.data['rho'].shape)
+        ones  = np.ones_like(self.H.data['rho'])
         r2D   = (ones * self.r)[  0, :, :, iphi]
         th2D  = (ones * self.th)[ 0, :, :, iphi]
         phi2D = (ones * self.phi)[0, :, :, iphi]
@@ -326,7 +358,7 @@ class Phi_Slice():
         return None
     
     def set_Tetrads2D(self, iphi, **kwargs):
-        ones  = np.ones(self.H.data['rho'].shape)
+        ones  = np.ones_like(self.H.data['rho'])
         r2D   = (ones * self.r)[  0, :, :, iphi]
         th2D  = (ones * self.th)[ 0, :, :, iphi]
         phi2D = (ones * self.phi)[0, :, :, iphi]
@@ -369,42 +401,28 @@ class Phi_Slice():
         sigma = (b2 / B02) / (rho / rho0)
         return sigma
     
-    def calc_BetaInv(self, iphi):
+    def calc_BetaInv(self, iphi, **kwargs):
         # BetaI = pmag/pgas
         rho0, c = self.rho0, self.c    
         B02     = self.Field.B0 * self.Field.B0  
-        keys    = ['rho', 'B', 'uu', 'u_gas', 'Te', 'Ti', 'gcov']
-        rho, B, uu, u_gas, Te, Ti, gcov = self.get_vars2D(keys, iphi)
+        keys    = ['B', 'uu', 'u_gas', 'Te', 'Ti', 'gcov']
+        B, uu, u_gas, Te, Ti, gcov = self.get_vars2D(keys, iphi)
         
         # Calculate gas pressure and Beta^-1
         if (self.cgs):
-            pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti)
+            if kwargs.get('vargamma', True):
+                pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti)
+            else:
+                gamma_adi = 5./3.
+                pgas  = (gamma_adi - 1.) * u_gas
         else:
-            pgas  = ((5./3.) - 1.) * u_gas
+            gamma_adi = 5./3.
+            pgas  = (gamma_adi - 1.) * u_gas
         b2 = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)
         
         BetaI = ((b2 / B02) / 2.) / (pgas / (rho0 * c * c))
         return BetaI
-    
-    def calc_sigma_BetaI(self, iphi):
-        # sigma, BetaI = pmag/pgas
-        rho0, c = self.rho0, self.c    
-        B02     = self.Field.B0 * self.Field.B0  
-        keys    = ['rho', 'B', 'uu', 'u_gas', 'Te', 'Ti', 'gcov']
-        rho, B, uu, u_gas, Te, Ti, gcov = self.get_vars2D(keys, iphi)
-    
-        # Calculate sigma
-        b     = self.Field.calc_b(B, uu, gcov)
-        b2    = self.Field.calc_b2(b, B, gcov)
-        sigma = (b2 / B02) / (rho / rho0)
-        # Calculate gas pressure and Beta^-1
-        if (self.cgs):
-            pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti)
-        else:
-            pgas  = ((5./3.) - 1.) * u_gas
-        BetaI = ((b2 / B02) / 2.) / (pgas / (rho0 * c * c))
-        return sigma, BetaI
-    
+
     def calc_radiation_energy_density(self, iphi):
         # radiation energy density
         return self.get_vars2D(['u_rad'], iphi)
@@ -427,28 +445,43 @@ class Phi_Slice():
         return tr2 * rho
 
     # Pressures
-    def calc_pgas(self, iphi):
-        u_gas, Te, Ti = self.get_vars2D(['u_gas', 'Te', 'Ti'], iphi)
-        return self.Fluid.calc_pgas(u_gas, Te, Ti)
+    def calc_pgas(self, iphi, **kwargs):
+        if (self.two_temp and self.radiation):
+            u_gas, Te, Ti = self.get_vars2D(['u_gas', 'Te', 'Ti'], iphi)
+            return self.Fluid.calc_pgas(u_gas, Te, Ti)
+        elif (self.two_temp and self.radiation and 
+              not kwargs.get('vargamma', True)):
+            u_gas = self.get_vars2D(['u_gas'], iphi)
+            gamma_adi = 5./3.
+            return (gamma_adi - 1.) * u_gas
+        else:
+            u_gas = self.get_vars2D(['u_gas'], iphi)
+            gamma_adi = 5./3.
+            return (gamma_adi - 1.) * u_gas
+
+    def calc_pmag(self, iphi):
+        B, gcov, uu = self.get_vars2D(['B', 'gcov', 'uu'], iphi)
+        b2    = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)  
+        return (b2 / (8. * np.pi) if self.cgs else b2/2.)
     
     def calc_prad(self, iphi):
         u_rad = self.get_vars2D(['u_rad'], iphi)
         prad  = (1./3.) * u_rad
         return prad
     
-    def calc_pmag(self, iphi):
-        B, gcov, uu = self.get_vars2D(['B', 'gcov', 'uu'], iphi)
-        b2    = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)     
-        return b2 / (8. * np.pi)
-
-    def calc_pmag_pradgas(self, iphi):
+    def calc_pmag_pradgas(self, iphi, **kwargs):
         B, gcov, uu = self.get_vars2D(['B', 'gcov', 'uu'], iphi)
         b2    = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu) 
         keys  = ['u_gas', 'u_rad', 'Te', 'Ti']
-        u_gas, u_rad, Te, Ti = self.get_vars2D(keys, iphi) 
+        if (self.two_temp and self.radiation and kwargs.get('vargamma', True)):
+            u_gas, u_rad, Te, Ti = self.get_vars2D(keys, iphi) 
+            pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti)
+        elif (not kwargs.get('vargamma', True) and self.radiation):
+            u_gas, u_rad = self.get_vars2D(['u_gas', 'u_rad'], iphi) 
+            gamma_adi = 5./3.
+            pgas  = (gamma_adi - 1.) * u_gas
         
-        pmag  = b2 / (8. * np.pi)
-        pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti)
+        pmag  = b2 / (8. * np.pi) if self.cgs else b2 / 2.
         prad  = (1./3.) * u_rad
         return pmag / (prad + pgas)
     
@@ -457,7 +490,7 @@ class Phi_Slice():
         b2    = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu) 
         u_rad = self.get_vars2D(['u_rad'], iphi) 
         
-        pmag  = b2 / (8. * np.pi)
+        pmag  = b2 / (8. * np.pi) if self.cgs else b2 / 2.
         prad  = (1./3.) * u_rad
         return pmag / prad
     
@@ -522,6 +555,7 @@ class Phi_Slice():
         return B_cyl[3]
 
     def calc_B_cyl(self, iphi, **kwargs):
+        # Only returns BR, Bz
         B = self.get_vars2D(['B'], iphi)
         self.set_Coords2D(iphi)
 
@@ -544,6 +578,7 @@ class Phi_Slice():
                 return BR, Bz, in_out
     
     def calc_B_cyl_vec(self, iphi, **kwargs):
+        # Returns BR, Bphi, Bz
         B = self.get_vars2D(['B'], iphi)
         self.set_Coords2D(iphi)
 
@@ -568,6 +603,7 @@ class Phi_Slice():
                 return BR, Bphi, Bz, in_out
 
     def calc_B_cart(self, iphi, **kwargs):
+        # Only returns Bx, Bz
         B = self.get_vars2D(['B'], iphi)
         self.set_Coords2D(iphi)
 
@@ -590,6 +626,7 @@ class Phi_Slice():
                 return Bx, Bz, in_out
 
     def calc_bpol(self, iphi):
+        # Returns signed poloidal field sqrt(BR^2 + Bz^2)
         B, gcov, uu = self.get_vars2D(['B', 'gcov', 'uu'], iphi)
         self.set_Coords2D(iphi)
 
@@ -601,6 +638,7 @@ class Phi_Slice():
         return np.sign(bcyl[3]) * np.sqrt(ana.Tools.dot(bpol, bpol, gcov_cyl))
 
     def calc_btor(self, iphi):
+        # Returns toroidal field in orthonormal cylindrical coordinates
         B, gcov, uu = self.get_vars2D(['B', 'gcov', 'uu'], iphi)
         self.set_Coords2D(iphi)
 
@@ -609,6 +647,7 @@ class Phi_Slice():
         return bcyl[2]
 
     def calc_bpol_btor(self, iphi):
+        # Returns signed ratio of poloidal to toroidal field strength
         B, gcov, uu = self.get_vars2D(['B', 'gcov', 'uu'], iphi)
         self.set_Coords2D(iphi)
 
@@ -657,6 +696,7 @@ class Phi_Slice():
         return vR / vKep[0, :, :, 0]
 
     def calc_uu_cyl(self, iphi, **kwargs):
+        # Returns uuR, uuz
         uu = self.get_vars2D(['uu'], iphi)
         self.set_Coords2D(iphi)
 
@@ -707,6 +747,7 @@ class Phi_Slice():
                 return vR, vphi, vz, in_out
     
     def calc_uu_cart(self, iphi, **kwargs):
+        # Returns uux, uuz
         uu = self.get_vars2D(['uu'], iphi)
         self.set_Coords2D(iphi)
 
@@ -745,6 +786,7 @@ class Phi_Slice():
     
     # Radiation 4-velocity
     def calc_uu_rad_cyl(self, iphi, **kwargs):
+        # Returns radiation uuR, uuz
         uu_rad = self.get_vars2D(['uu_rad'], iphi)
         self.set_Coords2D(iphi)
 
@@ -767,6 +809,7 @@ class Phi_Slice():
                 return uu_radR, uu_radz, in_out
 
     def calc_uu_rad_cart(self, iphi, **kwargs):
+        # Returns radiation uux, uuz 
         uu_rad = self.get_vars2D(['uu_rad'], iphi)
         self.set_Coords2D(iphi)
 
@@ -1240,6 +1283,89 @@ class Phi_Slice():
     def calc_OmegaK(self):
         return self.Analytic.calc_OmegaK(
             self.MBH, self.H.params['a'], self.r)[0, :, 0, :]
+    
+    # Scale heights ratios/ Disk thicknesses (H/r)
+    def calc_HoR_thm(self, iphi):
+        Te, Ti, uu = self.get_vars2D(['Te', 'Ti', 'uu'], iphi)
+        c    = self.c
+        kB   = hr.CONSTANTS['kB']
+        mp   = hr.CONSTANTS['mp'] 
+
+        x_AB = hr.CONSTANTS['X_AB']
+        y_AB = hr.CONSTANTS['Y_AB']
+
+        # Equation 11 in Sadowski+ (2017)
+        mu_i = 4.0 / (4.0 * x_AB + y_AB)
+        
+        cs = np.sqrt(kB * (Ti + Te) / (mu_i * mp))
+        self.set_Coords2D(iphi)
+
+        # Calculate uu in orthonormal spherical coordinates
+        uu_sph = self.Coords2D.int_to_ortho_sph_vec(uu)
+        vphi   = c * (uu_sph[3] / uu_sph[0])
+        return cs/vphi
+
+    def calc_HoR_mag(self, iphi):
+        rho, uu      = self.get_vars2D(['rho', 'uu'], iphi)
+        u_gas, u_rad = self.get_vars2D(['u_gas', 'u_rad'], iphi)
+        B, gcov      = self.get_vars2D(['B', 'gcov'], iphi)
+        b2 = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)
+        c  = self.c
+        gamma_adi = 5./3.
+        pgas = (gamma_adi - 1.) * u_gas
+        w  = rho * c * c + b2 / (4. * np.pi) + u_gas + pgas + (4./3.) * u_rad
+        # Calculate uu in orthonormal spherical coordinates
+        uu_sph = self.Coords2D.int_to_ortho_sph_vec(uu)
+        vphi   = c * (uu_sph[3] / uu_sph[0])
+        return (c / vphi) * np.sqrt(b2 / (4. * np.pi * w))
+
+    def calc_HoR_rad(self, iphi):
+        rho, uu      = self.get_vars2D(['rho', 'uu'], iphi)
+        u_gas, u_rad = self.get_vars2D(['u_gas', 'u_rad'], iphi)
+        c  = self.c
+        gamma_adi = 5./3.
+        pgas  = (gamma_adi - 1.) * u_gas
+        prad  = (1./3.) * u_rad
+        ptot  = pgas + prad
+        rhoc2 = rho * c * c
+        cs_rad = c * np.sqrt((4./3.) * ptot / (rhoc2 + u_rad + u_gas))
+        # Calculate uu in orthonormal spherical coordinates
+        uu_sph = self.Coords2D.int_to_ortho_sph_vec(uu)
+        vphi   = c * (uu_sph[3] / uu_sph[0])
+        return cs_rad / vphi
+    
+    def calc_HoR_tot(self, iphi):
+        rho, Te, Ti, uu = self.get_vars2D(['rho', 'Te', 'Ti', 'uu'], iphi)
+        u_gas, u_rad    = self.get_vars2D(['u_gas', 'u_rad'], iphi)
+        B, gcov         = self.get_vars2D(['B', 'gcov'], iphi)
+
+        # Thermal
+        kB   = hr.CONSTANTS['kB']
+        mp   = hr.CONSTANTS['mp'] 
+        x_AB = hr.CONSTANTS['X_AB']
+        y_AB = hr.CONSTANTS['Y_AB']
+        # Equation 11 in Sadowski+ (2017)
+        mu_i = 4.0 / (4.0 * x_AB + y_AB)
+        cs     = np.sqrt(kB * (Ti + Te) / (mu_i * mp))
+
+        # Radiation
+        c      = self.c
+        gamma_adi = 5./3.
+        pgas   = (gamma_adi - 1.) * u_gas
+        prad   = (1./3.) * u_rad
+        ptot   = pgas + prad
+        rhoc2  = rho * c * c
+        cs_rad = c * np.sqrt((4./3.) * ptot / (rhoc2 + u_rad + u_gas))
+        
+        # Magnetic
+        b2 = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)
+        w  = rhoc2 + (b2 / (4. * np.pi)) + u_gas + pgas + (4./3.) * u_rad
+        vA = c * np.sqrt(b2 / (4. * np.pi * w))
+        vtot = np.sqrt(vA * vA + cs_rad * cs_rad + cs * cs)
+        # Calculate uu in orthonormal spherical coordinates
+        uu_sph = self.Coords2D.int_to_ortho_sph_vec(uu)
+        vphi   = c * (uu_sph[3] / uu_sph[0])
+        return vtot/vphi
 
 # Compute quantities at constant theta
 class Theta_Slice(Phi_Slice):
@@ -1249,7 +1375,7 @@ class Theta_Slice(Phi_Slice):
         self.H.read_prims(fnum, skip_read_params=True)
 
 # Compute quantities in the miplane (averaging over two nearest cells)
-class Midplane_Slice():
+class Midplane_Slice(Phi_Slice):
     def __init__(self, directory, fnum, **kwargs):
         H = hr.Read(directory, **kwargs)
         H.read_params(fnum)
@@ -1262,18 +1388,13 @@ class Midplane_Slice():
         self.H.read_prims(fnum, skip_read_params=True)
 
         self.cgs  = kwargs.get('cgs_data', True)
-        self.MBH  = kwargs.get('MBH', 10.0)
+        self.MBH  = kwargs.get('MBH', 10.0) if self.cgs else 1.
         self.Msun = hr.CONSTANTS['Msun']
-        if (self.cgs):
-            self.rho0 = self.H.params['density_scale']
-            self.G    = hr.CONSTANTS['G']
-            self.c    = hr.CONSTANTS['c']
-            self.Rg   = self.G * self.MBH * self.Msun / (self.c * self.c)
-        else:
-            self.rho0 = 1.
-            self.G    = 1.
-            self.c    = 1.
-            self.Rg   = 1.
+        self.rho0 = self.H.params['density_scale'] if self.cgs else 1. # g/cm^3
+        self.c    = hr.CONSTANTS['c'] if self.cgs else 1. # cm/s
+        self.G    = hr.CONSTANTS['G'] if self.cgs else 1. # cm^3/g s^2
+        self.Rg   = (self.G * self.MBH * self.Msun / (self.c * self.c)
+                     if self.cgs else 1.)
 
         self.r    = self.H.grid['r'] / self.Rg  
         self.th   = self.H.grid['theta']
@@ -1282,20 +1403,34 @@ class Midplane_Slice():
         self.two_temp  = True if 'Te' and 'Ti' in self.H.data else False
         self.radiation = True if 'u_rad' and 'uu_rad' in self.H.data else False
 
+        acc_args = {
+            'grid'      : self.H.grid,
+            'data'      : self.H.data,
+            'pars'      : self.H.params,
+            'CONSTANTS' : hr.CONSTANTS,
+            'cgs'       : self.cgs,
+            'MBH'       : self.MBH,
+            'radiation' : self.radiation
+        }
+        class_args = {
+            'pars'      : self.H.params,
+            'CONSTANTS' : hr.CONSTANTS,
+            'cgs'       : self.cgs
+        }
+
         # Initialize Accretion class
-        self.Acc   = ana.Accretion(self.H.grid, self.H.data, self.H.params, 
-            hr.CONSTANTS, cgs=self.cgs, MBH=self.MBH, radiation=self.radiation)
-        # Initialize Coordinates class
-        self.Coords = coords.Coordinates(self.H.grid['r'], self.H.grid['theta'], 
-            self.H.grid['phi'], self.H.params, hr.CONSTANTS)
+        self.Acc   = ana.Accretion(**acc_args)
         # Initialize Fluid class
-        self.Fluid = ana.Fluid(self.H.params, hr.CONSTANTS, cgs=self.cgs)
+        self.Fluid = ana.Fluid(**class_args)
         # Initialize Field class
-        self.Field = ana.Field(self.H.params, hr.CONSTANTS, cgs=self.cgs)
+        self.Field = ana.Field(**class_args)
         # Initialize Radiation class
-        self.Rad   = rad.Radiation(self.H.params, hr.CONSTANTS, cgs=self.cgs)
+        self.Rad   = rad.Radiation(**class_args)
         # Initialize Analytic class
         self.Analytic = theory.Analytic(hr.CONSTANTS, cgs=self.cgs)
+
+    def mid_val(self, q):
+        return (q[:, 0, :] + q[:, 1, :]) / 2.
 
     def calc_XY(self):
         r   = self.r
@@ -1340,6 +1475,9 @@ class Midplane_Slice():
                 return ValueError("Invalid variable key.")
         return variables[0] if len(variables) == 1 else variables
     
+    def get_vars2D(self, keys, iphi):
+        return self.get_vars3D(keys)
+    
     def set_Coords3D(self):
         ones  = np.ones(self.H.data['rho'].shape)
         r3D   = (ones * self.r)[  0]
@@ -1348,126 +1486,83 @@ class Midplane_Slice():
         self.Coords3D = coords.Coordinates(r3D, th3D, phi3D, 
                                            self.H.params, hr.CONSTANTS)
         return None
+    
+    def set_Coords2D(self, iphi):
+        self.set_Coords3D()
 
     # Thermodynamic quantities
     def calc_rho(self):
         # Density
-        rho = self.get_vars3D(['rho'])
-        return (rho[:, 0, :] + rho[:, 1, :]) / 2.
+        return self.mid_val(super().calc_rho(0))
     
     def calc_Te(self):
         # Electron temperature
-        Te = self.get_vars3D(['Te'])
-        return (Te[:, 0, :] + Te[:, 1, :]) / 2.
+        return self.mid_val(super().calc_Te(0))
     
     def calc_Ti(self):
         # Ion temperature
-        Ti = self.get_vars3D(['Ti'])
-        return (Ti[:, 0, :] + Ti[:, 1, :]) / 2.
+        return self.mid_val(super().calc_Ti(0))
     
     def calc_Te_Ti(self):
         # Electron temperature, ion temperature
-        Te3D, Ti3D = self.get_vars3D(['Te', 'Ti'])
-        Te = (Te3D[:, 0, :] + Te3D[:, 1, :]) / 2.
-        Ti = (Ti3D[:, 0, :] + Ti3D[:, 1, :]) / 2.
+        Te = self.mid_val(super().calc_Te(0))
+        Ti = self.mid_val(super().calc_Ti(0))
         return Te, Ti
     
     def calc_sigma(self):
-        # sigma, BetaI = pmag/pgas
-        rho0, c = self.rho0, self.c    
-        B02     = self.Field.B0 * self.Field.B0  
-        keys    = ['rho', 'B', 'uu', 'gcov']
-        rho, B, uu, gcov = self.get_vars2D(keys)
+        # sigma
+        return self.mid_val(super().calc_sigma(0))
+
+    def calc_BetaInv(self):
+        # Beta^(-1)
+        return self.mid_val(super().calc_BetaInv(0))
+
+    def calc_radiation_energy_density(self):
+        # radiation energy density
+        return self.mid_val(super().calc_radiation_energy_density(0))
     
-        # Calculate sigma
-        b     = self.Field.calc_b(B, uu, gcov)
-        b2    = self.Field.calc_b2(b, B, gcov)
-        sigma = (b2 / B02) / (rho / rho0)
-        return (sigma[:, 0, :] + sigma[:, 1, :]) / 2.
+    def calc_u_t(self):
+        return self.mid_val(super().calc_u_t(0))
 
-    def calc_sigma_BetaI(self):
-        # sigma, BetaI = pmag/pgas
-        rho0, c, B02 = self.rho0, self.c, self.Field.B0 * self.Field.B0
-        rho, u_gas   = self.get_vars3D(['rho', 'u_gas'])
-        uu, B, gcov  = self.get_vars3D(['uu', 'B', 'gcov'])
-        Te, Ti       = self.get_vars3D(['Te', 'Ti'])
-
-        # Calculate sigma
-        b       = self.Field.calc_b(B, uu, gcov)
-        b2      = self.Field.calc_b2(b, B, gcov)
-        sigma3D = (b2 / B02) / (rho / rho0)
-        # Calculate gas pressure and Beta^-1
-        if (self.cgs):
-            pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti)
-        else:
-            pgas  = ((5./3.) - 1.) * u_gas
-        BetaI3D = ((b2 / B02) / 2.) / (pgas / (rho0 * c * c))
-        sigma = (sigma3D[:, 0, :] + sigma3D[:, 1, :]) / 2.
-        BetaI = (BetaI3D[:, 0, :] + BetaI3D[:, 1, :]) / 2. 
-        return sigma, BetaI
-
-    # Velocities
-    def calc_vphi_cyl(self):
-        uu    = self.get_vars3D(['uu'])
-        self.set_Coords3D()
-        
-        uu_cyl   = self.Coords3D.int_to_cyl_vec(uu, cpp=True)
-        vphi_cyl = self.c * uu_cyl[2] / uu_cyl[0] 
-        return (vphi_cyl[:, 0, :] + vphi_cyl[:, 1, :]) / 2.
+    def calc_ion_density(self):
+        return self.mid_val(super().calc_ion_density(0))
+    
+    def calc_lepton_density(self):
+        return self.mid_val(super().calc_lepton_density(0))
 
     # Pressures
-    def calc_pmag_pradgas(self):
-        rho0, c, B02 = self.rho0, self.c, self.Field.B0 * self.Field.B0
-        rho, u_gas   = self.get_vars3D(['rho', 'u_gas'])
-        uu, B, gcov  = self.get_vars3D(['uu', 'B', 'gcov'])
-        Te, Ti       = self.get_vars3D(['Te', 'Ti'])
-        u_rad        = self.get_vars3D(['u_rad'])
+    def calc_pgas(self, **kwargs):
+        return self.mid_val(super().calc_pgas(0, **kwargs))
 
-        b2    = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)     
-        pmag  = ((b2 / B02) / 2.) * (rho0 * c * c)
-        if self.cgs:
-            pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti) 
-        else:
-            pgas = ((5./3.) - 1.) * u_gas
-        prad  = (1./3.) * u_rad
+    def calc_pmag(self):
+        return self.mid_val(super().calc_pmag(0))
 
-        pmag_avg = (pmag[:, 0, :] + pmag[:, 1, :]) / 2.
-        prad_avg = (prad[:, 0, :] + prad[:, 1, :]) / 2.
-        pgas_avg = (pgas[:, 0, :] + pgas[:, 1, :]) / 2.
-
-        return pmag_avg / (prad_avg + pgas_avg)
+    def calc_prad(self):
+        return self.mid_val(super().calc_prad(0))
     
+    def calc_pmag_pradgas(self, **kwargs):
+        pmag = self.mid_val(super().calc_pmag(0))
+        prad = self.mid_val(super().calc_prad(0))
+        pgas = self.mid_val(super().calc_pgas(0, **kwargs))
+        return pmag / (prad + pgas)
+
     def calc_pmag_prad(self):
-        rho0, c, B02 = self.rho0, self.c, self.Field.B0 * self.Field.B0
-        rho, u_gas   = self.get_vars3D(['rho', 'u_gas'])
-        uu, B, gcov  = self.get_vars3D(['uu', 'B', 'gcov'])
-        u_rad        = self.get_vars3D(['u_rad'])
-
-        b2    = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)     
-        pmag  = ((b2 / B02) / 2.) * (rho0 * c * c)
-        prad  = (1./3.) * u_rad
-
-        pmag_avg = (pmag[:, 0, :] + pmag[:, 1, :]) / 2.
-        prad_avg = (prad[:, 0, :] + prad[:, 1, :]) / 2.
-
-        return pmag_avg / prad_avg
+        pmag = self.mid_val(super().calc_pmag(0))
+        prad = self.mid_val(super().calc_prad(0))
+        return pmag / prad
     
-    def calc_prad_pgas(self):
-        u_gas, u_rad = self.get_vars3D(['u_gas', 'u_rad'])
-        Te, Ti       = self.get_vars3D(['Te', 'Ti'])
-        
-        if self.cgs:
-            pgas  = self.Fluid.calc_pgas(u_gas, Te, Ti) 
-        else:
-            pgas = ((5./3.) - 1.) * u_gas
-        prad  = (1./3.) * u_rad
+    def calc_prad_pgas(self, **kwargs):
+        prad = self.mid_val(super().calc_prad(0))
+        pgas = self.mid_val(super().calc_pgas(0, **kwargs))
+        return prad / pgas
 
-        prad_avg = (prad[:, 0, :] + prad[:, 1, :]) / 2.
-        pgas_avg = (pgas[:, 0, :] + pgas[:, 1, :]) / 2.
-
-        return prad_avg / pgas_avg
-    
     # Magnetic Fields
+    def calc_Bphi(self):
+        return self.mid_val(super().calc_Bphi(0))
+
+    def calc_Bz(self):
+        return self.mid_val(super().calc_Bz(0))
+
     def calc_B_cyl(self, **kwargs):
         B = self.get_vars3D(['B'])
         self.set_Coords3D()
@@ -1475,37 +1570,20 @@ class Midplane_Slice():
         # Calculate B in cylindrical coordinates
         B_cyl = self.Coords3D.int_to_cyl_vec(B)
         if not kwargs.get('lr', False):
-            BR   = (B_cyl[1][:, 0, :] + B_cyl[1][:, 1, :]) / 2.
-            Bphi = (B_cyl[2][:, 0, :] + B_cyl[2][:, 1, :]) / 2.
-            Bz   = (B_cyl[3][:, 0, :] + B_cyl[3][:, 1, :]) / 2.
+            BR   = self.mid_val(B_cyl[1])
+            Bphi = self.mid_val(B_cyl[2])
+            Bz   = self.mid_val(B_cyl[3])
             return BR, Bphi, Bz
         else:
             BR, Bphi, Bz = {}, {}, {}
-            BR['r']   = (B_cyl[1][:, 0, :] + B_cyl[1][:, 1, :]) / 2.
-            Bphi['r'] = (B_cyl[2][:, 0, :] + B_cyl[2][:, 1, :]) / 2.
-            Bz['r']   = (B_cyl[3][:, 0, :] + B_cyl[3][:, 1, :]) / 2.
+            BR['r']   = self.mid_val(B_cyl[1])
+            Bphi['r'] = self.mid_val(B_cyl[2])
+            Bz['r']   = self.mid_val(B_cyl[3])
             if not kwargs.get('in_out', False):
                 return BR, Bphi, Bz
             else:
-                in_out = {}
-                in_out['r'] = np.sign(B[1, :, 0, :] + B[1, :, 1, :])
+                in_out = {'r' : np.sign(B[1, :, 0, :] + B[1, :, 1, :])}
                 return BR, Bphi, Bz, in_out
-    
-    def calc_bpol_btor(self):
-        uu, B, gcov  = self.get_vars3D(['uu', 'B', 'gcov'])
-        self.set_Coords3D()
-        b        = self.Field.calc_b(B, uu, gcov)
-        bcyl     = self.Coords3D.int_to_cyl_vec(b, dtype=np.float64) 
-        bpol     = np.copy(b)
-        btor     = np.copy(b)
-        bpol[0], bpol[3]          = 0., 0.
-        btor[0], btor[1], btor[2] = 0., 0., 0.
-
-        sgn     = np.sign(bcyl[3])
-        b2pol   = self.Field.calc_b2(bpol, bpol, gcov)
-        b2tor   = self.Field.calc_b2(btor, btor, gcov)
-        pol_tor = sgn * np.sqrt(b2pol / b2tor)
-        return (pol_tor[:, 0, :] + pol_tor[:, 1, :]) / 2.
 
     def calc_B_cart(self, **kwargs):
         B = self.get_vars3D(['B'])
@@ -1514,21 +1592,41 @@ class Midplane_Slice():
         # Calculate B in Cartesian coordinates
         B_cart = self.Coords3D.int_to_cart_vec(B) / self.Field.B0
         if not kwargs.get('lr', False):
-            Bx = (B_cart[1][:, 0, :] + B_cart[1][:, 1, :]) / 2.
-            By = (B_cart[2][:, 0, :] + B_cart[2][:, 1, :]) / 2.
+            Bx = self.mid_val(B_cart[1])
+            By = self.mid_val(B_cart[2])
             return Bx, By
         else:
             Bx, By = {}, {}
-            Bx['r'] = (B_cart[1][:, 0, :] + B_cart[1][:, 1, :]) / 2.
-            By['r'] = (B_cart[2][:, 0, :] + B_cart[2][:, 1, :]) / 2.
+            Bx['r'] = self.mid_val(B_cart[1])
+            By['r'] = self.mid_val(B_cart[2])
             if not kwargs.get('in_out', False):
                 return Bx, By
             else:
-                in_out = {}
-                in_out['r'] = np.sign(B[1, :, 0, :] + B[1, :, 1, :])
+                in_out = {'r' : np.sign(B[1, :, 0, :] + B[1, :, 1, :])}
                 return Bx, By, in_out
-    
+
+    def calc_bpol(self):
+        return self.mid_val(super().calc_bpol(0))
+
+    def calc_btor(self):
+        return self.mid_val(super().calc_btor(0))
+
+    def calc_bpol_btor(self):
+        return self.mid_val(super().calc_bpol_btor(0))
+
     # Fluid velocities
+    def calc_vr(self):
+        return self.mid_val(super().calc_vr(0))
+
+    def calc_vr_sph(self):
+        return self.mid_val(super().calc_vr_sph(0))
+
+    def calc_vphi_cyl(self):
+        return self.mid_val(super().calc_vphi_sph(0))
+
+    def calc_vR_vKep(self):
+        return self.mid_val(super().calc_vR_vKep(0))
+
     def calc_v_cyl(self, **kwargs):
         uu = self.get_vars3D(['uu'])
         self.set_Coords3D()
@@ -1536,42 +1634,26 @@ class Midplane_Slice():
         # Calculate uu in cylindrical coordinates
         uu_cyl = self.Coords3D.int_to_cyl_vec(uu) / self.c
         if not kwargs.get('lr', False):
-            ut   = (uu_cyl[1][:, 0, :] + uu_cyl[1][:, 1, :]) / 2.
-            uR   = (uu_cyl[1][:, 0, :] + uu_cyl[1][:, 1, :]) / 2.
-            uphi = (uu_cyl[2][:, 0, :] + uu_cyl[2][:, 1, :]) / 2.
-            uz   = (uu_cyl[3][:, 0, :] + uu_cyl[3][:, 1, :]) / 2.
+            ut   = self.mid_val(uu_cyl[0])
+            uR   = self.mid_val(uu_cyl[1])
+            uphi = self.mid_val(uu_cyl[2])
+            uz   = self.mid_val(uu_cyl[3])
             return uR/ut, uphi/ut, uz/ut
         else:
             vR, vphi, vz = {}, {}, {}
-            ut        = (uu_cyl[0][:, 0, :] + uu_cyl[0][:, 1, :]) / 2.
-            vR['r']   = (uu_cyl[1][:, 0, :] + uu_cyl[1][:, 1, :]) / 2.
-            vphi['r'] = (uu_cyl[2][:, 0, :] + uu_cyl[2][:, 1, :]) / 2.
-            vz['r']   = (uu_cyl[3][:, 0, :] + uu_cyl[3][:, 1, :]) / 2.
-            vR['r']  *= 1./ut
-            vphi['r']*= 1./ut
-            vz['r']  *= 1./ut
+            ut   = self.mid_val(uu_cyl[0])
+            uR   = self.mid_val(uu_cyl[1])
+            uphi = self.mid_val(uu_cyl[2])
+            uz   = self.mid_val(uu_cyl[3])
+            vR['r']   = uR / ut
+            vphi['r'] = uphi / ut
+            vz['r']   = uz / ut
             if not kwargs.get('in_out', False):
                 return vR, vphi, vz
             else:
-                in_out = {}
-                in_out['r'] = np.sign(uu[1, :, 0, :] + uu[1, :, 1, :])
+                in_out = {'r' : np.sign(uu[1, :, 0, :] + uu[1, :, 1, :])}
                 return vR, vphi, vz, in_out
-    
-    def calc_vpol_vtor(self):
-        uu, gcov  = self.get_vars3D(['uu', 'gcov'])
-        self.set_Coords3D()
-        uu_cyl    = self.Coords3D.int_to_cyl_vec(uu, dtype=np.float64) / self.c
-        uu_pol    = np.copy(uu)
-        uu_tor    = np.copy(uu)
-        uu_pol[0], uu_pol[3]            = 0., 0.
-        uu_tor[0], uu_tor[1], uu_tor[2] = 0., 0., 0.
 
-        sgn     = np.sign(uu_cyl[3])
-        u2pol   = ana.Tools.dot(uu_pol, uu_pol, gcov)
-        u2tor   = ana.Tools.dot(uu_tor, uu_tor, gcov)
-        pol_tor = sgn * np.sqrt(u2pol / u2tor)
-        return (pol_tor[:, 0, :] + pol_tor[:, 1, :]) / 2.
-    
     def calc_uu_cart(self, **kwargs):
         uu = self.get_vars3D(['uu'])
         self.set_Coords3D()
@@ -1592,7 +1674,11 @@ class Midplane_Slice():
                 in_out = {}
                 in_out['r'] = np.sign(uu[1, :, 0, :] + uu[1, :, 1, :])
                 return uux, uuy, in_out
+
+    def calc_vpol_vtor(self):
+        return self.mid_val(super().calc_vpol_vtor(0)) 
     
+    # Radiation 4-velocity
     def calc_uu_rad_cart(self, **kwargs):
         uu_rad = self.get_vars3D(['uu_rad'])
         self.set_Coords3D()
@@ -1600,179 +1686,170 @@ class Midplane_Slice():
         # Calculate uu_rad in Cartesian coordinates
         uuR_cart = self.Coords3D.int_to_cart_vec(uu_rad) / self.c
         if not kwargs.get('lr', False):
-            uuRx = (uuR_cart[1][:, 0, :] + uuR_cart[1][:, 1, :]) / 2.
-            uuRy = (uuR_cart[2][:, 0, :] + uuR_cart[2][:, 1, :]) / 2.
+            uuRx = self.mid_val(uuR_cart[1])
+            uuRy = self.mid_val(uuR_cart[2])
             return uuRx, uuRy
         else:
             uuRx, uuRy = {}, {}
-            uuRx['r'] = (uuR_cart[1][:, 0, :] + uuR_cart[1][:, 1, :]) / 2.
-            uuRy['r'] = (uuR_cart[2][:, 0, :] + uuR_cart[2][:, 1, :]) / 2.
+            uuRx['r'] = self.mid_val(uuR_cart[1])
+            uuRy['r'] = self.mid_val(uuR_cart[2])
             if not kwargs.get('in_out', False):
                 return uuRx, uuRy
             else:
-                in_out = {}
-                in_out['r'] = np.sign(uu_rad[1, :, 0, :] + uu_rad[1, :, 1, :])
+                in_out = {'r' : np.sign(uu_rad[1,:,0,:] + uu_rad[1,:,1,:])}
                 return uuRx, uuRy, in_out
 
-    # Cooling rates
+    # Cooling rates    
     # Inverse-Compton cooling rate
     def calc_qIC(self, **kwargs):
-        rho, Te, u_rad = self.get_vars3D(['rho', 'Te', 'u_rad'])
-        uu, gcov       = self.get_vars3D(['uu', 'gcov'])
-        u_t            = np.einsum('ij...,j...->i...', gcov, uu)[0] / self.c
-        qIC            = self.Rad.calc_qIC(rho, Te, u_rad, **kwargs) 
-        qICu_t         = ((qIC * u_t)[:, 0, :] + (qIC * u_t)[:, 1, :]) / 2.
-        return -qICu_t
+        return self.mid_val(super().calc_qIC(0, **kwargs))
 
     # Coulomb cooling rate
     def calc_qie(self, **kwargs):
-        rho, Ti, Te = self.get_vars3D(['rho', 'Ti', 'Te'])
-        uu, gcov    = self.get_vars3D(['uu', 'gcov'])
-        u_t         = np.einsum('ij...,j...->i...', gcov, uu)[0] / self.c
-        qie         = self.Fluid.calc_qie(rho, Te, Ti, **kwargs)
-        qieu_t      = ((qie * u_t)[:, 0, :] + (qie * u_t)[:, 1, :]) / 2.
-        return -qieu_t
+        return self.mid_val(super().calc_qie(0, **kwargs))
 
     # Synchrotron cooling rate
     def calc_qsync(self, **kwargs):
-        rho, Te, u_rad = self.get_vars3D(['rho', 'Te', 'u_rad'])
-        B, uu, gcov    = self.get_vars3D(['B', 'uu', 'gcov'])
-        u_t            = np.einsum('ij...,j...->i...', gcov, uu)[0] / self.c
-        # b2 is required for synchrotron opacities
-        if 'b2' not in kwargs:
-            b2 = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)
-        else:
-            b2 = kwargs.get('b2')
-        opacities = dict.fromkeys(['synchrotron'])
-        sync_args = {
-            'opacities' : opacities, 
-            'b2'        : b2, 
-            'XRB'       : True
-        }
-        qsync    = self.Rad.calc_q_emi(rho, Te, u_rad, **sync_args)
-        qsyncu_t = ((qsync * u_t)[:, 0, :] + (qsync * u_t)[:, 1, :]) / 2.
-        return -qsyncu_t
-
+        return self.mid_val(super().calc_qsync(0, **kwargs)) 
+    
     # Cooling timescales
-    def calc_teq(self, **kwargs):
-        rho, Te, Ti = self.get_vars3D(['rho', 'Te', 'Ti'])
-        teq = self.Fluid.calc_teq(rho, Te, Ti, **kwargs)     
-        return (teq[:, 0, :] + teq[:, 1, :]) / 2.
+    def calc_teq(self, **kwargs):  
+        return self.mid_val(super().calc_teq(0, **kwargs))
     
     def calc_tii(self, **kwargs):
-        rho, Te, Ti = self.get_vars3D(['rho', 'Te', 'Ti'])
-        tii = self.Fluid.calc_tii(rho, Te, Ti, **kwargs)     
-        return (tii[:, 0, :] + tii[:, 1, :]) / 2.
+        return self.mid_val(super().calc_tii(0, **kwargs))
     
     def calc_tee(self, **kwargs):
-        rho, Te, Ti = self.get_vars3D(['rho', 'Te', 'Ti'])
-        tee = self.Fluid.calc_tee(rho, Te, Ti, **kwargs)     
-        return (tee[:, 0, :] + tee[:, 1, :]) / 2.
+        return self.mid_val(super().calc_tee(0, **kwargs))
     
-    def calc_tIC(self, **kwargs):
-        rho, Te, u_rad = self.get_vars3D(['rho', 'Te', 'u_rad'])
-        tIC = self.Rad.calc_tIC(rho, Te, u_rad, **kwargs)     
-        return (tIC[:, 0, :] + tIC[:, 1, :]) / 2.
+    def calc_tIC(self, **kwargs):   
+        return self.mid_val(super().calc_tIC(0, **kwargs))
     
     # Orbital frequency
     def calc_OmegaK(self):
         return self.Analytic.calc_OmegaK(
             self.MBH, self.H.params['a'], self.r)[0, :, 0, :]
 
-    # Opacities
-    def calc_kappa_es(self, **kwargs):
-        rho, Te, u_rad = self.get_vars3D(['rho', 'Te', 'u_rad'])
-        opacities = dict.fromkeys(['electron_scattering'])
-        Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
-                           hr.CONSTANTS, mechanism='emission')
-        return Opac.opacities['electron_scattering']
-    
-    def calc_kappa_sync(self, **kwargs):
-        rho, Te, u_rad = self.get_vars3D(['rho', 'Te', 'u_rad'])
-         # b2 is required for synchrotron opacities
-        if 'b2' not in kwargs:
-            B, uu, gcov = self.get_vars3D(['B', 'uu', 'gcov'])
-            b2 = self.Field.calc_b2(B, B, gcov, from_B=True, uu=uu)
-        else:
-            b2 = kwargs.get('b2')
-        opacities = dict.fromkeys(['synchrotron'])
-        Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
-                           hr.CONSTANTS, mechanism='emission', b2=b2, XRB=True)
-        kappa = Opac.opacities['synchrotron_emi']
-        return (kappa[:, 0, :] + kappa[:, 1, :]) / 2.
-    
-    def calc_kappa_ff(self, **kwargs):
-        rho, Te, u_rad = self.get_vars3D(['rho', 'Te', 'u_rad'])
-         # b2 is required for synchrotron opacities
-        opacities = dict.fromkeys(['free_free'])
-        Opac = rad.Opacity(opacities, rho, Te, u_rad, self.H.params, 
-                           hr.CONSTANTS, mechanism='emission', XRB=True)
-        kappa = Opac.opacities['free_free_emi']
-        return (kappa[:, 0, :] + kappa[:, 1, :]) / 2.
+    # Opacities    
+    def calc_kappa_eff(self, **kwargs):
+        return self.mid_val(super().calc_kappa_eff(0, **kwargs))
 
-class Slices():
+    def calc_kappa_sync(self, **kwargs):
+        return self.mid_val(super().calc_kappa_sync(0, **kwargs))
+
+    def calc_kappa_ff(self, **kwargs):
+        return self.mid_val(super().calc_kappa_ff(0, **kwargs))
+
+class Load_Data():
     # Retrieve file numbers based on file_number, start_file, and end file
     def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        file_type  = kwargs.get('file_type', 'Profiles')
         reduced    = kwargs.get('reduced', False)
-        slices_dir = (f'{averages_dir}/Full_Resolution/Slices' if not reduced 
-                      else f'{averages_dir}/Reduced_Resolution/Slices')
+        data_dir   = (f'{averages_dir}/Full_Resolution/{file_type}' if not reduced 
+                      else f'{averages_dir}/Reduced_Resolution/{file_type}')
         single_file = True if (file_number != -1) else False
         if (single_file):
             fnums = list([file_number])
         else:
-            slcs = glob.glob("Slices*", root_dir=slices_dir)
-            slice_nums = [int(slice_name.strip('Slices_').strip('.npz')) for slice_name in slcs]
-            slice_nums.sort()
+            names = glob.glob(f"{file_type}*", root_dir=data_dir)
+            nums = [int(name.strip(f'{file_type}_').strip('.npz')) for name in names]
+            nums.sort()
             if ((start_file != -1) and (end_file != -1)):
                 fnums = list(range(start_file, end_file + 1))
             elif ((start_file != -1) and (end_file == -1)):
-                last_file = slice_nums[-1]
+                last_file = nums[-1]
                 fnums = list(range(start_file, last_file + 1))
             elif ((start_file == -1) and (end_file != -1)):
-                first_file = slice_nums[0]
+                first_file = nums[0]
                 fnums = list(range(first_file, last_file + 1))
             else:
-                fnums = list(range(slice_nums[0], slice_nums[-1] + 1))
-            fnums = self.check_slices_exist(fnums, slice_nums)
+                fnums = list(range(nums[0], nums[-1] + 1))
+            fnums = self.check_files_exist(fnums, nums, file_type)
         return fnums
 
-    def check_slices_exist(self, fnums, slice_nums):
+    def check_files_exist(self, fnums, data_nums, file_type):
         removed_files = []
         for fnum in fnums:
-            if fnum not in slice_nums:
-                print(f"Slice {fnum} is missing.")
+            if fnum not in data_nums:
+                print(f"{file_type} {fnum} is missing.")
                 removed_files.append(fnum)
         for removed_file in removed_files:
             fnums.remove(removed_file)
         return fnums
 
     # Create slices dictionary [file_number][key]
-    def load_slices(self, averages_dir, fnums, **kwargs):
-        reduced      = kwargs.get('reduced', False)
-        slices_dir = (f'{averages_dir}/Full_Resolution/Slices' if not reduced 
-                      else f'{averages_dir}/Reduced_Resolution/Slices')
-        print(f"Loading from {slices_dir}...")
-        slcs = glob.glob("Slices*", root_dir=slices_dir)
-        slice_nums = [
-            int(slice_name.strip('Slices_').strip('.npz')) for slice_name in slcs
-        ]
-        slice_nums.sort()
-        nzeros = len(str(int(len(slice_nums))))
-        if 'slices' not in kwargs:
-            slices = {}
-        else:
-            slices = kwargs.get('slices')
+    def load_data(self, averages_dir, fnums, **kwargs):
+        file_type  = kwargs.get('file_type', 'Profiles')
+        reduced    = kwargs.get('reduced', False)
+        data_dir = (f'{averages_dir}/Full_Resolution/{file_type}' if not reduced 
+                    else f'{averages_dir}/Reduced_Resolution/{file_type}')
+        print(f"Loading from {data_dir}...")
+        names = glob.glob(f"{file_type}*", root_dir=data_dir)
+        nums = [int(name.strip(f'{file_type}_').strip('.npz')) for name in names]
+        nums.sort()
+        nzeros = len(str(int(len(nums))))
+        if 'profiles' not in kwargs and 'slices' not in kwargs:
+            data = {}
+        elif 'profiles' in kwargs and 'slices' not in kwargs:
+            data = kwargs.get('profiles')
+        elif 'profiles' not in kwargs and 'slices' in kwargs:
+            data = kwargs.get('slices')
         for fnum in fnums:
-            slice_file = (
-                f'{slices_dir}/Slices_%s.npz' %str(fnum).zfill(nzeros))
+            if (file_type == 'Slices' or file_type == 'Heating_Slices'):
+                print(f"File number {fnum}...", flush=True)
+            data_file = (
+                f'{data_dir}/{file_type}_%s.npz' %str(fnum).zfill(nzeros))
             if not kwargs.get('keys', False):
-                slices[f'{fnum}'] = np.load(slice_file)
-                files = slices[f'{fnum}'].files
+                data[f'{fnum}'] = np.load(data_file)
+                files = data[f'{fnum}'].files
             else:
-                if 'slices' not in kwargs:
-                    slices[f'{fnum}'] = {}
+                if 'profiles' not in kwargs and 'slices' not in kwargs:
+                    data[f'{fnum}'] = {}
                 for key in kwargs.get('keys'):
-                    slices[f'{fnum}'][f'{key}']=np.load(slice_file)[f'{key}']
+                    data[f'{fnum}'][f'{key}']=np.load(data_file)[f'{key}']
+        return data
+    
+class Slices(Load_Data):
+    # Retrieve file numbers based on file_number, start_file, and end file
+    def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        return super().get_fnums(averages_dir, file_number, start_file, end_file, 
+                                 file_type='Slices', **kwargs)
+
+    # Create slices dictionary [file_number][key]
+    def load_slices(self, averages_dir, fnums, **kwargs):
+        return super().load_data(averages_dir, fnums, 
+                                 file_type='Slices', **kwargs)
+
+    # Create slices dictionary (time-averaged) slices[key]
+    def load_slices_time_averaged(self, averages_dir, fnums, **kwargs):
+        reduced = kwargs.get('reduced', False)
+        coords = self.load_slices(averages_dir, fnums, 
+                                  keys=['r' , 'theta', 'a'], reduced=reduced)
+        self.check_AMR(fnums, coords)
+        nt = len(fnums)
+        if 'keys' in kwargs:
+            slices = dict.fromkeys(kwargs.get('keys'))
+            for key in kwargs.get('keys'):
+                slices[f'{key}'] = np.zeros([max(self.nr), max(self.nth)])
+        else:
+            raise ValueError("Must supply keys for time-averaging.")
+        if 'vols' in kwargs:
+            vols = kwargs.get('vols')
+        else:
+            raise ValueError("Must supply vols for time-averaging.")
+    
+        keys = kwargs.pop('keys')
+        for fnum in fnums:
+            pkeys = (keys + ['r', 'theta']) if ('r' not in keys and 'theta' not in keys) else keys
+            pkeys = (pkeys + ['Vol']) if 'Vol' not in keys else pkeys
+            single_slice = self.load_slices(averages_dir, [fnum], keys=pkeys, **kwargs)
+            for key in keys:
+                # "Time-average" takes care of upscaling for single file number
+                slices[f'{key}'] += (1. / nt) * (
+                    self.time_avg(key, single_slice, vol=vols[f'{key}']))
+        slices['r']     = coords[f'{self.fnums0}']['r']
+        slices['theta'] = coords[f'{self.fnums0}']['theta']
+        slices['a']     = coords[f'{self.fnums0}']['a']
         return slices
 
     def check_AMR(self, fnums, slices):
@@ -1784,11 +1861,17 @@ class Slices():
         self.AMRx1 = (self.nr.count(self.nr[0]) != len(self.nr))
         self.AMRx2 = (self.nth.count(self.nth[0]) != len(self.nth))
         if (self.AMRx1 and self.AMRx2):
-            self.fnums0 = self.nums[self.nr == max(self.nr)][0]
+            max_arr     = max(self.nr) * np.ones_like(self.nr)
+            nr_eq_max   = np.array(self.nums)[self.nr == max_arr]
+            self.fnums0 = nr_eq_max[0] if len(nr_eq_max) != 0 else nr_eq_max
         elif (self.AMRx1 and not self.AMRx2):
-            self.fnums0 = self.nums[self.nr == max(self.nr)][0]
+            max_arr     = max(self.nr) * np.ones_like(self.nr)
+            nr_eq_max   = np.array(self.nums)[self.nr == max_arr]
+            self.fnums0 = nr_eq_max[0] if len(nr_eq_max) != 0 else nr_eq_max
         elif (not self.AMRx1 and self.AMRx2):
-            self.fnums0 = self.nums[self.nth == max(self.nth)][0]
+            max_arr     = max(self.nth) * np.ones_like(self.nth)
+            nth_eq_max  = np.array(self.nums)[self.nth == max_arr]
+            self.fnums0 = nth_eq_max[0] if len(nth_eq_max) != 0 else nth_eq_max
         else:
             self.fnums0 = self.nums[0]
 
@@ -1796,8 +1879,7 @@ class Slices():
         fnums = slices.keys() if 'fnums' not in kwargs else kwargs.get('fnums')
         if not hasattr(self, "AMRx1") or not hasattr(self, "AMRx2"):
             self.check_AMR(fnums, slices)
-        q_avg = np.zeros([len(slices[f'{self.fnums0}']['r']), 
-                          len(slices[f'{self.fnums0}']['theta'])])
+        q_avg = np.zeros([max(self.nr), max(self.nth)])
         nt    = len(fnums)
         if not self.AMRx1 or not self.AMRx2:
             for fnum in fnums:
@@ -1809,87 +1891,231 @@ class Slices():
                 q_avg += self.upscale(slices[f'{fnum}'][f'{quant}']) / (nt * vol)
         return q_avg
 
-    def upscale(self, q):
-        level_x1 = (max(self.nr) / len(q[:, 0])) - 1
-        level_x2 = (max(self.nth)/ len(q[0, :])) - 1
+    def upscale(self, q, **kwargs):
+        max_nr  = kwargs.get('max_nr',  max(self.nr))
+        max_nth = kwargs.get('max_nth', max(self.nth))
+        level_x1 = (max_nr / len(q[:, 0])) - 1
+        level_x2 = (max_nth/ len(q[0, :])) - 1
         if (level_x1 == 0 and level_x2 == 0): 
             return q
         else:
-            q_up = np.zeros([max(self.nr), max(self.nth)])
+            q_up = np.zeros([max_nr, max_nth])
             for i in range(len(q[:, 0])):
                 for j in range(len(q[0, :])):
                     istrt = int(i       * (2 ** level_x1))
                     iend  = int((i + 1) * (2 ** level_x1))
                     jstrt = int(j       * (2 ** level_x2))
                     jend  = int((j + 1) * (2 ** level_x2))
-                q_up[istrt:iend, jstrt:jend] = q[i, j]
+                    q_up[istrt:iend, jstrt:jend] = q[i, j]
             return q_up
 
-class Profiles():
+    # Assumes slices has form slices[key] as if from load_slices_time_averaged
+    def update_slices(self, averages_dir, fnums, slices, **kwargs):
+        fnums_old   = kwargs.get('fnums_old', fnums)
+        sub_fnum    = fnums_old[0]
+        add_fnum    = fnums[-1]
+        nt_old      = len(fnums_old)
+        nt          = len(fnums)
+        load_fnums  = [sub_fnum, add_fnum]
+        keys        = kwargs.get('keys', list(slices.keys()))
+        if 'vols' in kwargs:
+            vols = kwargs.get('vols')
+        else:
+            raise ValueError("Cannot update slice without passing vols dict.")
+        
+        switch_slices = self.load_slices(averages_dir, load_fnums, keys=keys)
+        update_keys   = keys.copy()
+        if 'Vol' in update_keys: update_keys.remove('Vol')
+        for key in update_keys:
+            vol = vols[f'{key}']
+            slices[f'{key}'] *= nt_old
+            slices[f'{key}'] = self.sub_slice(
+                key, slices, switch_slices[f'{sub_fnum}'], vol=vol)
+            slices[f'{key}'] = self.add_slice(
+                key, slices, switch_slices[f'{add_fnum}'], vol=vol)
+            slices[f'{key}'] *= (1. / nt)
+        return slices
+    
+    def sub_slice(self, key, slices, switch_slices, **kwargs):
+        q       = slices[f'{key}']
+        qdV_sub = switch_slices[f'{key}']
+        if (q.shape == qdV_sub.shape):
+            vol = switch_slices['Vol'] if kwargs.get('vol', False) else 1.
+            return q - (qdV_sub / vol)
+        else:
+            return q
+
+    def add_slice(self, key, slices, switch_slices, **kwargs):
+        q       = slices[f'{key}']
+        qdV_add = switch_slices[f'{key}']
+        if (q.shape == qdV_add.shape):
+            vol = switch_slices['Vol'] if kwargs.get('vol', False) else 1.
+            return q + (qdV_add / vol)
+        else:
+            return q
+        
+class Heating_Slices(Slices):
     # Retrieve file numbers based on file_number, start_file, and end file
     def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
-        reduced      = kwargs.get('reduced', False)
-        profiles_dir = (f'{averages_dir}/Full_Resolution/Profiles' if not reduced 
-                        else f'{averages_dir}/Reduced_Resolution/Profiles')
-        single_file = True if (file_number != -1) else False
-        if (single_file):
-            fnums = list([file_number])
-        else:
-            profs = glob.glob("Profiles*", root_dir=profiles_dir)
-            prof_nums = [int(prof_name.strip('Profiles_').strip('.npz')) for prof_name in profs]
-            prof_nums.sort()
-            if ((start_file != -1) and (end_file != -1)):
-                fnums = list(range(start_file, end_file + 1))
-            elif ((start_file != -1) and (end_file == -1)):
-                last_file = prof_nums[-1]
-                fnums = list(range(start_file, last_file + 1))
-            elif ((start_file == -1) and (end_file != -1)):
-                first_file = prof_nums[0]
-                fnums = list(range(first_file, last_file + 1))
-            else:
-                fnums = list(range(prof_nums[0], prof_nums[-1] + 1))
-            fnums = self.check_profiles_exist(fnums, prof_nums)
-        return fnums
+        return super(Slices, self).get_fnums(averages_dir, file_number, 
+                                             start_file, end_file, 
+                                             file_type='Heating_Slices', **kwargs)
 
-    def check_profiles_exist(self, fnums, prof_nums):
-        removed_files = []
-        for fnum in fnums:
-            if fnum not in prof_nums:
-                print(f"Profile {fnum} is missing.")
-                removed_files.append(fnum)
-        for removed_file in removed_files:
-            fnums.remove(removed_file)
-        return fnums
-    
-    # Create profiles dictionary [file_number][key]
-    def load_profiles(self, averages_dir, fnums, **kwargs):
-        reduced      = kwargs.get('reduced', False)
-        profiles_dir = (f'{averages_dir}/Full_Resolution/Profiles' if not reduced 
-                        else f'{averages_dir}/Reduced_Resolution/Profiles')
-        print(f"Loading from {profiles_dir}...")
-        profs = glob.glob("Profiles*", root_dir=profiles_dir)
-        prof_nums = [
-            int(prof_name.strip('Profiles_').strip('.npz')) for prof_name in profs
-        ]
-        prof_nums.sort()
-        nzeros = len(str(int(len(prof_nums))))
-        if 'profiles' not in kwargs:
-            profiles = {}
-        else:
-            profiles = kwargs.get('profiles')
-        for fnum in fnums:
-            profile_file = (
-                f'{profiles_dir}/Profiles_%s.npz' %str(fnum).zfill(nzeros))
-            if not kwargs.get('keys', False):
-                profiles[f'{fnum}'] = np.load(profile_file)
-                files = profiles[f'{fnum}'].files
-            else:
-                if 'profiles' not in kwargs:
-                    profiles[f'{fnum}'] = {}
-                for key in kwargs.get('keys'):
-                    profiles[f'{fnum}'][f'{key}']=np.load(profile_file)[f'{key}']
+    # Create slices dictionary [file_number][key]
+    def load_slices(self, averages_dir, fnums, **kwargs):
+        return super(Slices, self).load_data(averages_dir, fnums, 
+                                             file_type='Heating_Slices', **kwargs)
+
+class Stresses(Slices):
+    # Retrieve file numbers based on file_number, start_file, and end file
+    def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        return super(Slices, self).get_fnums(averages_dir, file_number, 
+                                             start_file, end_file, 
+                                             file_type='Stresses', **kwargs)
+
+    # Create slices dictionary [file_number][key]
+    def load_slices(self, averages_dir, fnums, **kwargs):
+        return super(Slices, self).load_data(averages_dir, fnums, 
+                                             file_type='Stresses', **kwargs)
+
+class Vertical_Profiles(Slices):
+    # Load theta profiles at given r0
+    # If time_average = True: profiles[file_number][key]
+    # otherwise: profiles[key]
+    def load_theta_profiles(self, averages_dir, fnums, r0, **kwargs):
+        if not kwargs.get('time_average', False): 
+            slices   = self.load_slices(averages_dir, fnums, **kwargs)
+            profiles = dict.fromkeys(slices.keys())
+            for fnum in profiles.keys():
+                keys = list(slices[f'{fnum}'].keys())
+                if 'r' in keys: keys.remove('r')
+                if 'theta' in keys: keys.remove('theta')
+                profiles[f'{fnum}'] = dict.fromkeys(keys)
+                for key in profiles[f'{fnum}'].keys():
+                    r   = slices[f'{fnum}']['r']
+                    idx = np.argmin(np.abs(r - r0))
+                    q   = slices[f'{fnum}'][f'{key}']
+                    if (len(list(q.shape)) == 2):
+                        profiles[f'{fnum}'][f'{key}'] = q[idx, :]
+                    else:
+                        profiles[f'{fnum}'][f'{key}'] = q
+                profiles[f'{fnum}']['theta'] = slices[f'{fnum}']['theta']
+                profiles[f'{fnum}']['r']     = slices[f'{fnum}']['r']
+        elif kwargs.get('time_average', False):
+            slices = self.load_slices_time_averaged(averages_dir, fnums, **kwargs)
+            keys   = list(slices.keys())
+            if 'r' in keys: keys.remove('r')
+            if 'theta' in keys: keys.remove('theta')
+            profiles = dict.fromkeys(keys)
+            for key in keys:
+                r   = slices['r']
+                idx = np.argmin(np.abs(r - r0))
+                q   = slices[f'{key}']
+                if (len(list(q.shape)) == 2):
+                    profiles[f'{key}'] = q[idx, :]
+                else:
+                    profiles[f'{key}'] = q
+            profiles['theta'] = slices['theta']
+            profiles['r']     = slices['r']
         return profiles
-    
+
+    def load_z_profiles(self, averages_dir, fnums, r0, **kwargs):
+        npts = int(kwargs.get('npts', 100.))
+        dR   = kwargs.get('dR', 0.1 * r0)
+        R1D  = np.linspace(r0 - dR, r0 + dR, int(npts / 10) + 1)
+        z1D  = np.linspace(-1. * r0, 1. * r0, int(100 * npts))
+        R_uni, Z_uni = np.meshgrid(R1D, z1D)
+        idx  = np.argmin(np.abs(R_uni[0, :] - r0))
+
+        if not kwargs.get('time_average', False): 
+            slices   = self.load_slices(averages_dir, fnums, **kwargs)
+            profiles = dict.fromkeys(slices.keys())
+            for fnum in profiles.keys():
+                keys = list(slices[f'{fnum}'].keys())
+                if 'r' in keys: keys.remove('r')
+                if 'theta' in keys: keys.remove('theta')
+                profiles[f'{fnum}'] = dict.fromkeys(keys)
+                r     = slices[f'{fnum}']['r']
+                theta = slices[f'{fnum}']['theta']
+                # Interpolate to the uniform grid
+                ones = np.ones_like(r[:, None] * theta[None, :])
+                r2D  =  r[:, None] * ones
+                th2D =  theta[None, :] * ones
+                R2D  = r2D * np.sin(th2D)
+                Z2D  = r2D * np.cos(th2D)
+                
+                for key in profiles[f'{fnum}'].keys():
+                    print(f"Loading {key}...", flush=True)
+                    z_min, z_max = 1.1 * np.amin(z1D), 1.1 * np.amax(z1D)
+
+                    q   = slices[f'{fnum}'][f'{key}']
+                    if (len(list(q.shape)) == 2):
+                        R_cut = (R2D < 2. * r0) & (R2D > r0 - dR)
+                        Z_cut = (Z2D < z_max) & (Z2D > z_min)
+                        q_dat   = q[R_cut & Z_cut]
+                        R2D_dat = R2D[R_cut & Z_cut]
+                        Z2D_dat = Z2D[R_cut & Z_cut]
+                        q_uni = griddata((R2D_dat.ravel(), Z2D_dat.ravel()), 
+                                         q_dat.ravel(), 
+                                        (R_uni, Z_uni), method='cubic')
+                        profiles[f'{fnum}'][f'{key}'] = q_uni[:, idx]
+                    else:
+                        profiles[f'{fnum}'][f'{key}'] = q
+
+                profiles[f'{fnum}']['z_r']   = z1D / R1D[idx]
+                profiles[f'{fnum}']['theta'] = slices[f'{fnum}']['theta']
+                profiles[f'{fnum}']['r']     = slices[f'{fnum}']['r']
+
+        elif kwargs.get('time_average', False):
+            slices = self.load_slices_time_averaged(averages_dir, fnums, **kwargs)
+            keys   = list(slices.keys())
+            if 'r' in keys: keys.remove('r')
+            if 'theta' in keys: keys.remove('theta')
+            profiles = dict.fromkeys(keys)
+            r     = slices['r']
+            theta = slices['theta']
+            # Interpolate to the uniform grid
+            ones = np.ones_like(r[:, None] * theta[None, :])
+            r2D  =  r[:, None] * ones
+            th2D =  theta[None, :] * ones
+            R2D  = r2D * np.sin(th2D)
+            Z2D  = r2D * np.cos(th2D)
+            
+            for key in keys:
+                print(f"Loading {key}...", flush=True)
+                z_min, z_max = 1.1 * np.amin(z1D), 1.1 * np.amax(z1D)
+                q   = slices[f'{key}']
+
+                if (len(list(q.shape)) == 2):
+                    R_cut   = (R2D < 2. * r0) & (R2D > r0 - dR)
+                    Z_cut   = (Z2D < z_max) & (Z2D > z_min)
+                    q_dat   = q[R_cut & Z_cut]
+                    R2D_dat = R2D[R_cut & Z_cut]
+                    Z2D_dat = Z2D[R_cut & Z_cut]
+                    q_uni = griddata((R2D_dat.ravel(), Z2D_dat.ravel()), 
+                                     q_dat.ravel(), 
+                                    (R_uni, Z_uni), method='cubic')
+                    profiles[f'{key}'] = q_uni[:, idx]
+                else:
+                    profiles[f'{key}'] = q
+            
+            profiles['z_r']   = z1D / R1D[idx]
+            profiles['theta'] = slices['theta']
+            profiles['r']     = slices['r']
+
+        return profiles
+
+class Profiles(Load_Data):
+    # Retrieve file numbers based on file_number, start_file, and end file
+    def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        return super().get_fnums(averages_dir, file_number, start_file, end_file, 
+            file_type='Profiles', **kwargs)
+
+    # Create slices dictionary [file_number][key]
+    def load_profiles(self, averages_dir, fnums, **kwargs):
+        return super().load_data(averages_dir, fnums, 
+            file_type='Profiles', **kwargs)
+ 
     def time_avg(self, quant, profiles, **kwargs):
         fnums = profiles.keys() if 'fnums' not in kwargs else kwargs.get('fnums')
         if not hasattr(self, "AMR"):
@@ -1925,13 +2151,27 @@ class Profiles():
             self.nr.append(len(profiles[f'{fnum}']['r']))
         self.AMR = (self.nr.count(self.nr[0]) != len(self.nr))
         if (self.AMR):
-            self.fnums0 = self.nums[self.nr == max(self.nr)][0]
+            max_arr     = max(self.nr) * np.ones_like(self.nr) 
+            nr_eq_max   = np.array(self.nums)[self.nr == max_arr]
+            self.fnums0 = nr_eq_max[0] if len(nr_eq_max) != 0 else nr_eq_max
         else:
             self.fnums0 = self.nums[0] 
 
+class Heating_Profiles(Profiles):
+    # Retrieve file numbers based on file_number, start_file, and end file
+    def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        return super(Profiles, self).get_fnums(averages_dir, file_number, 
+            start_file, end_file, file_type='Heating_Profiles', **kwargs)
+
+    # Create slices dictionary [file_number][key]
+    def load_profiles(self, averages_dir, fnums, **kwargs):
+        return super(Profiles, self).load_data(averages_dir, fnums, 
+            file_type='Heating_Profiles', **kwargs)
+
 class Time_Series(Profiles):
     def calc_time_series(self, key, profiles, **kwargs):
-        fnums = profiles.keys()
+        fnums = list([int(fnum) for fnum in profiles.keys()])
+        fnums.sort()
         time  = np.zeros(len(fnums))
         q     = np.zeros(len(fnums))
         r0    = kwargs.get('r0', 0.)
