@@ -130,7 +130,7 @@ void Read::readGrid(float* x1, float* x2, float* x3,
   ReadIn readIn; 
   
   std::cout << "Loading grid" << std::endl;
-
+  
   #pragma omp parallel for private(n, iGlob, jGlob, kGlob, ii, \
     iStrt, iEnd, iStp, index_3D, \
     index_2D, gridsize_3D, gridsize_2D, \
@@ -407,16 +407,7 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
 
-  long int gridsize_3D, index_3D;
-  int n, nStrt, nEnd; // variables for looping over blocks
-  int iFile, vStrt, ii; // file index and variable start index (vStrt)
-  int iGlob, jGlob, kGlob; // global indices
-  AMRVar iStrt, iEnd, iStp; // loop variables
-  bool iInRange, jInRange, kInRange;
-  BoolVar iNotInBlock; // is data in selection box/ on block?
   std::string filename;
-  FILE* fin;
-  int read_data;
   ReadIn readIn; 
 
   std::cout << "Loading primitive variables for " << 
@@ -450,155 +441,166 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     std::cout << "Expected number of blocks: " << nb << std::endl;
   }
 
-  #pragma omp parallel for private(iFile, n, nStrt, nEnd, vStrt, \
-    iGlob, jGlob, kGlob, ii, iStrt, iEnd, iStp, index_3D, gridsize_3D, \
-    iInRange, jInRange, kInRange, iNotInBlock, \
-    filename, fin, read_data) firstprivate(readIn)
-  for (iFile = 0; iFile < fileCount; iFile++) {
-    gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
-    std::vector<float> tempArray(nvar);
+  #pragma omp parallel firstprivate(readIn)
+  {
+    long int gridsize_3D, index_3D;
+    int n, nStrt, nEnd; // variables for looping over blocks
+    int iFile, vStrt, ii; // file index and variable start index (vStrt)
+    int iGlob, jGlob, kGlob; // global indices
+    AMRVar iStrt, iEnd, iStp; // loop variables
+    bool iInRange, jInRange, kInRange;
+    BoolVar iNotInBlock; // is data in selection box/ on block?
+    FILE* fin;
+    int read_data;
+    std::string local_filename;
+    float* tempArray = new float[nvar];
+    #pragma omp for
+    for (iFile = 0; iFile < fileCount; iFile++) {
+      gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
 
-    iInRange = false;
-    jInRange = false;
-    kInRange = false;
+      iInRange = false;
+      jInRange = false;
+      kInRange = false;
 
-    filename = dir + "/dumps" + std::to_string(fnum) + 
-    "/new_dump" + std::to_string(iFile);
-    
-    checkFileExists(filename);
-    fin = fopen(filename.c_str(), "rb");
-
-    read_data = 0;
+      local_filename = dir + "/dumps" + std::to_string(fnum) + 
+      "/new_dump" + std::to_string(iFile);
       
-    nStrt = std::accumulate(blocksInFile.begin(), 
-      blocksInFile.begin() + iFile + 1, 0);
-    nEnd  = nStrt + blocksInFile[iFile + 1];
+      checkFileExists(local_filename);
+      fin = fopen(local_filename.c_str(), "rb");
 
-    nStrt = std::max(nStrt, blkStrt);
-    nEnd  = std::min(nEnd,  blkEnd);
+      read_data = 0;
+        
+      nStrt = std::accumulate(blocksInFile.begin(), 
+        blocksInFile.begin() + iFile + 1, 0);
+      nEnd  = nStrt + blocksInFile[iFile + 1];
 
-    for (n = nStrt; n < nEnd; n++) {
-      readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+      nStrt = std::max(nStrt, blkStrt);
+      nEnd  = std::min(nEnd,  blkEnd);
 
-      // do not loop through block if block not in data set
-      // still loop through if low_res > bs
-      if (checkNotInBlock(iStrt, iEnd, iNotInBlock)) {
-        continue;
-      }
+      for (n = nStrt; n < nEnd; n++) {
+        readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
 
-      for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
-        for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
-          for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-            read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
-              iInRange, jInRange, kInRange);
-            if (read_data) {
-              readIn.readPrimsData(fin, tempArray, index_3D, gridsize_3D, 
-                n, nStrt, iGlob, jGlob, kGlob, *this);
+        // do not loop through block if block not in data set
+        // still loop through if low_res > bs
+        if (checkNotInBlock(iStrt, iEnd, iNotInBlock)) {
+          continue;
+        }
 
-              if (export_raytracing) {
-                std::cout << "Raytracing not implemented." << std::endl;
-              } else {
-                rho[index_3D]  = tempArray[0];
-                uGas[index_3D] = tempArray[1];
-                for (ii = 0; ii < 4; ii++) {
-                  uu[ii * gridsize_3D + index_3D] = tempArray[2 + ii];
-                } 
-                for (ii = 0; ii < 3; ii++) {
-                  B[(ii + 1) * gridsize_3D + index_3D] = tempArray[6 + ii];
-                }
-                  
-                if (RADM1) {
-                  uRad[index_3D] = tempArray[nPrim];
-                  for(ii = 0; ii < 4; ii++) {
-                    uuRad[ii * gridsize_3D + index_3D] = 
-                      tempArray[nPrim + 1 + ii];
-                  }
-                }
-                  
-                if (RES) {
-                  vStrt = nPrim + RADM1 * nRadM1;
+        for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
+          for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
+            for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
+              read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+                iInRange, jInRange, kInRange);
+              if (read_data) {
+                readIn.readPrimsData(fin, tempArray, index_3D, gridsize_3D, 
+                  n, nStrt, iGlob, jGlob, kGlob, *this);
+
+                if (export_raytracing) {
+                  std::cout << "Raytracing not implemented." << std::endl;
+                } else {
+                  rho[index_3D]  = tempArray[0];
+                  uGas[index_3D] = tempArray[1];
+                  for (ii = 0; ii < 4; ii++) {
+                    uu[ii * gridsize_3D + index_3D] = tempArray[2 + ii];
+                  } 
                   for (ii = 0; ii < 3; ii++) {
-                    E[ii * gridsize_3D + index_3D] = tempArray[vStrt + ii];
+                    B[(ii + 1) * gridsize_3D + index_3D] = tempArray[6 + ii];
                   }
-                }
+                    
+                  if (RADM1) {
+                    uRad[index_3D] = tempArray[nPrim];
+                    for(ii = 0; ii < 4; ii++) {
+                      uuRad[ii * gridsize_3D + index_3D] = 
+                        tempArray[nPrim + 1 + ii];
+                    }
+                  }
+                    
+                  if (RES) {
+                    vStrt = nPrim + RADM1 * nRadM1;
+                    for (ii = 0; ii < 3; ii++) {
+                      E[ii * gridsize_3D + index_3D] = tempArray[vStrt + ii];
+                    }
+                  }
 
-                if (TWOT) {
-                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes;
-                  Te[index_3D] = tempArray[vStrt];
-                  Ti[index_3D] = tempArray[vStrt + 1];
-                }
+                  if (TWOT) {
+                    vStrt = nPrim + RADM1 * nRadM1 + RES * nRes;
+                    Te[index_3D] = tempArray[vStrt];
+                    Ti[index_3D] = tempArray[vStrt + 1];
+                  }
 
-                if (PNUM) {
-                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + TWOT * nTwoT;
-                  phNum[index_3D] = tempArray[vStrt];
-                }
+                  if (PNUM) {
+                    vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + TWOT * nTwoT;
+                    phNum[index_3D] = tempArray[vStrt];
+                  }
+                    
+                  if (DOYE) {
+                    vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
+                    TWOT * nTwoT + PNUM * nPnum;
+                    Ye[index_3D] = tempArray[vStrt];
+                  }
+
+                  if (DONUC) {
+                    vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
+                      TWOT * nTwoT + PNUM * nPnum + DOYE * nYe;
+                    xAlpha[index_3D] = tempArray[vStrt];
+                    xAtm[index_3D]   = tempArray[vStrt + 1];
+                  }
+
+                  if (NUM1) {
+                    vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
+                      TWOT * nTwoT + PNUM * nPnum + DOYE * nYe + 
+                      DONUC * nNUC;
+                      
+                    uNu1[index_3D] = tempArray[vStrt];
+                    for (ii = 0; ii < 4; ii++) {
+                      uuNu1[ii * gridsize_3D + index_3D] = 
+                      tempArray[vStrt + 1 + ii];
+                    }
+                    nuNum1[index_3D] = tempArray[vStrt + 5];
+                      
+                    uNu2[index_3D] = tempArray[vStrt + 6];
+                    for (ii = 0; ii < 4; ii++) {
+                      uuNu2[ii * gridsize_3D + index_3D] = 
+                      tempArray[vStrt + 7 + ii];
+                    }
+                    nuNum2[index_3D] = tempArray[vStrt + 11];
+                      
+                    uNu3[index_3D] = tempArray[vStrt + 12];
+                    for (ii = 0; ii < 4; ii++) {
+                      uuNu3[ii * gridsize_3D + index_3D] = 
+                      tempArray[vStrt + 13 + ii];
+                    }
+                    nuNum3[index_3D] = tempArray[vStrt + 17];
+                  }
+
+                  if (DOTR) {
+                    vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
+                      TWOT * nTwoT + PNUM * nPnum + DOYE * nYe + 
+                      DONUC * nNUC + NUM1 * nNuM1;
+                    tr1[index_3D] = tempArray[vStrt];
+                    tr2[index_3D] = tempArray[vStrt + 1];
+                  }
                   
-                if (DOYE) {
-                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
-                  TWOT * nTwoT + PNUM * nPnum;
-                  Ye[index_3D] = tempArray[vStrt];
-                }
-
-                if (DONUC) {
-                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
-                    TWOT * nTwoT + PNUM * nPnum + DOYE * nYe;
-                  xAlpha[index_3D] = tempArray[vStrt];
-                  xAtm[index_3D]   = tempArray[vStrt + 1];
-                }
-
-                if (NUM1) {
-                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
-                    TWOT * nTwoT + PNUM * nPnum + DOYE * nYe + 
-                    DONUC * nNUC;
-                    
-                  uNu1[index_3D] = tempArray[vStrt];
-                  for (ii = 0; ii < 4; ii++) {
-                    uuNu1[ii * gridsize_3D + index_3D] = 
-                    tempArray[vStrt + 1 + ii];
-                  }
-                  nuNum1[index_3D] = tempArray[vStrt + 5];
-                    
-                  uNu2[index_3D] = tempArray[vStrt + 6];
-                  for (ii = 0; ii < 4; ii++) {
-                    uuNu2[ii * gridsize_3D + index_3D] = 
-                    tempArray[vStrt + 7 + ii];
-                  }
-                  nuNum2[index_3D] = tempArray[vStrt + 11];
-                    
-                  uNu3[index_3D] = tempArray[vStrt + 12];
-                  for (ii = 0; ii < 4; ii++) {
-                    uuNu3[ii * gridsize_3D + index_3D] = 
-                    tempArray[vStrt + 13 + ii];
-                  }
-                  nuNum3[index_3D] = tempArray[vStrt + 17];
-                }
-
-                if (DOTR) {
-                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
-                    TWOT * nTwoT + PNUM * nPnum + DOYE * nYe + 
-                    DONUC * nNUC + NUM1 * nNuM1;
-                  tr1[index_3D] = tempArray[vStrt];
-                  tr2[index_3D] = tempArray[vStrt + 1];
-                }
-                
-                if (DISSTRK) {
-                  vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
-                    TWOT * nTwoT + PNUM * nPnum + DOYE * nYe + 
-                    DONUC * nNUC + NUM1 * nNuM1 + DOTR * nTr;
-                  diss[index_3D] = tempArray[vStrt];
-                  if (DISSTRK == 2) {
-                    radSrc[index_3D] = tempArray[vStrt + 1];
+                  if (DISSTRK) {
+                    vStrt = nPrim + RADM1 * nRadM1 + RES * nRes + 
+                      TWOT * nTwoT + PNUM * nPnum + DOYE * nYe + 
+                      DONUC * nNUC + NUM1 * nNuM1 + DOTR * nTr;
+                    diss[index_3D] = tempArray[vStrt];
+                    if (DISSTRK == 2) {
+                      radSrc[index_3D] = tempArray[vStrt + 1];
+                    }
                   }
                 }
-              }
-            } // read_data
-            read_data = 0;
-          } // kGlob
-        } // jGlob
-      } // iGlob
-    } // loop over n
-    fclose(fin); 
-  } // parallel loop over number of files (GPUs)
+              } // read_data
+              read_data = 0;
+            } // kGlob
+          } // jGlob
+        } // iGlob
+      } // loop over n
+      fclose(fin); 
+    } // parallel loop over number of files (GPUs)
+    delete[] tempArray;
+  }
 }
 
 void Read::checkFileExists(std::string filename) {
@@ -908,7 +910,7 @@ void ReadIn::readMetricData3D(FILE* fin, std::vector<double>& tempArray,
   }
 }
 
-void ReadIn::readPrimsData(FILE* fin, std::vector<float>& tempArray,
+void ReadIn::readPrimsData(FILE* fin, float* tempArray,
     long int &index_3D, long int &gridsize_3D, int n, int nStrt, 
     int iGlob, int jGlob, int kGlob, const Read &read) {
   if (read.by_block) {
@@ -928,7 +930,7 @@ void ReadIn::readPrimsData(FILE* fin, std::vector<float>& tempArray,
       (jGlob * read.lowRes.x2) * read.bs3 + 
       (kGlob * read.lowRes.x3)) * read.nvar * read.float_size, 
       SEEK_SET);
-    fread(&tempArray[0], read.float_size, read.nvar, fin);
+    fread(tempArray, read.float_size, read.nvar, fin);
   } else {
     // indices on the given block
     iLoc = (iGlob - (coord.x1 * upscale.x1 * read.bs1)) / upscale.x1;            
@@ -942,7 +944,7 @@ void ReadIn::readPrimsData(FILE* fin, std::vector<float>& tempArray,
     fseek(fin, ((n - nStrt) * read.bs1 * read.bs2 * read.bs3 + 
       (iLoc * read.bs2 * read.bs3) + (jLoc * read.bs3) + kLoc) * (
       read.nvar * read.float_size), SEEK_SET);
-    fread(&tempArray[0], read.float_size, read.nvar, fin);  
+    fread(tempArray, read.float_size, read.nvar, fin);  
   }
 }
 
@@ -1181,6 +1183,56 @@ void Tools::lowerVec(const std::vector<float> uu,
   for (int i = 0 ; i < 4; i++) {
     for (int j = 0; j < 4; j++) {
       ud[i] += gcov[4 * i + j] * uu[j];
+    }
+  }
+}
+
+void Tools::boostVector(float* u, float* u_boost, float* uu_c,
+    int nb, int nx1, int nx2, int nx3, int inverse) {
+  // compute u_boost = Lambda^mu,nu u^nu for all mu
+  // computes (4, nb, nx1, nx2, nx3) dimensional array
+  long int gridsize_3D;
+  int n, m, i;
+  // Loop over each of nb * nx1 * nx2 * nx3 cells
+  gridsize_3D = nb * nx1 * nx2 * nx3;
+  #pragma omp parallel for private(n, m, i)
+  for (n = 0; n < gridsize_3D; n++) {
+    std::vector<float> uu(4), ub(4), uuLoc(4), lambdaLoc(16);
+    for (m = 0; m < 4; m++) {
+      uu[m]    = u[   m * gridsize_3D + n];
+      uuLoc[m] = uu_c[m * gridsize_3D + n];
+      ub[m]    = 0.0;
+      for (i = 0; i < 4; i++) {
+        lambdaLoc[4 * m + i] = 0.0;
+      }
+    } 
+    calcLorentzBoostVec(uuLoc, lambdaLoc, inverse);
+    lowerVec(uu, ub, lambdaLoc);
+    for (m = 0; m < 4; m++) {
+      u_boost[m *gridsize_3D + n] = ub[m];
+    }
+  }
+}
+
+void Tools::calcLorentzBoostVec(const std::vector<float> uu,
+    std::vector<float>& lambda, int inverse) {
+  float vsq, pm;
+  std::vector<float> v(4);
+  pm = 1.0 * (1 - inverse) - 1.0 * (inverse);
+  v[0] = 0.0;
+  v[1] = pm * uu[1] / uu[0];
+  v[2] = pm * uu[2] / uu[0];
+  v[3] = pm * uu[3] / uu[0];
+  vsq  = v[1] * v[1] + v[2] * v[2] + v[3] * v[3];
+  lambda[0] = uu[0];
+  for (int i = 0; i < 3; i++) {
+    lambda[4 * (i + 1)] = -uu[i+1];
+    lambda[i + 1]       = -uu[i+1];
+  }
+  for (int i = 0 ; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      lambda[4 * (i + 1) + (j + 1)] = ((uu[0] - 1.0) / vsq) * (
+       v[i + 1] * v[j + 1] + (i == j) * 1.0);
     }
   }
 }

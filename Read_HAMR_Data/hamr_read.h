@@ -139,7 +139,7 @@ class ReadIn {
         long int &index_3D, long int &gridsize_3D, 
         int n, int iGlob, int jGlob, int kGlob, const Read &read);
 
-    void readPrimsData(FILE* fin, std::vector<float>& tempArray,
+    void readPrimsData(FILE* fin, float* tempArray,
         long int &index_3D, long int &gridsize_3D, int n, int nStrt, 
         int iGlob, int jGlob, int kGlob, const Read &read);
 
@@ -169,6 +169,8 @@ class Tools {
         int nb, int nx1, int nx2, int nx3, int axisym);
     void lowerIndex(float* u, float* u_mu, float* gcov, 
         int nb, int nx1, int nx2, int nx3, int axisym, int l);
+    void boostVector(float* u, float* u_boost, float* uu_c,
+        int nb, int nx1, int nx2, int nx3, int inverse);
 
     // default destructor
     ~Tools();
@@ -178,6 +180,8 @@ class Tools {
     double kernelDet4x4(const std::vector<double> a);
     void lowerVec(const std::vector<float> uu,
         std::vector<float>& ud, const std::vector<float> gcov);
+    void calcLorentzBoostVec(const std::vector<float> uu,
+        std::vector<float>& lambda, int inverse);
 };
 
 #endif
