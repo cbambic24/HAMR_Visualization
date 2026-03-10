@@ -20,7 +20,8 @@ setup(
                            include_dirs=[np.get_include()],
                            extra_compile_args=["-fopenmp", "-std=c++17",
                                                "-Wno-unused-result",
-                                               "-Wno-deprecated-declarations"],
+                                               "-Wno-deprecated-declarations",
+                                               "-O3"],
                            extra_link_args=["-fopenmp"],
                            define_macros=[("NPY_NO_DEPRECATED_API", 
                                 "NPY_1_7_API_VERSION")])
