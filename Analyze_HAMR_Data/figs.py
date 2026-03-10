@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.interpolate import griddata
+from matplotlib import patches
 
 class Cartesian():
     def __init__(self, params, **kwargs):
@@ -604,6 +605,283 @@ class Fix_Pole():
             case 4:
                 return phi[0, 0, 0, :]
 
+class HAMR_Cartesian(Cartesian):
+    # Create plots assuming 3D data (similar to original pipeline)
+    def __init__(self):
+        super().__init__([])
 
+    def plot_xy(self, fig, ax, Q, r, theta, phi, **kwargs):
+        kwargs = self.update_kwargs(r, theta, phi, **kwargs)
+        FS   = kwargs.pop('FS', 20)
+        cmap = kwargs.pop('cmap','viridis')
+        ith  = int(len(theta[0, 0, :, 0]) / 2)
+        x3D  = r * np.sin(theta) * np.cos(phi)
+        y3D  = r * np.sin(theta) * np.sin(phi)
+        X, Y, D = {}, {}, {}
+        X['r'] = 0.5 * (x3D[0, :, ith-1, :] + x3D[0, :, ith, :])
+        Y['r'] = 0.5 * (y3D[0, :, ith-1, :] + y3D[0, :, ith, :])
+        D['r'] = 0.5 * (Q[  0, :, ith-1, :] + Q[  0, :, ith, :])
+        return super().plot_xy(fig, ax, X, Y, D, cmap, FS, **kwargs)
+
+    def plot_Rz(self, fig, ax, Q, r, theta, phi, **kwargs):
+        # phi0 specifies the target phi value of the slice
+        # iphi overrides phi0 to select a specific index
+        kwargs = self.update_kwargs(r, theta, phi, **kwargs)
+        FS   = kwargs.pop('FS', 20)
+        cmap = kwargs.pop('cmap','viridis')
+        phi0 = kwargs.get('phi0', 0.)
+        if 'iphi' in kwargs:
+            iphi = int(kwargs.get('iphi', 0))
+        else:
+            iphi = int(np.argmin(np.abs(phi[0, 0, 0, :] - phi0)))
+
+        R3D = r * np.sin(theta) * np.ones_like(phi)
+        z3D = r * np.cos(theta) * np.ones_like(phi)
+        R, Z, D = {}, {}, {}
+        R['r'] = R3D[0, :, :, iphi]
+        Z['r'] = z3D[0, :, :, iphi]
+        D['r'] = Q[  0, :, :, iphi]
+        return super().plot_Rz(fig, ax, R, Z, D, cmap, FS, **kwargs)
+
+    def plot_xz(self, fig, ax, Q, r, theta, phi, **kwargs):
+        kwargs = self.update_kwargs(r, theta, phi, **kwargs)
+        FS   = kwargs.pop('FS', 20)
+        cmap = kwargs.pop('cmap','viridis')
+        phi0 = kwargs.get('phi0', 0.)
+        if 'iphi' in kwargs:
+            iphi = int(kwargs.get('iphi', 0))
+        else:
+            iphi = int(np.argmin(np.abs(phi[0, 0, 0, :] - phi0)))
+        if (iphi < len(phi[0, 0, 0, :]) / 2):
+            ipi = int(iphi + len(phi[0, 0, 0, :]) / 2)
+        else:
+            iphi = int(iphi - len(phi[0, 0, 0, :]) / 2)
+            ipi  = int(iphi + len(phi[0, 0, 0, :]) / 2)
+        R3D = r * np.sin(theta) * np.ones_like(phi)
+        z3D = r * np.cos(theta) * np.ones_like(phi)
+        X, Z, D = {}, {}, {}
+        X['r'] = R3D[ 0, :, :, iphi]
+        Z['r'] = z3D[ 0, :, :, iphi]
+        D['r'] = Q[   0, :, :, iphi]
+        X['l'] = -R3D[0, :, :, ipi]
+        Z['l'] = z3D[ 0, :, :, ipi]
+        D['l'] = Q[   0, :, :, ipi]
+        return super().plot_xz(fig, ax, X, Z, D, cmap, FS, **kwargs)
+
+    def plot_xz_mirror(self, fig, ax, Ql, Qr, r, theta, phi, **kwargs):
+        # Plots R-z slices mirrored
+        # phi0 specifies the target phi value of the slice
+        # iphi overrides phi0 to select a specific index
+        kwargs = self.update_kwargs(r, theta, phi, **kwargs)
+        FS    = kwargs.pop('FS', 20)
+        cmaps = kwargs.pop('cmaps',['viridis', 'viridis'])
+        phi0  = kwargs.get('phi0', 0.)
+        if 'iphi' in kwargs:
+            iphi = int(kwargs.get('iphi', 0))
+        else:
+            iphi = int(np.argmin(np.abs(phi[0, 0, 0, :] - phi0)))
+
+        R3D = r * np.sin(theta) * np.ones_like(phi)
+        z3D = r * np.cos(theta) * np.ones_like(phi)
+        X, Z, Dl, Dr = {}, {}, {}, {}
+        X['r']  = R3D[ 0, :, :, iphi]
+        Z['r']  = z3D[ 0, :, :, iphi]
+        Dr['r'] = Qr[  0, :, :, iphi]
+        X['l']  = R3D[ 0, :, :, iphi]
+        Z['l']  = -z3D[0, :, :, iphi]
+        Dl['l'] = Ql[  0, :, :, iphi]
+        return super().plot_xz_mirror(fig, ax, X, Z, Dl, Dr, 
+                                      cmaps, FS, **kwargs)
+    
+    def update_kwargs(self, r, theta, phi, **kwargs):
+        if kwargs.get('fix_pole', False):
+            kwargs['r']     = r
+            kwargs['theta'] = theta
+            kwargs['phi']   = phi
+        return kwargs
+
+class HAMR_Cartesian_Block(Cartesian):
+    # Create plots with block boundaries assuming 3D data 
+    # (similar to original pipeline)
+    def __init__(self, params):
+        self.params = params
+        self.dth    = (np.pi / 2.) * self.params['dx2']
+        self.dphi   = self.params['dx3']
+
+    def plot_xy(self, fig, ax, Q, r, theta, phi, **kwargs):
+        theta0 = kwargs.get('theta0', np.pi/2.)
+        FS   = kwargs.pop('FS', 20)
+        cmap = kwargs.pop('cmap','viridis')
+        im = {}
+        Q_plt = {'r' : Q}
+        vmin, vmax = self.get_vmin_vmax(Q_plt, **kwargs)
+        norm       = self.get_norm(vmin, vmax, **kwargs)
+        
+        plt_args = {
+            'norm'    : norm,
+            'cmap'    : cmap,
+            'shading' : 'gouraud'
+        }
+        
+        nb  = Q.shape[0]
+        x3D = r * np.sin(theta) * np.cos(phi)
+        y3D = r * np.sin(theta) * np.sin(phi)
+        for i in range(nb):
+            if (np.any(theta[i, 0, :, 0] > theta0) and 
+                np.any(theta[i, 0, :, 0] < theta0 + self.dth)):
+                ith = np.argmin(np.abs(theta[i, 0, :, 0] - theta0))
+                X = x3D[i, :, ith, :]
+                Y = y3D[i, :, ith, :]
+                D = Q[  i, :, ith, :]
+
+                im['r'] = ax.pcolormesh(X, Y, D, **plt_args)
+
+                if kwargs.get('show_grid', 0):
+                    ds = kwargs.get('show_grid', 0)
+                    self.plot_grid(ax, 'xy', ds, r[i], theta[i], phi[i], 
+                                   ith=ith, **kwargs)
+        
+        cax = self.get_cax(fig, ax, im, FS, **kwargs)
+        return im, cax
+
+    def plot_Rz(self, fig, ax, Q, r, theta, phi, **kwargs):
+        phi0 = kwargs.get('phi0', 0.)
+        FS   = kwargs.pop('FS', 20)
+        cmap = kwargs.pop('cmap','viridis')
+        im    = {}
+        Q_plt = {'r' : Q}
+        vmin, vmax = self.get_vmin_vmax(Q_plt, **kwargs)
+        norm       = self.get_norm(vmin, vmax, **kwargs)
+        
+        plt_args = {
+            'norm'    : norm,
+            'cmap'    : cmap,
+            'shading' : 'gouraud'
+        }
+
+        nb  = Q.shape[0]
+        R3D = r * np.sin(theta) * np.ones_like(phi)
+        z3D = r * np.cos(theta) * np.ones_like(phi)
+        for i in range(nb):
+            dphi = np.diff(phi[i, 0, 0, :])[0]
+            if (np.any(phi[i, 0, 0, :] > phi0) and 
+                np.any(phi[i, 0, 0, :] < phi0 + dphi)):
+                iphi = np.argmin(np.abs(phi[i, 0, 0, :] - phi0))
+                R = R3D[i, :, :, iphi]
+                Z = z3D[i, :, :, iphi]
+                D = Q[  i, :, :, iphi]
+                im['r'] = ax.pcolormesh(R, Z, D, **plt_args)
+
+                if kwargs.get('show_grid', 0):
+                    ds = kwargs.get('show_grid', 0)
+                    self.plot_grid(ax, 'Rz', ds, r[i], theta[i], phi[i], 
+                                   iphi=iphi, **kwargs)
+        
+        cax = self.get_cax(fig, ax, im, FS, **kwargs)
+        return im, cax
+
+    def plot_xz(self, fig, ax, Q, r, theta, phi, **kwargs):
+        phi0 = kwargs.get('phi0', 0.)
+        if (phi0 < np.pi):
+            pi0 = phi0 + np.pi
+        else:
+            phi0 = phi0 - np.pi
+            pi0  = phi0 + np.pi
+        FS   = kwargs.pop('FS', 20)
+        cmap = kwargs.pop('cmap','viridis')
+        im    = {}
+        Q_plt = {'r' : Q}
+        vmin, vmax = self.get_vmin_vmax(Q_plt, **kwargs)
+        norm       = self.get_norm(vmin, vmax, **kwargs)
+        
+        plt_args = {
+            'norm'    : norm,
+            'cmap'    : cmap,
+            'shading' : 'gouraud'
+        }
+
+        nb  = Q.shape[0]
+        x3D = r * np.sin(theta) * np.cos(phi)
+        z3D = r * np.cos(theta) * np.ones_like(phi)
+        for i in range(nb):
+            dphi = np.diff(phi[i, 0, 0, :])[0]
+            if (np.any(phi[i, 0, 0, :] > phi0) and 
+                np.any(phi[i, 0, 0, :] < phi0 + dphi)):
+                iphi = np.argmin(np.abs(phi[i, 0, 0, :] - phi0))
+                X = x3D[i, :, :, iphi]
+                Z = z3D[i, :, :, iphi]
+                D = Q[  i, :, :, iphi]
+                im['r'] = ax.pcolormesh(X, Z, D, **plt_args)
+
+                if kwargs.get('show_grid', 0):
+                    ds = kwargs.get('show_grid', 0)
+                    self.plot_grid(ax, 'xz', ds, r[i], theta[i], phi[i], 
+                                   iphi=iphi, **kwargs)
+
+            if (np.any(phi[i, 0, 0, :] > pi0 - dphi) and 
+                np.any(phi[i, 0, 0, :] < pi0)):
+                ipi = np.argmin(np.abs(phi[i, 0, 0, :] - pi0))
+                X = x3D[i, :, :, ipi]
+                Z = z3D[i, :, :, ipi]
+                D = Q[  i, :, :, ipi]
+                im['l'] = ax.pcolormesh(X, Z, D, **plt_args)
+
+                if kwargs.get('show_grid', 0):
+                    ds = kwargs.get('show_grid', 0)
+                    self.plot_grid(ax, 'xz', ds, r[i], theta[i], phi[i], 
+                                   iphi=ipi, **kwargs)
+        
+        cax = self.get_cax(fig, ax, im, FS, **kwargs)
+        return im, cax
+
+    def plot_grid(self, ax, orientation, ds, r, theta, phi, **kwargs):
+        grid_color = kwargs.get('grid_color', 'white')
+        grid_width = kwargs.get('grid_width', 0.1)
+        dr   = np.diff(r[:, 0, 0])[0]
+        dth  = np.diff(theta[0, :, 0])[0]
+        dphi = np.diff(phi[0, 0, :])[0]
+        nr   = len(r[:, 0, 0])
+        nth  = len(theta[0, :, 0])
+        nphi = len(phi[0, 0, :])
+        if orientation == 'xz' or orientation == 'Rz':
+            iphi = kwargs.get('iphi', 0)
+            if nr % ds != 0 or nth % ds != 0:
+                raise ValueError("show_grid must divide nr and nth")
+            xshift = r * np.sin(theta - dth/2.) * np.cos(phi)
+            zshift = r * np.cos(theta - dth/2.) * np.ones_like(phi)
+            for ith in range(0, nth, ds):
+                xline = xshift[:, ith, iphi]
+                zline = zshift[:, ith, iphi]
+                ax.plot(xline, zline, color=grid_color, lw=grid_width)
+            for ir in range(0, nr, ds):
+                r0     = r[ir, 0, 0] - dr/2.
+                th_min = np.amin(theta[0, :, 0]) - dth/2.
+                th_max = np.amax(theta[0, :, 0]) + dth/2.
+                th1D   = np.linspace(th_min, th_max, 100)
+                phi0   = phi[0, 0,  iphi]
+                pm     = int(np.cos(phi0) > 0.) - int(np.cos(phi0) < 0.)
+                xcurve = pm * r0 * np.sin(th1D) 
+                zcurve = r0 * np.cos(th1D)
+                ax.plot(xcurve, zcurve, color=grid_color, lw=grid_width)
+        elif orientation == 'xy':
+            ith = kwargs.get('ith', 0)
+            if nr % ds != 0 or nphi % ds != 0:
+                raise ValueError("show_grid must divide nr and nphi")
+            xshift = r * np.cos(phi - dphi/2.)
+            yshift = r * np.sin(phi - dphi/2.)
+            for iphi in range(0, nphi, ds):
+                xline = xshift[:, ith, iphi]
+                yline = yshift[:, ith, iphi]
+                ax.plot(xline, yline, color=grid_color, lw=grid_width)
+            for ir in range(0, nr, ds):
+                r0     = r[ir, 0, 0] - dr/2.
+                phi_min = np.amin(phi[0, 0, :]) - dphi/2.
+                phi_max = np.amax(phi[0, 0, :]) + dphi/2.
+                phi1D   = np.linspace(phi_min, phi_max, 100)
+                th0     = theta[0, 0,  ith]
+                xcurve = r0 * np.cos(phi1D) 
+                ycurve = r0 * np.sin(phi1D)
+                ax.plot(xcurve, ycurve, color=grid_color, lw=grid_width)
+                
 if __name__ == "__main__":
     print("Executing figs.py")
