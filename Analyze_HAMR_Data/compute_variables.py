@@ -23,26 +23,26 @@ import hamr_read as hr
 
 def get_data_dir(sim, reduced, shared):
     if not reduced and not shared:
-        data_dir = user_path + '/DATA/' + sim
+        data_dir = f'{user_path}/DATA/{sim}'
     elif reduced and not shared:
-        data_dir = user_path + '/DATA/' + sim + '/reduced/'
+        data_dir = f'{user_path}/DATA/{sim}/reduced/'
     elif not reduced and shared:
-        data_dir = f'{shared_path}/' + sim
+        data_dir = f'{shared_path}/{sim}'
     elif reduced and shared:
-        data_dir = f'{shared_path}/' + sim + '/reduced/'
+        data_dir = f'{shared_path}/{sim}/reduced/'
     return data_dir 
 
 def get_save_dir(sim, type, diagnostic, **kwargs):
     subtype = kwargs.get('subtype', False)
     reduced = kwargs.get('reduced', False)
     if not subtype and not reduced:
-        save_dir = user_path + f'/{type}/' + sim + f'/Full_Resolution/{diagnostic}'
+        save_dir = f'{user_path}/{type}/{sim}/Full_Resolution/{diagnostic}'
     elif subtype and not reduced:
-        save_dir = user_path + f'/{type}/' + sim + f'/Full_Resolution/{subtype}/{diagnostic}'
+        save_dir = f'{user_path}/{type}/{sim}/Full_Resolution/{subtype}/{diagnostic}'
     elif not subtype and reduced:
-        save_dir = user_path + f'/{type}/' + sim + f'/Reduced_Resolution/{diagnostic}'
+        save_dir = f'{user_path}/{type}/{sim}/Reduced_Resolution/{diagnostic}'
     elif subtype and reduced:
-        save_dir = user_path + f'/{type}/' + sim + f'/Reduced_Resolution/{subtype}/{diagnostic}'
+        save_dir = f'{user_path}/{type}/{sim}/Reduced_Resolution/{subtype}/{diagnostic}'
     return save_dir
 
 def get_file_list_local(file_list, size, rank, data_dir, **kwargs):
@@ -86,14 +86,21 @@ def check_files_exist(path_to_averages, file_list, **kwargs):
     data_list = glob.glob(f'{file_type}*', root_dir=file_dir)
     nums = [int(name.strip(f'{file_type}_').strip('.npz')) for name in data_list]
     nums.sort()
-    removed_files = []
-    for file_num in file_list:
-        if file_num not in nums:
-            removed_files.append(file_num)
-    for removed_file in removed_files:
-        file_list.remove(removed_file)
+    file_list = [f for f in file_list if f in set(nums)]
     return file_list
 
+def check_images_exist(path_to_images, file_list, title, subtype, **kwargs):
+    reduced   = kwargs.get('reduced',   False)
+    file_dir  = (
+        f'{path_to_images}/Full_Resolution/{subtype}/{title}' if not reduced 
+        else f'{path_to_averages}/Reduced_Resolution/{subtype}/{title}'
+    )
+    data_list = glob.glob(f'*.png', root_dir=file_dir)
+    nums = [int(name.strip(f'{title}_').strip('.png')) for name in data_list]
+    nums.sort()
+    file_list = [f for f in file_list if f in set(nums)]
+    return file_list
+    
 def get_nice_time(time):
     raw_string = '%.5e' %time
     coeff = raw_string.split('e+')[0]
@@ -1003,7 +1010,7 @@ class Phi_Slice():
             if (Radiation): Tzphi += Tzphi_Rad
             return Tzphi
 
-    # Cooling rates    
+    # Cooling rates
     # Inverse-Compton cooling rate
     def calc_qIC(self, iphi, **kwargs):
         rho, Te, u_rad = self.get_vars2D(['rho', 'Te', 'u_rad'], iphi)
@@ -1013,11 +1020,12 @@ class Phi_Slice():
 
     # Coulomb cooling rate
     def calc_qie(self, iphi, **kwargs):
+        mid         = kwargs.get('midplane', False)
         rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
         uu, gcov    = self.H.data['uu'], self.H.grid['gcov']
         u_t         = np.einsum('ij...,j...->i...', gcov, uu)[0] / self.c
         qie = self.Fluid.calc_qie(rho, Te, Ti, **kwargs)
-        return (-u_t * qie)[0, :, :, iphi]
+        return -(u_t * qie)[0, :, :, iphi] if not mid else -(u_t * qie)[0]
 
     # Synchrotron cooling rate
     def calc_qsync(self, iphi, **kwargs):
@@ -1207,24 +1215,32 @@ class Phi_Slice():
     # Plasma timescales
     # Ion-electron temperature equilibration
     def calc_teq(self, iphi, **kwargs):
+        mid         = kwargs.get('midplane', False)
         rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
-        return self.Fluid.calc_teq(rho, Te, Ti, **kwargs)[0, :, :, iphi]
+        teq         = self.Fluid.calc_teq(rho, Te, Ti, **kwargs)
+        return teq[0, :, :, iphi] if not mid else teq[0]
     
     # Ion-ion collisions
     def calc_tii(self, iphi, **kwargs):
+        mid         = kwargs.get('midplane', False)
         rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
-        return self.Fluid.calc_tii(rho, Te, Ti, **kwargs)[0, :, :, iphi]
+        tii         = self.Fluid.calc_tii(rho, Te, Ti, **kwargs)
+        return tii[0, :, :, iphi] if not mid else tii[0]
     
     # Electron-electron collisions
     def calc_tee(self, iphi, **kwargs):
+        mid         = kwargs.get('midplane', False)
         rho, Ti, Te = self.H.data['rho'], self.H.data['Ti'], self.H.data['Te']
-        return self.Fluid.calc_tee(rho, Te, Ti, **kwargs)[0, :, :, iphi]
+        tee         = self.Fluid.calc_tee(rho, Te, Ti, **kwargs)
+        return tee[0, :, :, iphi] if not mid else tee[0]
     
     # Inverse Compton
     def calc_tIC(self, iphi, **kwargs):
+        mid            = kwargs.get('midplane', False)
         rho, Te, u_rad = self.H.data['rho'], self.H.data['Te'], self.H.data['u_rad']
-        return self.Rad.calc_tIC(rho, Te, u_rad, **kwargs)[0, :, :, iphi]
-
+        tIC            = self.Rad.calc_tIC(rho, Te, u_rad, **kwargs)
+        return tIC[0, :, :, iphi] if not mid else tIC[0]
+        
     # Optical depths
     def calc_tau(self, opacities, iphi, **kwargs):
         tau = self.Acc.calc_tau(opacities=opacities, sigma_cut=3., **kwargs)
@@ -1706,7 +1722,7 @@ class Midplane_Slice(Phi_Slice):
 
     # Coulomb cooling rate
     def calc_qie(self, **kwargs):
-        return self.mid_val(super().calc_qie(0, **kwargs))
+        return self.mid_val(super().calc_qie(0, midplane=True, **kwargs))
 
     # Synchrotron cooling rate
     def calc_qsync(self, **kwargs):
@@ -1714,13 +1730,13 @@ class Midplane_Slice(Phi_Slice):
     
     # Cooling timescales
     def calc_teq(self, **kwargs):  
-        return self.mid_val(super().calc_teq(0, **kwargs))
+        return self.mid_val(super().calc_teq(0, midplane=True, **kwargs))
     
     def calc_tii(self, **kwargs):
-        return self.mid_val(super().calc_tii(0, **kwargs))
+        return self.mid_val(super().calc_tii(0, midplane=True, **kwargs))
     
     def calc_tee(self, **kwargs):
-        return self.mid_val(super().calc_tee(0, **kwargs))
+        return self.mid_val(super().calc_tee(0, midplane=True, **kwargs))
     
     def calc_tIC(self, **kwargs):   
         return self.mid_val(super().calc_tIC(0, **kwargs))
@@ -1781,13 +1797,14 @@ class Load_Data():
     def load_data(self, averages_dir, fnums, **kwargs):
         file_type  = kwargs.get('file_type', 'Profiles')
         reduced    = kwargs.get('reduced', False)
-        data_dir = (f'{averages_dir}/Full_Resolution/{file_type}' if not reduced 
+        data_dir   = (f'{averages_dir}/Full_Resolution/{file_type}' 
+                    if not reduced 
                     else f'{averages_dir}/Reduced_Resolution/{file_type}')
         print(f"Loading from {data_dir}...")
         names = glob.glob(f"{file_type}*", root_dir=data_dir)
-        nums = [int(name.strip(f'{file_type}_').strip('.npz')) for name in names]
-        nums.sort()
-        nzeros = len(str(int(len(nums))))
+        nzeros = max([
+            len(name.strip(f'{file_type}_').strip('.npz')) for name in names
+        ])
         if 'profiles' not in kwargs and 'slices' not in kwargs:
             data = {}
         elif 'profiles' in kwargs and 'slices' not in kwargs:
