@@ -110,6 +110,9 @@ cdef extern from "hamr_read.h":
         void lowerIndex(float* u, float* u_mu, float* gcov,
             int nb, int nx1, int nx2, int nx3, int axisym, int l)
 
+        void boostVector(float* u, float* u_boost, float* uu_c,
+            int nb, int nx1, int nx2, int nx3, int inverse)
+
 def pass_dict_to_cpp(my_dict):
     cdef unordered_map[string, double] cpp_dict
     for key, value in my_dict.items():
@@ -393,3 +396,10 @@ cdef class PyTools:
         nb, nx1, nx2, nx3, axisym):
         return self.c_tools.lowerIndex(&u[0,0,0,0,0], &u_mu[0,0,0,0],
             &gcov[0,0,0,0,0,0], nb, nx1, nx2, nx3, axisym, mu)
+    
+    def boost_vector(self, np.ndarray[np.float32_t, ndim=5, mode="c"] u,
+        np.ndarray[np.float32_t, ndim=5, mode="c"] u_boost,
+        np.ndarray[np.float32_t, ndim=5, mode="c"] uu_c,
+        nb, nx1, nx2, nx3, inverse):
+        return self.c_tools.boostVector(&u[0,0,0,0,0], &u_boost[0,0,0,0,0],
+            &uu_c[0,0,0,0,0], nb, nx1, nx2, nx3, inverse)
