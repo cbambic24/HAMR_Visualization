@@ -12,7 +12,16 @@ import coordinates as coords
 import radiation as rad
 from mpi4py import MPI
 from mpi4py.util import pkl5
+import gc
 import time as timeit
+
+# Numerical constants for performance
+ONE         = np.float32(1.)
+HALF        = np.float32(0.5)
+ONE_THIRD   = np.float32(1. / 3.)
+FOUR_THIRDS = np.float32(4. / 3.)
+FOURPI      = np.float32(4. * np.pi)
+EIGHTPI     = np.float32(8. * np.pi)
 
 def main(**kwargs):
     sim       = kwargs.get('sim')
@@ -34,7 +43,7 @@ def main(**kwargs):
     vargamma  = kwargs.get('vargamma')
 
     # Define constants
-    MBH = 10.0
+    MBH = np.float32(10.0)
     cgs = True if (two_temp or radiation) else False
     if (two_temp or radiation):
         Msun = hr.CONSTANTS['Msun']
@@ -42,32 +51,36 @@ def main(**kwargs):
         G    = hr.CONSTANTS['G']
         Rg   = G * MBH * Msun / (c * c)
     else:
-        c, G, Rg = 1., 1., 1.
+        c, G, Rg = ONE, ONE, ONE
 
     if (two_temp or radiation):
-        kB   = hr.CONSTANTS['kB']
-        mp   = hr.CONSTANTS['mp'] 
+        kB   = np.float32(hr.CONSTANTS['kB'])
+        mp   = np.float32(hr.CONSTANTS['mp'])
 
-        x_AB = hr.CONSTANTS['X_AB']
-        y_AB = hr.CONSTANTS['Y_AB']
+        x_AB = np.float32(hr.CONSTANTS['X_AB'])
+        y_AB = np.float32(hr.CONSTANTS['Y_AB'])
 
         # Equation 11 in Sadowski+ (2017)
-        mu_i = 4.0 / (4.0 * x_AB + y_AB)
+        mu_i = np.float32(4. / (4. * x_AB + y_AB))
         # Equation 10 in Sadowski+ (2017)
-        mu_e = 2.0 / (1.0 + x_AB)
+        mu_e = np.float32(2. / (1. + x_AB))
         mi   = (x_AB + y_AB) * mp  
-        me   = hr.CONSTANTS['me'] 
+        me   = np.float32(hr.CONSTANTS['me'])
 
         # Given in Kaaz et al. (2024)
-        mu_g = 4.0 / (6.0 * x_AB + y_AB + 2.)
+        mu_g = np.float32(4. / (6. * x_AB + y_AB + 2.))
+    
+    # Ensure CONSTANTS are 32-bit floats
+    CONSTANTS = {key : np.float32(value) 
+                 for (key, value) in hr.CONSTANTS.items()}
     
     # Determine data extraction and save directories
     data_dir = cv.get_data_dir(sim, reduced, shared)
     save_dir = cv.get_save_dir(sim if title == None else title, 
                                'Averages', 'Slices', reduced=reduced)
-
+    
     nzeros = len(str(len(glob.glob(os.path.join(data_dir, 'dumps*')))))
-
+    
     # Quantities (quants) for slice averaging
     keys = [
         'rho', 'Ti', 'Pmag', 'Pthm', 'Vol', 'w'
@@ -128,9 +141,8 @@ def main(**kwargs):
         # Use get_file_list_local as if on rank 0 with 1 core
         existing_profiles = cv.get_file_list_local(file_list_local, 1, 0, 
             averages_dir, file_type='Slices', reduced=reduced)
-        for existing_profile in existing_profiles:
-            if (existing_profile in file_list_local):
-                file_list_local.remove(existing_profile)
+        existing_set = set(existing_profiles)
+        file_list_local = [f for f in file_list_local if f not in existing_set]
 
     read_args = {
         'cgs_grid' : cgs,
@@ -173,45 +185,63 @@ def main(**kwargs):
             H.read_grid(file_num, direct=True)
             H.read_prims(file_num, skip_read_params=True)
 
+            if 'tr1' in H.data.keys(): H.data['tr1'] = None
+            if 'tr2' in H.data.keys(): H.data['tr2'] = None
+            if 'dissipation' in H.data.keys(): H.data['dissipation'] = None
+            if 'rad_src'     in H.data.keys(): H.data['rad_src']     = None
+
+            acc_class_args = {
+                'grid'      : H.grid,
+                'data'      : H.data,
+                'pars'      : H.params,
+                'CONSTANTS' : CONSTANTS, # float32 constants
+                'cgs'       : cgs,
+                'MBH'       : MBH,
+                'radiation' : radiation
+            }
+
+            class_args = {
+                'pars'      : H.params,
+                'CONSTANTS' : CONSTANTS, # float32 constants
+                'cgs'       : cgs
+            }
+            
+            coords_args = class_args.copy()
+            coords_args['MBH'] = MBH
+
             # Initialize Accretion class
-            Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
-                cgs=cgs, MBH=MBH, radiation=radiation)
+            Acc = ana.Accretion(**acc_class_args)
             # Initialize Coordinates class
-            Coords = coords.Coordinates(**H.grid, pars=H.params, 
-                CONSTANTS=hr.CONSTANTS, cgs=cgs, MBH=MBH)
+            Coords = coords.Coordinates(**H.grid, **coords_args)
             # Initialize Fluid class
-            Fluid = ana.Fluid(H.params, hr.CONSTANTS, cgs=cgs)
+            Fluid = ana.Fluid(**class_args)
             # Initialize Field class
-            Field = ana.Field(H.params, hr.CONSTANTS, cgs=cgs)
+            Field = ana.Field(**class_args)
             # Initialize Radiation class
-            Radi  = rad.Radiation(H.params, hr.CONSTANTS, cgs=cgs)
+            Radi  = rad.Radiation(**class_args)
 
             # Calculate sigma (3D)
             b  = Field.calc_b(**H.data, **H.grid, cpp=True)
             b2 = Field.calc_b2(b=b, **H.data, **H.grid, cpp=True)
             if (cgs):
-                sigma = (b2 / (4. * np.pi)) / (H.data['rho'] * c * c)
+                sigma  = (b2 / FOURPI) 
+                sigma /= (H.data['rho'] * c * c)
             else:
                 sigma = b2 / H.data['rho']
-        
+
             # Calculate gas pressure
             if (two_temp and vargamma):
                 pgas= Fluid.calc_pgas(**H.data)
             else:
-                gamma_adi = (5. / 3.)
-                pgas= (gamma_adi - 1.) * H.data['u_gas']
-
-            # Arguments passed to accretion class 
-            acc_args = {
-                'MBH'       : MBH,
-                'cgs'       : cgs,
-                'radiation' : radiation
-            }
+                pgas      = hr.Tools.zeroNd(H.data['u_gas'].shape, 1)
+                gamma_adi = np.float32(5. / 3.)
+                np.multiply(H.data['u_gas'], (gamma_adi - 1.), out=pgas)
 
             # Cut on sigma
-            sigma_cut_args = acc_args.copy()
-            sigma_cut_args['sigma_cut'] = 3.
-            sigma_cut_args['sigma']     = sigma
+            sigma_cut_args = {
+                'sigma_cut' : np.float32(3.),
+                'sigma'     : sigma
+            }
 
             # Energy fluxes
             # Calculate T^i_t streamlines/fluxes
@@ -223,13 +253,10 @@ def main(**kwargs):
             THD_vec[1] = stress_energy_HD_10
             THD_vec[2] = stress_energy_HD_20
             THD_cyl    = Coords.int_to_cyl_vec(THD_vec)
-            slices['THD_tR'] += ph_sum(THD_cyl[1], H.grid, H.data, 
-                                       H.params, hr.CONSTANTS, **acc_args)[0]
-            slices['THD_tz'] += ph_sum(THD_cyl[3], H.grid, H.data, 
-                                       H.params, hr.CONSTANTS, **acc_args)[0]
-            slices['THD_t1'] += ph_sum(THD_vec[1], H.grid, H.data, 
-                                       H.params, hr.CONSTANTS, **acc_args)[0]
-            
+            slices['THD_tR'] += Acc.ph_sum(THD_cyl[1])[0]
+            slices['THD_tz'] += Acc.ph_sum(THD_cyl[3])[0]
+            slices['THD_t1'] += Acc.ph_sum(THD_vec[1])[0]
+
             del THD_cyl, THD_vec, stress_energy_HD_10, stress_energy_HD_20
 
             stress_energy_EM_10 = Field.calc_TEM(**H.data, **H.grid, b2=b2, b=b, 
@@ -240,12 +267,9 @@ def main(**kwargs):
             TEM_vec[1] = stress_energy_EM_10
             TEM_vec[2] = stress_energy_EM_20
             TEM_cyl    = Coords.int_to_cyl_vec(TEM_vec)
-            slices['TEM_tR'] += ph_sum(TEM_cyl[1], H.grid, H.data, 
-                                       H.params, hr.CONSTANTS, **acc_args)[0]
-            slices['TEM_tz'] += ph_sum(TEM_cyl[3], H.grid, H.data, 
-                                       H.params, hr.CONSTANTS, **acc_args)[0]
-            slices['TEM_t1'] += ph_sum(TEM_vec[1], H.grid, H.data, H.params, 
-                                       hr.CONSTANTS, **acc_args)[0]
+            slices['TEM_tR'] += Acc.ph_sum(TEM_cyl[1])[0]
+            slices['TEM_tz'] += Acc.ph_sum(TEM_cyl[3])[0]
+            slices['TEM_t1'] += Acc.ph_sum(TEM_vec[1])[0]
             
             del TEM_cyl, TEM_vec, stress_energy_EM_10, stress_energy_EM_20
 
@@ -263,15 +287,11 @@ def main(**kwargs):
                 R_vec[2] = stress_energy_RAD_20
                 R_cyl    = Coords.int_to_cyl_vec(R_vec)
                 # R^t_t necessary for thermal and radative diffusion timescales
-                slices['R_tt'] += ph_sum(R_cyl[0], H.grid, H.data, 
-                                         H.params, hr.CONSTANTS, **acc_args)[0]
-                slices['R_tR'] += ph_sum(R_cyl[1], H.grid, H.data, 
-                                         H.params, hr.CONSTANTS, **acc_args)[0]
-                slices['R_tz'] += ph_sum(R_cyl[3], H.grid, H.data, 
-                                         H.params, hr.CONSTANTS, **acc_args)[0]
-                slices['R_t1'] += ph_sum(R_vec[1], H.grid, H.data, 
-                                         H.params, hr.CONSTANTS, **acc_args)[0]
-                
+                slices['R_tt'] += Acc.ph_sum(R_cyl[0])[0]
+                slices['R_tR'] += Acc.ph_sum(R_cyl[1])[0]
+                slices['R_tz'] += Acc.ph_sum(R_cyl[3])[0]
+                slices['R_t1'] += Acc.ph_sum(R_vec[1])[0]
+                 
                 del R_cyl, R_vec, stress_energy_RAD_00 
                 del stress_energy_RAD_10, stress_energy_RAD_20
 
@@ -290,17 +310,16 @@ def main(**kwargs):
                 u_rad    = H.data['u_rad']
                 R_vec    = np.zeros_like(H.data['uu'])
                 R_vec[0] = (
-                    (4./3.) * u_rad * (uurad_fld[0]/c) * (uu_t_rad_fld/c) + 
-                    (1./3.) * u_rad
+                    FOUR_THIRDS * u_rad * (uurad_fld[0]/c) * (uu_t_rad_fld/c) + 
+                    ONE_THIRD * u_rad
                 )
-                R_vec[1] = (4./3.) * u_rad * (uurad_fld[1]/c) * (uu_t_rad_fld/c)
-                R_vec[2] = (4./3.) * u_rad * (uurad_fld[2]/c) * (uu_t_rad_fld/c)
+                R_vec[1] = FOUR_THIRDS * u_rad * (uurad_fld[1]/c) * (uu_t_rad_fld/c)
+                R_vec[2] = FOUR_THIRDS * u_rad * (uurad_fld[2]/c) * (uu_t_rad_fld/c)
                 R_cyl    = Coords.int_to_cyl_vec(R_vec)
-                slices['R_tR_Fluid'] += ph_sum(R_cyl[1], H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, **acc_args)[0]
-                slices['R_tz_Fluid'] += ph_sum(R_cyl[3], H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, **acc_args)[0]
+                slices['R_tR_Fluid'] += Acc.ph_sum(R_cyl[1])[0]
+                slices['R_tz_Fluid'] += Acc.ph_sum(R_cyl[3])[0]
                 del R_cyl, R_vec, u_rad, uurad_fld, uu_t_rad_fld
+                H.data['uu_rad'] = None
 
             # Opacities
             if (radiation):
@@ -317,6 +336,7 @@ def main(**kwargs):
                 kappa_abs = Opac.opacities['absorption_total']
                 kappa_es  = Opac.opacities['electron_scattering']
                 kappa_eff = np.sqrt(kappa_abs * (kappa_abs + kappa_es))
+                del Opac.opacities
 
             uu_cov = ana.Tools.contract_vector(
                 H.data['uu'], H.grid['gcov'], cpp=True)
@@ -325,32 +345,24 @@ def main(**kwargs):
             # Bernoulli parameter for outflows
             # Numerator of Bernoulli parameter
             if (cgs):
-                w = H.data['rho']*c*c + pgas + H.data['u_gas'] + b2/(4.*np.pi)
+                w = H.data['rho']*c*c + pgas + H.data['u_gas'] + b2/FOURPI
             else:
-                w = H.data['rho']*c*c + pgas + H.data['u_gas'] + b2
-            slices['Be'] += ph_sum(w * uu_cov[0], H.grid, H.data, 
-                                   H.params, hr.CONSTANTS, **acc_args)[0] 
+                w = H.data['rho'] + pgas + H.data['u_gas'] + b2
+            slices['Be'] += Acc.ph_sum(w * uu_cov[0])[0] 
             if (radiation):
                 w = (H.data['rho'] * c * c + pgas + H.data['u_gas'] 
-                     + b2 / (4.*np.pi) + (4./3.) * H.data['u_rad']) 
-                slices['Be_Rad'] += ph_sum(w * uu_cov[0], H.grid, H.data, 
-                                           H.params, hr.CONSTANTS, **acc_args)[0]
-            
-            if (cooling and (radiation or two_temp)):
-                # Need uu_t / c for cooling rates
-                uu_t = ana.Tools.contract_vector(
-                    H.data['uu'] / c, H.grid['gcov'], cpp=True)[0]
-    
+                     + b2/FOURPI + FOUR_THIRDS * H.data['u_rad']) 
+                slices['Be_Rad'] += Acc.ph_sum(w * uu_cov[0])[0]
+
             # B^1 (useful for calculating vector potential)
-            slices['B1'] = ph_sum(H.data['B'][1], H.grid, H.data, 
-                                  H.params, hr.CONSTANTS)[0]
-            
+            slices['B1'] += Acc.ph_sum(H.data['B'][1])[0]
+
             # Deallocate magnetic field in the lab frame and radiation 4-momentum
             # as well as metric tensor and inverse
-            H.data['B']    = H.data['rho']
-            H.grid['gcov'] = H.data['rho']
-            H.grid['gcon'] = H.data['rho']
-    
+            H.data['B']    = None
+            H.grid['gcov'] = None
+            H.grid['gcon'] = None
+
             # Magnetic and Thermodynamic Structure
             if (two_temp):
                 if (vargamma):
@@ -358,101 +370,138 @@ def main(**kwargs):
                     # Equation 28 in Sadowski+ (2017)
                     Theta_e = (kB * H.data['Te']) / (me * c * c)
                     Theta_i = (kB * H.data['Ti']) / (mi * c * c)
- 
-                    gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-                    gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
+
+                    gam_e = np.float32((10. + 20.*Theta_e) / (6. + 15.*Theta_e))
+                    gam_i = np.float32((10. + 20.*Theta_i) / (6. + 15.*Theta_i))
                 else:
-                    gam_e = 5./3.
-                    gam_i = 5./3.
+                    gam_e = np.float32(5./3.)
+                    gam_i = np.float32(5./3.)
+            
+            ones = np.ones_like(H.data['rho'])
+
+            # Calculate magnetic pressure
+            pmag = b2 / EIGHTPI if cgs else HALF * b2
 
             if (two_temp and radiation):
+                Eion, Eelc = hr.Tools.zeroNd(H.data['rho'].shape, 2)
+                np.multiply(H.data['rho'], H.data['Ti'], out=Eion)
+                np.multiply(H.data['rho'], H.data['Te'], out=Eelc)
+                Eion *= np.float32(1./(gam_i-1.) * (kB / (mu_i * mp)))
+                Eelc *= np.float32(1./(gam_e-1.) * (kB / (mu_e * mp)))
+                prad  = ONE_THIRD * H.data['u_rad']
                 quants = [
-                    H.data['rho'], H.data['Ti'], b2/(8. * np.pi), pgas,
-                    1.0, w, H.data['Te'], (1./3.) * H.data['u_rad'],
-                    (1./(gam_i-1.)) * (H.data['rho'] / (mu_i * mp)) * kB * H.data['Ti'],
-                    (1./(gam_e-1.)) * (H.data['rho'] / (mu_e * mp)) * kB * H.data['Te']
+                    H.data['rho'], # rho
+                    H.data['Ti'],  # Ti
+                    pmag,          # Pmag = b2/8pi
+                    pgas,          # Pthm
+                    ones,          # Vol
+                    w,             # w (enthalpy)
+                    H.data['Te'],  # Te 
+                    prad,          # Prad = 1/3 u_rad
+                    Eion,          # Eion (ion energy density)
+                    Eelc           # Eelc (electron energy density)
                 ]
             elif (radiation and not two_temp):
                 T_gas = pgas / H.data['rho']
+                T_gas *= mu_g * mp / kB
+                prad  = ONE_THIRD * H.data['u_rad']
                 quants = [
-                    H.data['rho'], T_gas, b2/(8. * np.pi), pgas,
-                    1.0, w, (1./3.) * H.data['u_rad']
+                    H.data['rho'], # rho
+                    T_gas,         # Ti (gas temperature when no 2T)
+                    pmag,          # Pmag = b2/8pi
+                    pgas,          # Pthm
+                    ones,          # Vol
+                    w,             # w (enthalpy)
+                    H.data['Te'],  # Te 
+                    prad           # Prad = 1/3 u_rad
                 ]
             elif (two_temp and not radiation):
+                Eion, Eelc = hr.Tools.zeroNd(H.data['rho'].shape, 2)
+                np.multiply(H.data['rho'], H.data['Ti'], out=Eion)
+                np.multiply(H.data['rho'], H.data['Te'], out=Eelc)
+                Eion *= np.float32(1./(gam_i-1.) * (kB / (mu_i * mp)))
+                Eelc *= np.float32(1./(gam_e-1.) * (kB / (mu_e * mp)))
                 quants = [
-                    H.data['rho'], H.data['Ti'], b2/(8. * np.pi), pgas,
-                    1.0, w, H.data['Te'],
-                    (1./(gam_i-1.)) * (H.data['rho'] / (mu_i * mp)) * kB * H.data['Ti'],
-                    (1./(gam_e-1.)) * (H.data['rho'] / (mu_e * mp)) * kB * H.data['Te']
+                    H.data['rho'], # rho
+                    H.data['Ti'],  # Ti
+                    pmag,          # Pmag = b2/8pi
+                    pgas,          # Pthm
+                    ones,          # Vol
+                    w,             # w (enthalpy)
+                    H.data['Te'],  # Te 
+                    Eion,          # Eion (ion energy density)
+                    Eelc           # Eelc (electron energy density)
                 ]
             else:
                 T_gas = pgas / H.data['rho']
                 quants = [
-                    H.data['rho'], T_gas, b2/2., pgas, 1.0, w
+                    H.data['rho'], # rho
+                    T_gas,         # Ti (gas temperature when no 2T)
+                    pmag,          # Pmag = b2/8pi
+                    pgas,          # Pthm
+                    ones,          # Vol
+                    w              # w (enthalpy)
                 ]
 
             if (radiation and two_temp):
                 for (key, quant) in zip(keys[:-6], quants):
-                    slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, **acc_args)[0]
+                    slices[f'{key}'] += Acc.ph_sum(quant)[0]
             elif (radiation and not two_temp):
                 for (key, quant) in zip(keys[:-5], quants):
-                    slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, **acc_args)[0]
+                    slices[f'{key}'] += Acc.ph_sum(quant)[0]
             elif (two_temp and not radiation):
                 for (key, quant) in zip(keys[:-2], quants):
-                    slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, **acc_args)[0]
+                    slices[f'{key}'] += Acc.ph_sum(quant)[0]
             else:
                 for (key, quant) in zip(keys[:-1], quants):
-                    slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                                               H.params, hr.CONSTANTS, **acc_args)[0]
-
+                    slices[f'{key}'] += Acc.ph_sum(quant)[0]
+        
             # Opacities
             if (radiation):
-                slices['rhokappa'] += ph_sum(kappa_eff * H.data['rho'], H.grid, H.data, 
-                                            H.params, hr.CONSTANTS, **sigma_cut_args)[0]
+                slices['rhokappa'] += Acc.ph_sum(kappa_eff * H.data['rho'], 
+                                                **sigma_cut_args)[0]
 
             # Coulomb collisional and radiative cooling
             if (cooling and two_temp):
-                non_rel = (H.data['Ti'] < 1.e12) * (H.data['Te'] < 1.e10) * (H.data['Te'] > 1.e4)
-                qie  = Fluid.calc_qie( **H.data, cpp=True, cooling=True) * non_rel
-                slices['qie']  += ph_sum(qie,  H.grid, H.data, H.params, 
-                                         hr.CONSTANTS, weight=uu_t, **acc_args)[0]
+                # Exclude relativistic temperatures in qie
+                non_rel = (H.data['Ti'] < 1.e12) * (H.data['Te'] < 1.e10) * (
+                        (H.data['Te'] > 1.e4))
+                qie  = Fluid.calc_qie(**H.data, cpp=True, cooling=True) * non_rel
+                slices['qie'] += Acc.ph_sum(qie, weight=uu_cov[0]/c)[0]
                 del qie, non_rel
+
             if (cooling and radiation):
                 qIC  = Radi.calc_qIC(  **H.data)
                 qemi = Radi.calc_q_emi(**H.data, b2=b2, XRB=True, cpp=True) 
                 qabs = Radi.calc_q_abs(**H.data, b2=b2, XRB=True, cpp=True)
-                slices['qIC']  += ph_sum(qIC,  H.grid, H.data, H.params, 
-                                         hr.CONSTANTS, weight=uu_t, **acc_args)[0]
-                slices['qemi'] += ph_sum(qemi, H.grid, H.data, H.params, 
-                                         hr.CONSTANTS, weight=uu_t, **acc_args)[0]
-                slices['qabs'] += ph_sum(qabs, H.grid, H.data, H.params, 
-                                         hr.CONSTANTS, weight=uu_t, **acc_args)[0]
+                slices['qIC']  += Acc.ph_sum(qIC,  weight=uu_cov[0]/c)[0]
+                slices['qemi'] += Acc.ph_sum(qemi, weight=uu_cov[0]/c)[0]
+                slices['qabs'] += Acc.ph_sum(qabs, weight=uu_cov[0]/c)[0]
                 del qIC, qemi, qabs
 
             # phi integral over gdet including sigma cut
-            slices['Vol_sigma_cut'] += ph_sum(1.0, H.grid, H.data, H.params, 
-                                              hr.CONSTANTS, **sigma_cut_args)[0]
+            slices['Vol_sigma_cut'] += Acc.ph_sum(ones, **sigma_cut_args)[0]            
 
+            H.data['u_gas'] = None
             if (two_temp and vargamma): 
                 del Theta_e, Theta_i, gam_e, gam_i, pgas
-            elif (two_temp and not vargamma):
+            elif (two_temp and not vargamma): 
                 del gam_e, gam_i, pgas
-            else:          
+            else: 
                 del pgas, T_gas
 
-            if (radiation): del kappa_eff, kappa_abs
-            else:           del b2
+            if (radiation): 
+                del kappa_eff, kappa_abs, b2, pmag
+                H.data['u_rad'] = None
+            else:           
+                del b2, pmag
+            del ones
 
             # Deallocate temperatures and energy densities 
             # in preparation for large transformation matrices
             if (two_temp):
-                H.data['Ti'] = H.data['rho']
-                H.data['Te'] = H.data['rho']
-            if (radiation):
-                H.data['uu_rad'] = H.data['rho']
+                H.data['Ti'] = None
+                H.data['Te'] = None
 
             # Compute theta and phi averages of vector quantities
             uu_cyl     = Coords.int_to_cyl_vec(H.data['uu'], cpp=True)
@@ -462,34 +511,36 @@ def main(**kwargs):
             b_sph      = Coords.int_to_ortho_sph_vec(b, cpp=True)
             b_cov_cyl  = Coords.int_to_cyl_one_form(b_cov, cpp=True)
             del b, b_cov
-
+            np32 = np.float32
             quants = [
                 uu_cyl[1],     uu_cyl[2],     uu_cyl[3],
                 w * uu_cyl[1], w * uu_cyl[2], w * uu_cyl[3], 
                 w * uu_cov_cyl[2], w * uu_sph[1], w * uu_sph[2],
-                np.nan_to_num(uu_cyl[1] / uu_cyl[0]),
-                np.nan_to_num(uu_cyl[2] / uu_cyl[0]),
-                np.nan_to_num(uu_cyl[3] / uu_cyl[0]),
+                np.nan_to_num(uu_cyl[1] / uu_cyl[0], copy=False).astype(np32),
+                np.nan_to_num(uu_cyl[2] / uu_cyl[0], copy=False).astype(np32),
+                np.nan_to_num(uu_cyl[3] / uu_cyl[0], copy=False).astype(np32),
                 b_cyl[1], b_cyl[2], b_cyl[3], b_cov_cyl[2], b_sph[1], b_sph[2]
             ]
 
-            for i, (key, quant) in enumerate(zip(vec_keys, quants)):
-                slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                    H.params, hr.CONSTANTS, **acc_args)[0]
-            
+            for (key, quant) in zip(vec_keys, quants):
+                slices[f'{key}'] += Acc.ph_sum(quant)[0]
+
             # Mass fluxes
             quants = [
                 H.data['rho'] * uu_cyl[1], 
                 H.data['rho'] * uu_cyl[2], 
                 H.data['rho'] * uu_cyl[3],
                 H.data['rho'] * H.data['uu'][1]
-            ]
+            ] 
+            for (key, quant) in zip(rhovec_keys, quants):
+                slices[f'{key}'] += Acc.ph_sum(quant, **sigma_cut_args)[0]
 
-            for i, (key, quant) in enumerate(zip(rhovec_keys, quants)):
-                slices[f'{key}'] += ph_sum(quant, H.grid, H.data, 
-                    H.params, hr.CONSTANTS, **sigma_cut_args)[0]
-
-            del w, uu_cyl, b_cyl, uu_sph, b_sph, uu_cov_cyl, b_cov_cyl, sigma
+            # Deallocate memory before MPI gather
+            H.data['uu']   = None
+            H.grid['gdet'] = None
+            H.data['rho']  = None
+            del w, uu_cov, uu_cyl, b_cyl, uu_sph, b_sph
+            del uu_cov_cyl, b_cov_cyl, sigma
 
             # Put spherical radius in dictionary 
             slices['r']     = H.grid['r'][0, :, 0, 0] / Rg
@@ -516,30 +567,10 @@ def main(**kwargs):
             slices['done']  = True
         fnum_str = str(file_num).zfill(nzeros)
         np.savez(save_dir + f'/Slices_{fnum_str}', **slices)
+        comm.Barrier()
+        gc.collect()
 
-        print(f'Done with all slices for file number {file_num}.',flush=True) 
-
-def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
-    w    = kwargs.get('weight', 1.0)
-    acc2_args = {
-        'cgs'       : kwargs.get('cgs',       False),
-        'radiation' : kwargs.get('radiation', False),
-        'MBH'       : kwargs.get('MBH',       1.)
-    }
-    Acc2 = ana.Accretion(grid, data, params, CONSTANTS, **acc2_args)
-    return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
-        grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
-
-def ph_sum(q, grid, data, params, CONSTANTS, **kwargs):
-    w    = kwargs.get('weight', np.ones_like(data['rho']))
-    acc2_args = {
-        'cgs'       : kwargs.get('cgs',       False),
-        'radiation' : kwargs.get('radiation', False),
-        'MBH'       : kwargs.get('MBH',       1.)
-    }
-    Acc2 = ana.Accretion(grid, data, params, CONSTANTS, **acc2_args)
-    return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
-        grid['gdet'] * params['dx3'])).sum(-1)
+        print(f'Done with all slices for file number {file_num}.',flush=True)
 
 def init_slices(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
@@ -622,14 +653,14 @@ if __name__ == '__main__':
                         help="""boolean to determine if variable gamma 
                         should be used for ion/electron energy/pressure.""")  
     parser.add_argument('--reduced', action='store_true', required=False,
-                        help="""boolean to determine if profile extraction
+                        help="""boolean to determine if slice extraction
                         should be done on reduced data.""")
     parser.add_argument('--restart', action='store_true', required=False, 
-                        help="""boolean set to determine if profile 
+                        help="""boolean set to determine if slice 
                         integration should continue from last slice_num""")
     parser.add_argument('--overwrite', action=argparse.BooleanOptionalAction,
                         default=True, 
-                        help="""boolean to determine if existing profile file 
+                        help="""boolean to determine if existing slice file 
                         should be overwritten.""")
     parser.add_argument('--shared', action='store_true', required=False, 
                         help="""boolean set to determine if proj-shared 
