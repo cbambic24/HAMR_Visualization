@@ -11,7 +11,16 @@ import analysis as ana
 import coordinates as coords
 import radiation as rad
 from mpi4py import MPI
+import gc
 import time as timeit
+
+# Numerical constants for performance
+ONE       = np.float32(1.)
+HALF      = np.float32(0.5)
+ONE_THIRD = np.float32(1. / 3.)
+FOURPI    = np.float32(4. * np.pi)
+EIGHTPI   = np.float32(8. * np.pi)
+PI_2      = np.float32(np.pi / 2.)
 
 def main(**kwargs):
     sim       = kwargs.get('sim')
@@ -31,32 +40,36 @@ def main(**kwargs):
     vargamma  = kwargs.get('vargamma')
 
     # Define constants
-    MBH = 10.0
+    MBH = np.float32(10.0)
     cgs = True if (two_temp or radiation) else False
     if (two_temp or radiation):
-        Msun = hr.CONSTANTS['Msun']
-        c    = hr.CONSTANTS['c']
-        G    = hr.CONSTANTS['G']
+        Msun = np.float32(hr.CONSTANTS['Msun'])
+        c    = np.float32(hr.CONSTANTS['c'])
+        G    = np.float32(hr.CONSTANTS['G'])
         Rg   = G * MBH * Msun / (c * c)
     else:
-        c, G, Rg = 1., 1., 1.
+        c, G, Rg = ONE, ONE, ONE
 
     if (two_temp or radiation):
-        kB   = hr.CONSTANTS['kB']
-        mp   = hr.CONSTANTS['mp'] 
+        kB   = np.float32(hr.CONSTANTS['kB'])
+        mp   = np.float32(hr.CONSTANTS['mp'])
 
-        x_AB = hr.CONSTANTS['X_AB']
-        y_AB = hr.CONSTANTS['Y_AB']
+        x_AB = np.float32(hr.CONSTANTS['X_AB'])
+        y_AB = np.float32(hr.CONSTANTS['Y_AB'])
 
         # Equation 11 in Sadowski+ (2017)
-        mu_i = 4.0 / (4.0 * x_AB + y_AB)
+        mu_i = np.float32(4. / (4. * x_AB + y_AB))
         # Equation 10 in Sadowski+ (2017)
-        mu_e = 2.0 / (1.0 + x_AB)
+        mu_e = np.float32(2. / (1. + x_AB))
         mi   = (x_AB + y_AB) * mp  
-        me   = hr.CONSTANTS['me'] 
+        me   = np.float32(hr.CONSTANTS['me']) 
 
         # Given in Kaaz et al. (2024)
-        mu_g = 4.0 / (6.0 * x_AB + y_AB + 2.)
+        mu_g = np.float32(4. / (6. * x_AB + y_AB + 2.))
+
+    # Ensure CONSTANTS are 32-bit floats
+    CONSTANTS = {key : np.float32(value) 
+                 for (key, value) in hr.CONSTANTS.items()}
     
     # Determine data extraction and save directories
     data_dir = cv.get_data_dir(sim, reduced, shared)
@@ -108,9 +121,8 @@ def main(**kwargs):
         # Use get_file_list_local as if on rank 0 with 1 core
         existing_profiles = cv.get_file_list_local(file_list_local, 1, 0, 
             averages_dir, file_type='Profiles', reduced=reduced)
-        for existing_profile in existing_profiles:
-            if (existing_profile in file_list_local):
-                file_list_local.remove(existing_profile)
+        existing_set = set(existing_profiles)
+        file_list_local = [f for f in file_list_local if f not in existing_set]
 
     read_args = {
         'cgs_grid' : cgs,
@@ -145,42 +157,69 @@ def main(**kwargs):
             read_args['k_max'] = k_max
 
             H = hr.Read(data_dir, **read_args)
+
+            # Staggered start to take pressure off of filesystem
+            timeit.sleep(0.05 * rank + np.random.rand())
         
             # Read grid and data
             H.read_grid(file_num, direct=True)
             H.read_prims(file_num, skip_read_params=True)
 
+            if 'tr1' in H.data.keys(): H.data['tr1'] = None
+            if 'tr2' in H.data.keys(): H.data['tr2'] = None
+            if 'dissipation' in H.data.keys(): H.data['dissipation'] = None
+            if 'rad_src'     in H.data.keys(): H.data['rad_src']     = None
+
+            acc_class_args = {
+                'grid'      : H.grid,
+                'data'      : H.data,
+                'pars'      : H.params,
+                'CONSTANTS' : CONSTANTS, # float32 constants
+                'cgs'       : cgs,
+                'MBH'       : MBH,
+                'radiation' : radiation
+            }
+
+            class_args = {
+                'pars'      : H.params,
+                'CONSTANTS' : CONSTANTS, # float32 constants
+                'cgs'       : cgs
+            }
+            
+            coords_args = class_args.copy()
+            coords_args['MBH'] = MBH
+
             # Initialize Accretion class
-            Acc = ana.Accretion(H.grid, H.data, H.params, hr.CONSTANTS, 
-                cgs=cgs, MBH=MBH, radiation=radiation)
+            Acc = ana.Accretion(**acc_class_args)
             # Initialize Coordinates class
-            Coords = coords.Coordinates(**H.grid, pars=H.params, 
-                CONSTANTS=hr.CONSTANTS, cgs=cgs, MBH=MBH)
+            Coords = coords.Coordinates(**H.grid, **coords_args)
             # Initialize Fluid class
-            Fluid = ana.Fluid(H.params, hr.CONSTANTS, cgs=cgs)
+            Fluid = ana.Fluid(**class_args)
             # Initialize Field class
-            Field = ana.Field(H.params, hr.CONSTANTS, cgs=cgs)
+            Field = ana.Field(**class_args)
             # Initialize Radiation class
-            Radi  = rad.Radiation(H.params, hr.CONSTANTS, cgs=cgs)
+            Radi  = rad.Radiation(**class_args)
 
             # Calculate sigma (3D)
             b  = Field.calc_b(**H.data, **H.grid, cpp=True)
             b2 = Field.calc_b2(b=b, **H.data, **H.grid, cpp=True)
             if (cgs):
-                sigma = (b2 / (4. * np.pi)) / (H.data['rho'] * c * c)
+                sigma  = (b2 / FOURPI) 
+                sigma /= (H.data['rho'] * c * c)
             else:
                 sigma = b2 / H.data['rho']
 
             # Calculate u^mu u_nu tensor
-            uu_tnsr = ana.Tools.construct_dyadic(H.data['uu'] / c, H.grid['gcov'], 
-                upper_lower=True, index=[1,0], cpp=True)
+            uu_tnsr = ana.Tools.construct_dyadic(H.data['uu'] / c, 
+                H.grid['gcov'], upper_lower=True, index=[1,0], cpp=True)
             
             # Calculate gas pressure
             if (two_temp and vargamma):
                 pgas= Fluid.calc_pgas(**H.data)
             else:
+                pgas      = hr.Tools.zeroNd(H.data['u_gas'].shape, 1)
                 gamma_adi = (5. / 3.)
-                pgas= (gamma_adi - 1.) * H.data['u_gas']
+                np.multiply(H.data['u_gas'], (gamma_adi - 1.), out=pgas)
 
             # Mass and energy accretion/outflow rates
             stress_energy_HD  = Fluid.calc_THD(**H.data, **H.grid, pgas=pgas,
@@ -191,20 +230,20 @@ def main(**kwargs):
                 stress_energy_RAD = Radi.calc_TRAD(**H.data, **H.grid, 
                     upper_lower=True, index=[1, 0], cpp=True)
             del uu_tnsr
-            
-            if (radiation):
-                stress_energy_MHD = (
-                    stress_energy_HD + stress_energy_EM + stress_energy_RAD)
-            else:
-                stress_energy_MHD = stress_energy_HD + stress_energy_EM
 
+            stress_energy_MHD  = stress_energy_HD
+            stress_energy_MHD += stress_energy_EM
+            if (radiation):
+                stress_energy_MHD += stress_energy_RAD
+            
             acc_args = {
-                'MBH'       : MBH,
-                'cgs'       : cgs,
-                'radiation' : radiation,
-                'sigma_cut' : 3.,
+                'sigma_cut' : np.float32(3.),
                 'sigma'     : sigma
             }
+
+            jet_args = acc_args.copy()
+            # Avoid recalculating sigma mask each time
+            acc_args['sigma_mask'] = Acc.sigma_cut(**acc_args)
 
             profiles['Mdot']      += Acc.calc_Mdot()[0]
             profiles['Edot']      += Acc.calc_Edot(TMHD=stress_energy_MHD)[0]
@@ -214,7 +253,7 @@ def main(**kwargs):
             profiles['Edot_Poyt'] += Acc.calc_Edot(TMHD=stress_energy_EM,  
                                                    **acc_args)[0]
             profiles['Edot_jet']  += Acc.calc_Edot(TMHD=stress_energy_EM, 
-                                                   jet=True, **acc_args)[0]
+                                                   jet=True, **jet_args)[0]
             profiles['Edot_Fluid']+= Acc.calc_Edot(TMHD=stress_energy_HD,  
                                                    **acc_args)[0]
             if (radiation):
@@ -222,7 +261,9 @@ def main(**kwargs):
                                                       **acc_args)[0]
             
             del stress_energy_MHD 
-            del stress_energy_HD, stress_energy_EM, stress_energy_RAD
+            del stress_energy_HD, stress_energy_EM
+            if (radiation):
+                stress_energy_RAD
 
             # Magnetic fluxes
             profiles['Phi_BH']      += Acc.calc_PhiBH()[0]
@@ -234,10 +275,11 @@ def main(**kwargs):
 
             # Deallocate magnetic field in the lab frame and 
             # radiation 4-momentum as well as metric tensor and inverse
-            H.data['B']    = H.data['rho']
-            H.grid['gcov'] = H.data['rho']
-            H.grid['gcon'] = H.data['rho']
-            if (radiation): H.data['uu_rad'] = H.data['rho']
+            H.data['B']    = None
+            H.grid['gcov'] = None
+            H.grid['gcon'] = None
+            if (radiation): 
+                H.data['uu_rad'] = None
         
             if (two_temp):
                 if (vargamma):
@@ -246,72 +288,112 @@ def main(**kwargs):
                     Theta_e = (kB * H.data['Te']) / (me * c * c)
                     Theta_i = (kB * H.data['Ti']) / (mi * c * c)
         
-                    gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-                    gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
+                    gam_e = np.float32(
+                        (10. + 20. * Theta_e) / (6. + 15. * Theta_e))
+                    gam_i = np.float32(
+                        (10. + 20. * Theta_i) / (6. + 15. * Theta_i))
                 else:
-                    gam_e = 5./3.
-                    gam_i = 5./3.
+                    gam_e = np.float32(5./3.)
+                    gam_i = np.float32(5./3.)
+
+            # Calculate (theta - pi/2)^2 for density scale height
+            Dtheta  = H.grid['theta'] - PI_2
+            Dtheta2 = hr.Tools.zeroNd(H.data['rho'].shape, 1)
+            np.square(Dtheta, out=Dtheta2)
+            ones    = np.ones_like(H.data['rho'])
+
+            # Calculate magnetic pressure
+            pmag = b2 / EIGHTPI if cgs else HALF * b2
 
             if (two_temp and radiation):
+                Eion, Eelc = hr.Tools.zeroNd(H.data['rho'].shape, 2)
+                np.multiply(H.data['rho'], H.data['Ti'], out=Eion)
+                np.multiply(H.data['rho'], H.data['Te'], out=Eelc)
+                Eion *= np.float32(1./(gam_i-1.) * (kB / (mu_i * mp)))
+                Eelc *= np.float32(1./(gam_e-1.) * (kB / (mu_e * mp)))
+                prad  = ONE_THIRD * H.data['u_rad']
                 quants = [
-                    H.data['rho'], H.data['Ti'], b2/(8. * np.pi), pgas,
-                    1.0, np.square(H.grid['theta'] - np.pi/2.),
-                    H.data['Te'], (1./3.) * H.data['u_rad'],
-                    (1./(gam_i-1.)) * (
-                    (H.data['rho'] / (mu_i * mp)) * kB * H.data['Ti']),
-                    (1./(gam_e-1.)) * (
-                    (H.data['rho'] / (mu_e * mp)) * kB * H.data['Te'])
+                    H.data['rho'], # rho
+                    H.data['Ti'],  # Ti
+                    pmag,          # Pmag = b2/8pi
+                    pgas,          # Pthm
+                    ones,          # Vol
+                    Dtheta2,       # Dtheta2
+                    H.data['Te'],  # Te 
+                    prad,          # Prad = 1/3 u_rad
+                    Eion,          # Eion (ion energy density)
+                    Eelc           # Eelc (electron energy density)
                 ]
             elif (radiation and not two_temp):
-                T_gas = (mu_g * mp / kB) * (pgas / H.data['rho'])
+                T_gas  = pgas / H.data['rho']
+                T_gas *= mu_g * mp / kB
+                prad   = ONE_THIRD * H.data['u_rad']
                 quants = [
-                    H.data['rho'], T_gas, b2/(8. * np.pi), pgas,
-                    1.0, np.square(H.grid['theta'] - np.pi/2.),
-                    (1./3.) * H.data['u_rad']
+                    H.data['rho'], # rho
+                    T_gas,         # Ti (gas temperature when no 2T)
+                    pmag,          # Pmag = b2/8pi
+                    pgas,          # Pthm
+                    ones,          # Vol
+                    Dtheta2,       # Dtheta2
+                    prad           # Prad = 1/3 u_rad
                 ]
             else:
-                T_gas = pgas / H.data['rho']
+                T_gas  = pgas / H.data['rho']
                 quants = [
-                    H.data['rho'], T_gas, b2/2., pgas,
-                    1.0, np.square(H.grid['theta'] - np.pi/2.)
+                    H.data['rho'], # rho
+                    T_gas,         # Ti (gas temperature when no 2T)
+                    pmag,          # Pmag = b2/2
+                    pgas,          # Pthm
+                    ones,          # Vol
+                    Dtheta2        # Dtheta2
                 ]
-
             for (key, quant) in zip(keys, quants):
-                profiles[f'{key}'] += thph_sum(quant, 
-                    H.grid, H.data, H.params, hr.CONSTANTS, 
+                profiles[f'{key}'] += Acc.thph_sum(quant, 
                     weight=H.data['rho'], **acc_args)[0]
             
             if (two_temp and vargamma):
-                del Theta_e, Theta_i, gam_e, gam_i, pgas, b2
+                del Theta_e, Theta_i, gam_e, gam_i, pgas, b2, pmag
+                del Eion, Eelc
             elif (two_temp and not vargamma):
-                del gam_e, gam_i, pgas, b2
+                del gam_e, gam_i, pgas, b2, pmag
+                del Eion, Eelc
             else:
-                del pgas, T_gas, b2
+                del pgas, T_gas, b2, pmag
+            del ones, Dtheta, Dtheta2
+
+            if (radiation):
+                del prad
             
             # Deallocate temperatures and energy densities 
             # in preparation for large transformation matrices
             if (two_temp):
-                H.data['Ti'] = H.data['rho']
-                H.data['Te'] = H.data['rho']
+                H.data['Ti'] = None
+                H.data['Te'] = None
 
             # Compute theta and phi averages of vector quantities
             uu_cyl = Coords.int_to_cyl_vec(H.data['uu'], cpp=True)
-            H.data['uu'] = H.data['rho']
+            H.data['uu'] = None
             b_cyl  = Coords.int_to_cyl_vec(b, cpp=True)
-
+            np32   = np.float32
             quants = [
                 uu_cyl[1], uu_cyl[2], uu_cyl[3],
-                np.nan_to_num(uu_cyl[1] / uu_cyl[0]),
-                np.nan_to_num(uu_cyl[2] / uu_cyl[0]),
-                np.nan_to_num(uu_cyl[3] / uu_cyl[0]),
+                np.nan_to_num(uu_cyl[1] / uu_cyl[0], copy=False).astype(np32),
+                np.nan_to_num(uu_cyl[2] / uu_cyl[0], copy=False).astype(np32),
+                np.nan_to_num(uu_cyl[3] / uu_cyl[0], copy=False).astype(np32),
                 b_cyl[1], b_cyl[2], b_cyl[3]
             ]
 
             for (key, quant) in zip(vec_keys, quants):
-                profiles[f'{key}'] += thph_sum(quant, H.grid, H.data, 
-                    H.params, hr.CONSTANTS, weight=H.data['rho'], **acc_args)[0]
+                profiles[f'{key}']+= Acc.thph_sum(quant, weight=H.data['rho'], 
+                                                  **acc_args)[0]
 
             del uu_cyl, b_cyl, sigma
+            del Acc, Coords, Field, Fluid
+            if (radiation):
+                del Radi
+            acc_args['sigma']      = None
+            jet_args['sigma']      = None
+            acc_args['sigma_mask'] = None
             
             # Density scale
             profiles['rho0'] = H.params['density_scale']
@@ -325,7 +407,7 @@ def main(**kwargs):
        
             snum = int(slice_num + 1)
             print(f'Finished with slice {snum:d} of {nslices} ' +
-                f'for file {file_num}', flush=True) 
+                f'for file {file_num}', flush=True)
 
         profiles['slice_num_restart'] = slice_num + 1
         profiles['saved'] = True
@@ -333,18 +415,8 @@ def main(**kwargs):
             profiles['done'] = True
         fnum_str = str(file_num).zfill(nzeros)
         np.savez(save_dir + f'/Profiles_{fnum_str}', **profiles)
+        gc.collect()
         print(f'Done with all profiles for file number {file_num}.',flush=True) 
-
-def thph_sum(q, grid, data, params, CONSTANTS, **kwargs):
-    w    = kwargs.get('weight', 1.0)
-    acc2_args = {
-        'cgs'       : kwargs.get('cgs',       False),
-        'radiation' : kwargs.get('radiation', False),
-        'MBH'       : kwargs.get('MBH',       1.)
-    }
-    Acc2 = ana.Accretion(grid, data, params, CONSTANTS, **acc2_args)
-    return (q * w * Acc2.sigma_cut(**kwargs) * Acc2.tau_cut(**kwargs) * (
-        grid['gdet'] * params['dx2'] * params['dx3'])).sum(-1).sum(-1) 
 
 def init_profiles(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
