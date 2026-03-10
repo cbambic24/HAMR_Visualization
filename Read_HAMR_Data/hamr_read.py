@@ -83,10 +83,10 @@ class Tools:
 
     def zeroNd(shape, Narr, **kwargs): # returns Narr 2d arrays of zeros
         dtype = kwargs.get('dtype', np.float32)
-        arrs = Narr*[None]
-        for i in range(0, Narr):
-            arrs[i] = np.zeros(shape, dtype=dtype)
-        return arrs
+        arrs = []
+        for _ in range(Narr):
+            arrs.append(np.zeros(shape, dtype=dtype))
+        return arrs if Narr !=1 else arrs[0]
 
 class Read():
     def __init__(self, dir, **kwargs):
@@ -380,10 +380,10 @@ class Read():
 
         if (self.axisym):
             gcov, gcon, dxdxp = Tools.zeroNd([4, 4, dim, nx, ny, 1], 3)
-            gdet = np.zeros([dim, nx, ny, 1], dtype=np.float32)
+            gdet              = Tools.zeroNd([dim, nx, ny, 1], 1)
         else:
             gcov, gcon, dxdxp = Tools.zeroNd([4, 4, dim, nx, ny, nz], 3)
-            gdet = np.zeros([dim, nx, ny, nz], dtype=np.float32)
+            gdet              = Tools.zeroNd([dim, nx, ny, nz], 1)
 
         if self.resolution:
             res_level_x1, res_level_x2, res_level_x3 = Tools.zeroNd(
@@ -430,11 +430,15 @@ class Read():
             Readc.read_grid(x1, x2, x3, r, theta, phi, 
                 gcov, gcon, gdet, dxdxp)
 
-            if self.coords1D:
+            if self.coords1D and not self.by_block:
+                x1, r     = x1[0, :, 0, 0], r[    0, :, 0, 0]
+                x2, theta = x2[0, 0, :, 0], theta[0, 0, :, 0]
+                x3, phi   = x3[0, 0, 0, :], phi[  0, 0, 0, :]
+            elif self.coords1D and self.by_block:
                 x1, r     = x1[:, :, 0, 0], r[    :, :, 0, 0]
                 x2, theta = x2[:, 0, :, 0], theta[:, 0, :, 0]
                 x3, phi   = x3[:, 0, 0, :], phi[  :, 0, 0, :]
-                    
+
         if not self.coords1D:
             self.grid = {
                 'x1'    : x1,
@@ -557,17 +561,16 @@ class Read():
 
         # Allocate memory
         rho, u_gas = Tools.zeroNd([dim, nx, ny, nz], 2)
-        uu         = np.zeros([4, dim, nx, ny, nz], dtype=np.float32)
-        B          = np.zeros([4, dim, nx, ny, nz], dtype=np.float32)
+        uu, B      = Tools.zeroNd([4, dim, nx, ny, nz], 2)
         
         if (physics['RAD_M1']):
-            u_rad  = np.zeros([dim, nx, ny, nz], dtype=np.float32)
-            uu_rad = np.zeros([4, dim, nx, ny, nz], dtype=np.float32)
+            u_rad  = Tools.zeroNd([dim, nx, ny, nz], 1)
+            uu_rad = Tools.zeroNd([4, dim, nx, ny, nz], 1)
         else: 
             u_rad, uu_rad = rho, uu
 
         if (physics['RESISTIVE']):
-            E = np.zeros([4, dim, nx, ny, nz], dtype=np.float32)
+            E = Tools.zeroNd([4, dim, nx, ny, nz], 1)
         else:
             E = B
         
@@ -577,12 +580,12 @@ class Read():
             Te, Ti = rho, rho
 
         if (physics['P_NUM']):
-            p_num = np.zeros([dim, nx, ny, nz], dtype=np.float32)
+            p_num = Tools.zeroNd([dim, nx, ny, nz], 1)
         else:
             p_num = rho
 
         if (physics['DO_YE']):
-            Ye = np.zeros([dim, nx, ny, nz], dtype=np.float32)
+            Ye = Tools.zeroNd([dim, nx, ny, nz], 1)
         else:
             Ye = rho
 
@@ -607,10 +610,16 @@ class Read():
 
         if (physics['DUMP_DISS']):
             if (physics['DUMP_DISS'] == 1):
-                diss    = np.zeros([dim, nx, ny, nz], dtype=np.float32)
+                diss = Tools.zeroNd([dim, nx, ny, nz], 1)
+                if (self.cgs_data):
+                    self.diss_dbl = Tools.zeroNd(
+                        [dim, nx, ny, nz], 1, dtype=np.float64)
                 rad_src = rho
             elif (physics['DUMP_DISS'] == 2):
-                diss, rad_src  = Tools.zeroNd([dim, nx, ny, nz], 2)
+                diss, rad_src = Tools.zeroNd([dim, nx, ny, nz], 2)
+                if (self.cgs_data):
+                    self.diss_dbl, self.rad_src_dbl = Tools.zeroNd(
+                        [dim, nx, ny, nz], 2, dtype=np.float64)
         else:
             diss, rad_src = rho, rho
 
@@ -733,10 +742,21 @@ class Read():
             Rg = G*self.MBH*Msun/(c*c)
 
             # Dissipation/radiation production rates in erg/cm^3 s
+            diss = self.data.pop('dissipation')
+            diss = np.nan_to_num(diss, copy=False)
+            np.copyto(self.diss_dbl, diss, casting='safe')
+            self.data['dissipation']  = self.diss_dbl
             self.data['dissipation'] *= rho0 * c * c * (c / Rg)
-            if (physics['DUMP_DISS'] == 2):
-                self.data['rad_src'] *= rho0 * c * c * (c / Rg)
+            del diss
 
+            if (physics['DUMP_DISS'] == 2):
+                rad_src = self.data.pop('rad_src')
+                rad_src = np.nan_to_num(rad_src, copy=False)
+                np.copyto(self.rad_src_dbl, rad_src, casting='safe')
+                self.data['rad_src']  = self.rad_src_dbl
+                self.data['rad_src'] *= rho0 * c * c * (c / Rg)
+                del rad_src
+    
     def restore_units_grid(self):
         # Output grid variables in CGS units
         if (self.MBH == 0.0):
@@ -749,7 +769,7 @@ class Read():
 
     def get_gcov_KS(self, r, theta, phi, nx, ny):
         # Calculate covariant metric in spherical Kerr-Schild coordinates
-        gcov = np.zeros((4, 4, 1, nx, ny, 1), dtype=np.float32)
+        gcov = Tools.zeroNd([4, 4, 1, nx, ny, 1], 1)
         
         cth  = np.cos(theta)
         sth  = np.sin(theta)
@@ -775,7 +795,7 @@ class Read():
     
     def get_gcon_KS(self, gcov, nx, ny):
         # Calculate contravariant metric in spherical Kerr-Schild coordinates
-        gcon = np.zeros((4, 4, 1, nx, ny, 1), dtype=np.float32)
+        gcon = Tools.zeroNd([4, 4, 1, nx, ny, 1], 1)
         self.Toolsc.invert_4x4(gcov, gcon, params)
         return gcon
 
