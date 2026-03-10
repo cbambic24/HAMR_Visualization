@@ -118,145 +118,146 @@ void Read::readGrid(float* x1, float* x2, float* x3,
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
 
-  long int gridsize_2D, gridsize_3D, index_2D, index_3D;
-  int n; // index over blocks
-  int iGlob, jGlob, kGlob; // global indices
-  int ii; // index over metric components
-  AMRVar iStrt, iEnd, iStp; // loop variables
-  bool iInRange, jInRange, kInRange;
-  std::string filename;
-  FILE* fin;
-  int read_data, read_file;
   ReadIn readIn; 
   
   std::cout << "Loading grid" << std::endl;
-  
-  #pragma omp parallel for private(n, iGlob, jGlob, kGlob, ii, \
-    iStrt, iEnd, iStp, index_3D, \
-    index_2D, gridsize_3D, gridsize_2D, \
-    iInRange, jInRange, kInRange, \
-    filename, fin, read_data, read_file) firstprivate(readIn)
-  for (n = 0; n < nb; n++) {
+
+  #pragma omp parallel firstprivate(readIn)
+  {
+    long int gridsize_2D, gridsize_3D, index_2D, index_3D;
+    int n; // index over blocks
+    int iGlob, jGlob, kGlob; // global indices
+    int ii; // index over metric components
+    AMRVar iStrt, iEnd, iStp; // loop variables
+    bool iInRange, jInRange, kInRange;
+    FILE* fin;
+    int read_data, read_file;
+    std::string filename;
+
     gridsize_2D = (i_max - i_min) * (j_max - j_min);
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
-    std::vector<double> tempArray(58);
-    std::vector<int> levelArray(gridsize_2D);
 
-    iInRange = false;
-    jInRange = false;
-    kInRange = false;
+    double* tempArray = new double[58];
+    int* levelArray = new int[gridsize_2D];
+    #pragma omp for
+    for (n = 0; n < nb; n++) {
+      iInRange = false;
+      jInRange = false;
+      kInRange = false;
     
-    filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
+      filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
 
-    checkFileExists(filename);
-    checkGridFileSize(filename);
-    fin = fopen(filename.c_str(), "rb");
+      checkFileExists(filename);
+      checkGridFileSize(filename);
+      fin = fopen(filename.c_str(), "rb");
     
-    read_file = 0;
-    read_data = 0;
+      read_file = 0;
+      read_data = 0;
    
-    readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+      readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
     
-    for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
-      for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
-        for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-          read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
-            iInRange, jInRange, kInRange);
-          if (read_file == 0 && read_data == 1) {
-            read_file = 1;
-          }
-          if (read_data) {
-            readIn.readGridData(fin, tempArray, index_3D, gridsize_3D,
-              n, iGlob, jGlob, kGlob, *this);
-
-            // if export_raytracing = 1 then average by the volume
-            // low_res is down-sampling (skipping data) NOT averaging
-            // export_raytracing = 1: averaging while down-sampling
-            if (export_raytracing) {
-              float volume = (float)(lowRes.x1 * lowRes.x2 * lowRes.x3);
-
-              x1[index_3D]    += tempArray[3] / volume;
-              x2[index_3D]    += tempArray[4] / volume;
-              x3[index_3D]    += tempArray[5] / volume;
-              r[index_3D]     += tempArray[6] / volume;
-              theta[index_3D] += tempArray[7] / volume;
-              phi[index_3D]   += tempArray[8] / volume;
-
-            } else {
-              x1[index_3D]    = tempArray[3];
-              x2[index_3D]    = tempArray[4];
-              x3[index_3D]    = tempArray[5];
-              r[index_3D]     = tempArray[6];
-              theta[index_3D] = tempArray[7];
-              phi[index_3D]   = tempArray[8];
+      for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
+        for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
+          for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
+            read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+              iInRange, jInRange, kInRange);
+            if (read_file == 0 && read_data == 1) {
+              read_file = 1;
             }
-          }
-          read_data = 0;
-        } // kGlob
-      } // jGlob
-    } // iGlob
-
-    if (read_file) {
-      if (axisym) {
-        readIn.setMetricLoops2D(iStrt, iEnd, iStp, *this);
-
-        for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
-          for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
-            read_data = checkIndexInRange(n, iGlob, jGlob, levelArray, 
-              index_2D, iInRange, jInRange);
             if (read_data) {
-              readIn.readMetricData2D(fin, tempArray, index_2D, gridsize_2D, 
-                n, iGlob, jGlob, *this);
-              for (ii = 0; ii < 16; ii++) {
-                gcov[ii * gridsize_2D + index_2D] = tempArray[ii];
-              }
-              for (ii = 0; ii < 16; ii++) {
-                gcon[ii * gridsize_2D + index_2D] = tempArray[16 + ii];
-              }
-              gdet[index_2D] = tempArray[32];
-              for (ii = 0; ii < 16; ii++) {
-                dxdxp[ii * gridsize_2D + index_2D] = tempArray[32 + 1 + ii];
-              }
-              if (!by_block) {
-                levelArray[index_2D] = MAX(amrLevel.x1[n_ord[n]], 
-                                       MAX(amrLevel.x2[n_ord[n]], 
-                                           amrLevel.x3[n_ord[n]]));
-              }
-              read_data = 0;
-            } // read_data
-          }  // jGlob
-        } // iGlob
-      } else {
-        readIn.setMetricLoops2D(iStrt, iEnd, iStp, *this);
+              readIn.readGridData(fin, tempArray, index_3D, gridsize_3D,
+                n, iGlob, jGlob, kGlob, *this);
 
-        for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
-          for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
-            for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-              read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
-                iInRange, jInRange, kInRange);
+              // if export_raytracing = 1 then average by the volume
+              // low_res is down-sampling (skipping data) NOT averaging
+              // export_raytracing = 1: averaging while down-sampling
+              if (export_raytracing) {
+                float volume = (float)(lowRes.x1 * lowRes.x2 * lowRes.x3);
+
+                x1[index_3D]    += tempArray[3] / volume;
+                x2[index_3D]    += tempArray[4] / volume;
+                x3[index_3D]    += tempArray[5] / volume;
+                r[index_3D]     += tempArray[6] / volume;
+                theta[index_3D] += tempArray[7] / volume;
+                phi[index_3D]   += tempArray[8] / volume;
+
+              } else {
+                x1[index_3D]    = tempArray[3];
+                x2[index_3D]    = tempArray[4];
+                x3[index_3D]    = tempArray[5];
+                r[index_3D]     = tempArray[6];
+                theta[index_3D] = tempArray[7];
+                phi[index_3D]   = tempArray[8];
+              }
+            }
+            read_data = 0;
+          } // kGlob
+        } // jGlob
+      } // iGlob
+
+      if (read_file) {
+        if (axisym) {
+          readIn.setMetricLoops2D(iStrt, iEnd, iStp, *this);
+
+          for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
+            for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
+              read_data = checkIndexInRange(n, iGlob, jGlob, levelArray, 
+                index_2D, iInRange, jInRange);
               if (read_data) {
-                readIn.readMetricData3D(fin, tempArray, index_3D, gridsize_3D, 
-                  n, iGlob, jGlob, kGlob, *this);
+                readIn.readMetricData2D(fin, tempArray, index_2D, gridsize_2D, 
+                  n, iGlob, jGlob, *this);
                 for (ii = 0; ii < 16; ii++) {
-                  gcov[ii * gridsize_3D + index_3D] = tempArray[ii];
+                  gcov[ii * gridsize_2D + index_2D] = tempArray[ii];
                 }
                 for (ii = 0; ii < 16; ii++) {
-                  gcon[ii * gridsize_3D + index_3D] = tempArray[16 + ii];
+                  gcon[ii * gridsize_2D + index_2D] = tempArray[16 + ii];
                 }
-                gdet[index_3D] = tempArray[32];
+                gdet[index_2D] = tempArray[32];
                 for (ii = 0; ii < 16; ii++) {
-                  dxdxp[ii * gridsize_3D + index_3D] = 
-                  tempArray[32 + 1 + ii];
+                  dxdxp[ii * gridsize_2D + index_2D] = tempArray[32 + 1 + ii];
+                }
+                if (!by_block) {
+                  levelArray[index_2D] = MAX(amrLevel.x1[n_ord[n]], 
+                                         MAX(amrLevel.x2[n_ord[n]], 
+                                             amrLevel.x3[n_ord[n]]));
                 }
                 read_data = 0;
               } // read_data
-            } // kGlob
-          } // jGlob
-        } // iGlob
-      } // else axisymmetric
-    } // if read_file
-    fclose(fin);
-  } // loop over n
+            }  // jGlob
+          } // iGlob
+        } else {
+          readIn.setMetricLoops2D(iStrt, iEnd, iStp, *this);
+
+          for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
+            for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
+              for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
+                read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+                  iInRange, jInRange, kInRange);
+                if (read_data) {
+                  readIn.readMetricData3D(fin, tempArray, index_3D, 
+                    gridsize_3D, n, iGlob, jGlob, kGlob, *this);
+                  for (ii = 0; ii < 16; ii++) {
+                    gcov[ii * gridsize_3D + index_3D] = tempArray[ii];
+                  }
+                  for (ii = 0; ii < 16; ii++) {
+                    gcon[ii * gridsize_3D + index_3D] = tempArray[16 + ii];
+                  }
+                  gdet[index_3D] = tempArray[32];
+                  for (ii = 0; ii < 16; ii++) {
+                    dxdxp[ii * gridsize_3D + index_3D] = tempArray[32+1 + ii];
+                  }
+                  read_data = 0;
+                } // read_data
+              } // kGlob
+            } // jGlob
+          } // iGlob
+        } // else axisymmetric
+      } // if read_file
+      fclose(fin);
+    } // loop over n
+    delete[] tempArray;
+    delete[] levelArray;
+  }
 }
 
 void Read::readGridCoords(float* x1, float* x2, float* x3, 
@@ -272,76 +273,80 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
 
-  long int gridsize_3D, index_3D;
-  int n; // index over blocks
-  int iGlob, jGlob, kGlob; // global indices
-  AMRVar iStrt, iEnd, iStp; // loop variables
-  bool iInRange, jInRange, kInRange;
-  std::string filename;
-  FILE* fin;
-  int read_data;
   ReadIn readIn; 
   
   std::cout << "Loading grid coordinates" << std::endl;
 
-  #pragma omp parallel for private(n, iGlob, jGlob, kGlob, \
-    iStrt, iEnd, iStp, index_3D, gridsize_3D, iInRange, jInRange, kInRange, \
-    filename, fin, read_data) firstprivate(readIn)
-  for (n = 0; n < nb; n++) {
+  #pragma omp parallel firstprivate(readIn)
+  {
+    long int gridsize_3D, index_3D;
+    int n; // index over blocks
+    int iGlob, jGlob, kGlob; // global indices
+    AMRVar iStrt, iEnd, iStp; // loop variables
+    bool iInRange, jInRange, kInRange;
+    FILE* fin;
+    int read_data;
+    std::string filename;
+
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
-    std::vector<double> tempArray(58);
 
-    iInRange = false;
-    jInRange = false;
-    kInRange = false;
-  
-    filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
+    double* tempArray = new double[58];
 
-    checkFileExists(filename);
-    checkGridFileSize(filename);
-    fin = fopen(filename.c_str(), "rb");
+    #pragma omp for
+    for (n = 0; n < nb; n++) {
+      iInRange = false;
+      jInRange = false;
+      kInRange = false;
   
-    read_data = 0;
+      filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
+
+      checkFileExists(filename);
+      checkGridFileSize(filename);
+      fin = fopen(filename.c_str(), "rb");
+  
+      read_data = 0;
  
-    readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+      readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
   
-    for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
-      for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
-        for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-          read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
-            iInRange, jInRange, kInRange);
-          if (read_data) {
-            readIn.readGridData(fin, tempArray, index_3D, gridsize_3D,
-              n, iGlob, jGlob, kGlob, *this);
+      for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
+        for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
+          for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
+            read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+              iInRange, jInRange, kInRange);
+            if (read_data) {
+              readIn.readGridData(fin, tempArray, index_3D, gridsize_3D,
+                n, iGlob, jGlob, kGlob, *this);
 
-            // if export_raytracing = 1 then average by the volume
-            // low_res is down-sampling (skipping data) NOT averaging
-            // export_raytracing = 1: averaging while down-sampling
-            if (export_raytracing) {
-              float volume = (float)(lowRes.x1 * lowRes.x2 * lowRes.x3);
+              // if export_raytracing = 1 then average by the volume
+              // low_res is down-sampling (skipping data) NOT averaging
+              // export_raytracing = 1: averaging while down-sampling
+              if (export_raytracing) {
+                float volume = (float)(lowRes.x1 * lowRes.x2 * lowRes.x3);
 
-              x1[index_3D]    += tempArray[3] / volume;
-              x2[index_3D]    += tempArray[4] / volume;
-              x3[index_3D]    += tempArray[5] / volume;
-              r[index_3D]     += tempArray[6] / volume;
-              theta[index_3D] += tempArray[7] / volume;
-              phi[index_3D]   += tempArray[8] / volume;
+                x1[index_3D]    += tempArray[3] / volume;
+                x2[index_3D]    += tempArray[4] / volume;
+                x3[index_3D]    += tempArray[5] / volume;
+                r[index_3D]     += tempArray[6] / volume;
+                theta[index_3D] += tempArray[7] / volume;
+                phi[index_3D]   += tempArray[8] / volume;
 
-            } else {
-              x1[index_3D]    = tempArray[3];
-              x2[index_3D]    = tempArray[4];
-              x3[index_3D]    = tempArray[5];
-              r[index_3D]     = tempArray[6];
-              theta[index_3D] = tempArray[7];
-              phi[index_3D]   = tempArray[8];
+              } else {
+                x1[index_3D]    = tempArray[3];
+                x2[index_3D]    = tempArray[4];
+                x3[index_3D]    = tempArray[5];
+                r[index_3D]     = tempArray[6];
+                theta[index_3D] = tempArray[7];
+                phi[index_3D]   = tempArray[8];
+              }
             }
-          }
-          read_data = 0;
-        } // kGlob
-      } // jGlob
-    } // iGlob
-    fclose(fin);
-  } // loop over n
+            read_data = 0;
+          } // kGlob
+        } // jGlob
+      } // iGlob
+      fclose(fin);
+    } // loop over n
+    delete[] tempArray;
+  }
 }
 
 void Read::readGridResolution(int* res_level_x1, int* res_level_x2, 
@@ -449,7 +454,7 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     int iGlob, jGlob, kGlob; // global indices
     AMRVar iStrt, iEnd, iStp; // loop variables
     bool iInRange, jInRange, kInRange;
-    BoolVar iNotInBlock; // is data in selection box/ on block?
+    BoolVar iNotInBlock; // is data in selection box/on block?
     FILE* fin;
     int read_data;
     std::string local_filename;
@@ -654,7 +659,7 @@ int Read::checkIndexInRange(int iGlob, int jGlob, int kGlob,
 }
 
 int Read::checkIndexInRange(int n, int iGlob, int jGlob, 
-    const std::vector<int>& levelArray, int index_2D, 
+    const int* levelArray, int index_2D, 
     bool iInRange, bool jInRange) {
   if (by_block) {
     return 1;
@@ -799,7 +804,7 @@ void ReadIn::getIndex3D(long int &index_3D, long int &gridsize_3D,
   }  
 }
 
-void ReadIn::readGridData(FILE* fin, std::vector<double>& tempArray,
+void ReadIn::readGridData(FILE* fin, double* tempArray,
     long int &index_3D, long int &gridsize_3D, 
     int n, int iGlob, int jGlob, int kGlob, const Read &read) {
   if (read.by_block) {
@@ -836,7 +841,7 @@ void ReadIn::readGridData(FILE* fin, std::vector<double>& tempArray,
   }  
 }
 
-void ReadIn::readMetricData2D(FILE* fin, std::vector<double>& tempArray,
+void ReadIn::readMetricData2D(FILE* fin, double* tempArray,
     long int &index_2D, long int &gridsize_2D, 
     int n, int iGlob, int jGlob, const Read &read) {
   if (read.by_block) {
@@ -871,7 +876,7 @@ void ReadIn::readMetricData2D(FILE* fin, std::vector<double>& tempArray,
   }
 }
 
-void ReadIn::readMetricData3D(FILE* fin, std::vector<double>& tempArray,
+void ReadIn::readMetricData3D(FILE* fin, double* tempArray,
     long int &index_3D, long int &gridsize_3D, 
     int n, int iGlob, int jGlob, int kGlob, const Read &read) {
   if (read.by_block) {
@@ -953,8 +958,8 @@ ReadIn::~ReadIn() {};
 // default constructor
 Tools::Tools() {};
 
-void Tools::kernelInvert4x4(const std::vector<double> a, 
-    std::vector<double>& b) {
+void Tools::kernelInvert4x4(const std::array<double, 16>& a, 
+    std::array<double, 16>& b) {
 /*
     Description: 
 
@@ -1021,42 +1026,36 @@ void Tools::invert4x4(float* A, float* B, int nb, int nx1, int nx2, int nx3) {
 
 */
   
-  int n, i, j, k;
-  int index_3D, gridsize_3D;
-  int i1, j1;
+  int gridsize_3D;
   
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  for (n = 0; n < nb; n++) {
-    #pragma omp parallel for private(i, j, k, index_3D, i1, j1)
-    for (i = 0; i < nx1; i++) {
-      // Flattened matrices a and b (inverse of a)
-      std::vector<double> a_tmp(16), b_tmp(16);
-      for (j = 0; j < nx2; j++) {
-        for (k = 0; k < nx3; k++) {
-          // Get index_3D and gridsize_3D for global indexing in A, B arrays
-          index_3D = n * nx1 * nx2 * nx3 + i * nx3 * nx2 + j * nx3 + k;
-          // First get flattened 4x4 matrix from A at this (n,i,j,k) cell
-          for (i1 = 0; i1 < 4; i1++) {
-            for (j1 = 0; j1 < 4; j1++) {
-              a_tmp[i1 * 4 + j1] = A[(i1 * 4 + j1) * gridsize_3D + index_3D];
-            }
-          }
-          // Then, invert this 4x4 matrix and load it into b_tmp
-          kernelInvert4x4(a_tmp, b_tmp);
-          // Now take inverted 4x4 matrix, b_tmp, and put in B at this (n,i,j,k) cell
-          for (i1 = 0; i1 < 4; i1++) { 
-            for (j1 = 0; j1 < 4; j1++) {
-              B[(i1 * 4 + j1) * gridsize_3D + index_3D] = b_tmp[i1 * 4 + j1];
-            }
-          }
-        } // k
-      } // j
-    } // i
-  } // n
-} // end kernel_invert_4x4()
+  #pragma omp parallel 
+  {
+    // Flattened matrices a and b (inverse of a)
+    std::array<double, 16> a_tmp, b_tmp;
 
-double Tools::kernelDet4x4(const std::vector<double> a) {
+    #pragma omp for
+    for (int n = 0; n < nb; n++) {
+      // First get flattened 4x4 matrix from A at this (n,i,j,k) cell
+      for (int i1 = 0; i1 < 4; i1++) {
+        for (int j1 = 0; j1 < 4; j1++) {
+          a_tmp[i1 * 4 + j1] = A[(i1 * 4 + j1) * gridsize_3D + n];
+        }
+      }
+      // Then, invert this 4x4 matrix and load it into b_tmp
+      kernelInvert4x4(a_tmp, b_tmp);
+      // Now take inverted 4x4 matrix, b_tmp, and put in B at this (n,i,j,k) cell
+      for (int i1 = 0; i1 < 4; i1++) { 
+        for (int j1 = 0; j1 < 4; j1++) {
+          B[(i1 * 4 + j1) * gridsize_3D + n] = b_tmp[i1 * 4 + j1];
+        }
+      }
+    }
+  }
+} // end invert_4x4()
+
+double Tools::kernelDet4x4(const std::array<double, 16>& a) {
   double s0, s1, s2, s3, s4, s5;
   double c0, c1, c2, c3, c4, c5;
   double det_a;
@@ -1084,42 +1083,34 @@ double Tools::kernelDet4x4(const std::vector<double> a) {
 }
 
 void Tools::det4x4(float* A, float* B, int nb, int nx1, int nx2, int nx3) {
-  int n, i, j, k;
-  int index_3D, gridsize_3D;
-  int i1, j1;
+  int gridsize_3D;
   
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  for (n = 0; n < nb; n++) {
-    #pragma omp parallel for private(i, j, k, index_3D, i1, j1)
-    for (i = 0; i < nx1; i++) {
-      // Flattened matrix a
-      std::vector<double> a_tmp(16);
-      for (j = 0; j < nx2; j++) {
-        for (k = 0; k < nx3; k++) {
-          // Get index_3D and gridsize_3D for global indexing in A, B arrays
-          index_3D = n * nx1 * nx2 * nx3 + i * nx3 * nx2 + j * nx3 + k;
-          // First get flattened 4x4 matrix from A at this (n,i,j,k) cell
-          for (i1 = 0; i1 < 4; i1++) {
-            for (j1 = 0; j1 < 4; j1++) {
-              a_tmp[i1 * 4 + j1] = A[(i1 * 4 + j1) * gridsize_3D + index_3D];
-            }
-          }
-          // Now take determinant of flattened matrix
-          // and place in B at this (n,i,j,k) cell
-          B[index_3D] = kernelDet4x4(a_tmp);
-        } // k
-      } // j
-    } // i
-  } // n
-} // end kernel_det_4x4()
+
+  #pragma omp parallel
+  {
+    // Flattened matrix a
+    std::array<double, 16> a_tmp;
+    #pragma omp for
+    for (int n = 0; n < gridsize_3D; n++) {
+      for (int i1 = 0; i1 < 4; i1++) {
+        for (int j1 = 0; j1 < 4; j1++) {
+          a_tmp[i1 * 4 + j1] = A[(i1 * 4 + j1) * gridsize_3D + n];
+        }
+      }
+      // Now take determinant of flattened matrix
+      // and place in B at this (n,i,j,k) cell
+      B[n] = kernelDet4x4(a_tmp);
+    }
+  }
+} // end det4x4()
 
 void Tools::lowerIndex(float* u, float* u_mu, float* gcov,
     int nb, int nx1, int nx2, int nx3, int axisym) {
   // compute u_mu = g_mu,nu u^nu for all mu
   // computes (4, nb, nx1, nx2, nx3) dimensional array
   long int gridsize_3D, gridsize_2D;
-  int n, l, m;
 
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
@@ -1129,20 +1120,24 @@ void Tools::lowerIndex(float* u, float* u_mu, float* gcov,
     gridsize_2D = gridsize_3D;
   }
 
-  #pragma omp parallel for private(n, l, m)
-  for (n = 0; n < gridsize_3D; n++) {
-    std::vector<float> uu(4), ud(4), gcovLoc(16);
-    for (l = 0; l < 4; l++) {
-      for (m = 0; m < 4; m++) {
-        gcovLoc[4 * l + m] = gcov[(4 * l + m) * gridsize_2D + 
-          axisym * (n / nx3) + (1 - axisym) * n];
-        uu[m] = u[m * gridsize_3D + n];
+  #pragma omp parallel
+  {
+    std::array<float, 4> uu, ud;
+    std::array<float, 16> gcovLoc;
+    #pragma omp for
+    for (int n = 0; n < gridsize_3D; n++) {
+      for (int l = 0; l < 4; l++) {
+        for (int m = 0; m < 4; m++) {
+          gcovLoc[4 * l + m] = gcov[(4 * l + m) * gridsize_2D + 
+            axisym * (n / nx3) + (1 - axisym) * n];
+          uu[m] = u[m * gridsize_3D + n];
+        }
+        ud[l] = 0.0;
       }
-      ud[l] = 0.0;
-    }
-    lowerVec(uu, ud, gcovLoc);
-    for (l = 0; l < 4; l++) {
-      u_mu[l * gridsize_3D + n] = ud[l];
+      lowerVec(uu, ud, gcovLoc);
+      for (int l = 0; l < 4; l++) {
+        u_mu[l * gridsize_3D + n] = ud[l];
+      }
     }
   }
 }
@@ -1152,7 +1147,6 @@ void Tools::lowerIndex(float* u, float* u_mu, float* gcov,
   // compute u_mu = g_mu,nu u^nu for all mu
   // computes (4, nb, nx1, nx2, nx3) dimensional array
   long int gridsize_3D, gridsize_2D;
-  int n, m, i;
 
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
@@ -1162,24 +1156,28 @@ void Tools::lowerIndex(float* u, float* u_mu, float* gcov,
     gridsize_2D = gridsize_3D;
   }
 
-  #pragma omp parallel for private(n, m, i)
-  for (n = 0; n < gridsize_3D; n++) {
-    std::vector<float> uu(4), ud(4), gcovLoc(16);
-    for (m = 0; m < 4; m++) {
-      gcovLoc[4 * l + m] = gcov[(4 * l + m) * gridsize_2D + 
-        axisym * (n / nx3) + (1 - axisym) * n];
-      uu[m] = u[m * gridsize_3D + n];
+  #pragma omp parallel
+  {
+    std::array<float, 4> uu, ud;
+    std::array<float, 16> gcovLoc;
+    #pragma omp for
+    for (int n = 0; n < gridsize_3D; n++) {
+      for (int m = 0; m < 4; m++) {
+        gcovLoc[4 * l + m] = gcov[(4 * l + m) * gridsize_2D + 
+          axisym * (n / nx3) + (1 - axisym) * n];
+        uu[m] = u[m * gridsize_3D + n];
+      }
+      for (int i = 0; i < 4; i++) {
+        ud[i] = 0.0;
+      }
+      lowerVec(uu, ud, gcovLoc);
+      u_mu[n] = ud[l];
     }
-    for (i = 0; i < 4; i++) {
-      ud[i] = 0.0;
-    }
-    lowerVec(uu, ud, gcovLoc);
-    u_mu[n] = ud[l];
   }
 }
 
-void Tools::lowerVec(const std::vector<float> uu,
-    std::vector<float>& ud, const std::vector<float> gcov) {
+void Tools::lowerVec(const std::array<float, 4>& uu,
+    std::array<float, 4>& ud, const std::array<float, 16>& gcov) {
   for (int i = 0 ; i < 4; i++) {
     for (int j = 0; j < 4; j++) {
       ud[i] += gcov[4 * i + j] * uu[j];
@@ -1192,32 +1190,35 @@ void Tools::boostVector(float* u, float* u_boost, float* uu_c,
   // compute u_boost = Lambda^mu,nu u^nu for all mu
   // computes (4, nb, nx1, nx2, nx3) dimensional array
   long int gridsize_3D;
-  int n, m, i;
   // Loop over each of nb * nx1 * nx2 * nx3 cells
   gridsize_3D = nb * nx1 * nx2 * nx3;
-  #pragma omp parallel for private(n, m, i)
-  for (n = 0; n < gridsize_3D; n++) {
-    std::vector<float> uu(4), ub(4), uuLoc(4), lambdaLoc(16);
-    for (m = 0; m < 4; m++) {
-      uu[m]    = u[   m * gridsize_3D + n];
-      uuLoc[m] = uu_c[m * gridsize_3D + n];
-      ub[m]    = 0.0;
-      for (i = 0; i < 4; i++) {
-        lambdaLoc[4 * m + i] = 0.0;
+  #pragma omp parallel
+  {
+    std::array<float, 4> uu, ub, uuLoc; 
+    std::array<float, 16> lambdaLoc;
+    #pragma omp for
+    for (int n = 0; n < gridsize_3D; n++) {
+      for (int m = 0; m < 4; m++) {
+        uu[m]    = u[   m * gridsize_3D + n];
+        uuLoc[m] = uu_c[m * gridsize_3D + n];
+        ub[m]    = 0.0;
+        for (int i = 0; i < 4; i++) {
+          lambdaLoc[4 * m + i] = 0.0;
+        }
+      } 
+      calcLorentzBoostVec(uuLoc, lambdaLoc, inverse);
+      lowerVec(uu, ub, lambdaLoc);
+      for (int m = 0; m < 4; m++) {
+        u_boost[m * gridsize_3D + n] = ub[m];
       }
-    } 
-    calcLorentzBoostVec(uuLoc, lambdaLoc, inverse);
-    lowerVec(uu, ub, lambdaLoc);
-    for (m = 0; m < 4; m++) {
-      u_boost[m *gridsize_3D + n] = ub[m];
     }
   }
 }
 
-void Tools::calcLorentzBoostVec(const std::vector<float> uu,
-    std::vector<float>& lambda, int inverse) {
+void Tools::calcLorentzBoostVec(const std::array<float, 4>& uu,
+    std::array<float, 16>& lambda, int inverse) {
   float vsq, pm;
-  std::vector<float> v(4);
+  std::array<float, 4> v;
   pm = 1.0 * (1 - inverse) - 1.0 * (inverse);
   v[0] = 0.0;
   v[1] = pm * uu[1] / uu[0];

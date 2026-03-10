@@ -104,7 +104,7 @@ class Read {
     int checkIndexInRange(int iGlob, int jGlob, int kGlob, 
         bool iInRange, bool jInRange, bool kInRange);
     int checkIndexInRange(int n, int iGlob, int jGlob, 
-        const std::vector<int>& levelArray, int index_2D, 
+        const int* levelArray, int index_2D, 
         bool iInRange, bool jInRange);
     
 };
@@ -127,15 +127,15 @@ class ReadIn {
     void getIndex3D(long int &index_3D, long int &gridsize_3D, 
         int n, int iGlob, int jGlob, int kGlob, const Read &read);
 
-    void readGridData(FILE* fin, std::vector<double>& tempArray,
+    void readGridData(FILE* fin, double* tempArray,
         long int &index_3D, long int &gridsize_3D, 
         int n, int iGlob, int jGlob, int kGlob, const Read &read);
 
-    void readMetricData2D(FILE* fin, std::vector<double>& tempArray,
+    void readMetricData2D(FILE* fin, double* tempArray,
         long int &index_2D, long int &gridsize_2D, 
         int n, int iGlob, int jGlob, const Read &read);
 
-    void readMetricData3D(FILE* fin, std::vector<double>& tempArray,
+    void readMetricData3D(FILE* fin, double* tempArray,
         long int &index_3D, long int &gridsize_3D, 
         int n, int iGlob, int jGlob, int kGlob, const Read &read);
 
@@ -176,12 +176,13 @@ class Tools {
     ~Tools();
   
   private: 
-    void kernelInvert4x4(const std::vector<double>, std::vector<double>& b); 
-    double kernelDet4x4(const std::vector<double> a);
-    void lowerVec(const std::vector<float> uu,
-        std::vector<float>& ud, const std::vector<float> gcov);
-    void calcLorentzBoostVec(const std::vector<float> uu,
-        std::vector<float>& lambda, int inverse);
+    void kernelInvert4x4(const std::array<double, 16>& a, 
+        std::array<double, 16>& b); 
+    double kernelDet4x4(const std::array<double, 16>& a);
+    void lowerVec(const std::array<float, 4>& uu,
+        std::array<float, 4>& ud, const std::array<float, 16>& gcov);
+    void calcLorentzBoostVec(const std::array<float, 4>& uu,
+        std::array<float, 16>& lambda, int inverse);
 };
 
 #endif
