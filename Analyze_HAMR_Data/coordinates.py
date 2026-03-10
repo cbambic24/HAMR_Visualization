@@ -4,18 +4,23 @@ from numba import prange
 from scipy.interpolate import RegularGridInterpolator
 from scipy.interpolate import griddata
 import tracemalloc
+import hamr_read as hr
 from analysis import Accretion
+from analysis import Field
 from analysis import Tools
+
+# Numerical constants for performance
+ONE       = np.float32(1.)
 
 class Coordinates():
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
 
         self.cgs  = kwargs.get('cgs', False)
-        self.MBH  = kwargs.get('MBH', 1.0) if self.cgs else 1. # g
-        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
-        self.G    = CONSTANTS['G']         if self.cgs else 1. # cm^3/g s^2
-        self.Msun = CONSTANTS['Msun']      if self.cgs else 1. # g
+        self.MBH  = kwargs.get('MBH', ONE) if self.cgs else ONE # g
+        self.c    = CONSTANTS['c']         if self.cgs else ONE # cm/s
+        self.G    = CONSTANTS['G']         if self.cgs else ONE # cm^3/g s^2
+        self.Msun = CONSTANTS['Msun']      if self.cgs else ONE # g
         Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c)
 
         self.r  = r / Rg
@@ -29,7 +34,7 @@ class Coordinates():
     def sph_to_cart_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdx = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
         drdx[0, 0] = 1.0
@@ -51,7 +56,7 @@ class Coordinates():
     def sph_to_cart_one_form(self, one_form, **kwargs):
         shape = list(one_form.shape)
         shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdr = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
         dxdr[0, 0] = 1.0
@@ -74,7 +79,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdx = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
         drdx[0, 0] = 1.0
@@ -94,7 +99,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdr = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Cartesian Kerr Schild from Spherical Kerr Schild
         dxdr[0, 0] = 1.0
@@ -116,7 +121,7 @@ class Coordinates():
     def cart_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdr = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
         dxdr[0, 0] = 1.0
@@ -138,7 +143,7 @@ class Coordinates():
     def cart_to_sph_one_form(self, one_form, **kwargs):
         shape = list(one_form.shape)
         shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdx = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
         drdx[0, 0] = 1.0
@@ -161,7 +166,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdr = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
         dxdr[0, 0] = 1.0
@@ -180,7 +185,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdx = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cartesian Kerr Schild
         drdx[0, 0] = 1.0
@@ -202,7 +207,7 @@ class Coordinates():
     def sph_to_cyl_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         drdz[0, 0] = 1.
@@ -221,7 +226,7 @@ class Coordinates():
     def sph_to_cyl_one_form(self, one_form, **kwargs):
         shape = list(one_form.shape)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         dzdr[0, 0] = 1.
@@ -241,7 +246,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         drdz[0, 0] = 1.
@@ -258,7 +263,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         dzdr[0, 0] = 1.
@@ -277,7 +282,7 @@ class Coordinates():
     def cyl_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         dzdr[0, 0] = 1.
@@ -297,7 +302,7 @@ class Coordinates():
     def cyl_to_sph_one_form(self, one_form, **kwargs):
         shape = list(one_form.shape)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         drdz[0, 0] = 1.
@@ -317,7 +322,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         dzdr[0, 0] = 1.
@@ -335,7 +340,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         drdz[0, 0] = 1.
@@ -354,7 +359,7 @@ class Coordinates():
     def int_to_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdxp = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from internal coordinates
         dxdxp[0, 0] = 1.0
@@ -377,7 +382,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdxp = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from internal coordinates
         dxdxp[0, 0] = 1.0
@@ -399,7 +404,7 @@ class Coordinates():
     def sph_to_int_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxpdx = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to internal coordinates from Spherical Kerr Schild
         dxpdx[0, 0] = 1.0
@@ -422,7 +427,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxpdx = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to internal coordinates from Spherical Kerr Schild
         dxpdx[0, 0] = 1.0
@@ -490,7 +495,7 @@ class Coordinates():
     def int_to_ortho_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdxp = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to orthonormal Spherical Kerr Schild 
         # from internal coordinates
@@ -514,7 +519,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdxp = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from internal coordinates
         dxdxp[0, 0] = 1.0
@@ -536,7 +541,7 @@ class Coordinates():
     def ortho_sph_to_int_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxpdx = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to orthonormal Spherical Kerr Schild 
         # from internal coordinates
@@ -560,7 +565,7 @@ class Coordinates():
         shape = list(self.r.shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxpdx = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from internal coordinates
         dxpdx[0, 0] = 1.0
@@ -582,7 +587,7 @@ class Coordinates():
     def ortho_sph_to_cyl_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         drdz[0, 0] = 1.
@@ -601,7 +606,7 @@ class Coordinates():
     def ortho_sph_to_cyl_one_form(self, one_form, **kwargs):
         shape = list(one_form.shape)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         dzdr[0, 0] = 1.
@@ -621,7 +626,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         drdz[0, 0] = 1.
@@ -638,7 +643,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Cylindrical Kerr Schild from Spherical Kerr Schild
         dzdr[0, 0] = 1.
@@ -657,7 +662,7 @@ class Coordinates():
     def cyl_to_ortho_sph_vec(self, vec, **kwargs):
         shape = list(vec.shape)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         dzdr[0, 0] = 1.
@@ -677,7 +682,7 @@ class Coordinates():
     def cyl_to_ortho_sph_one_form(self, one_form, **kwargs):
         shape = list(one_form.shape)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         drdz[0, 0] = 1.
@@ -697,7 +702,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        dzdr = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dzdr = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         dzdr[0, 0] = 1.
@@ -714,7 +719,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        drdz = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        drdz = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         # Transformation to Spherical Kerr Schild from Cylindrical Kerr Schild
         drdz[0, 0] = 1.
@@ -735,7 +740,7 @@ class Coordinates():
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        Lambda = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        Lambda = hr.Tools.zeroNd(shape, 1, **kwargs)
         Lambda[0,  0] =  uu[0]
         Lambda[1:, 0] = -uu[1:]
         Lambda[0, 1:] = -uu[1:]
@@ -1014,7 +1019,7 @@ class Kerr_Schild(Coordinates):
     def calc_shift(self, **kwargs):
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 3)
-        beta    = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        beta    = hr.Tools.zeroNd(shape, 1, **kwargs)
         beta[0] = 2. * (self.r / self.Sigma) / (1. + 2. * self.r / self.Sigma)
         return beta
     
@@ -1022,7 +1027,7 @@ class Kerr_Schild(Coordinates):
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        g_Mink = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        g_Mink = hr.Tools.zeroNd(shape, 1, **kwargs)
         g_Mink[0, 0] = -1.
         g_Mink[1, 1] = 1.
         g_Mink[2, 2] = self.r * self.r
@@ -1034,7 +1039,7 @@ class Kerr_Schild(Coordinates):
         shape = list((self.r * self.th * self.ph).shape)
         shape.insert(0, 4)
         shape.insert(0, 4)
-        gcov  = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        gcov  = hr.Tools.zeroNd(shape, 1, **kwargs)
         
         cth  = np.cos(self.th)
         sth  = np.sin(self.th)
@@ -1056,12 +1061,12 @@ class Kerr_Schild(Coordinates):
             rho2 + self.a * self.a * s2 * (1. + 2. * self.r / rho2))
             )[0, :, :, 0] 
         return gcov
-    
+        
 class Tetrads(Kerr_Schild):
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
         super().__init__(r, theta, phi, pars, CONSTANTS, **kwargs)
         shape = [4, 4] + list((self.r * self.th * self.ph).shape)
-        self.e = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        self.e = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         system = kwargs.get('system', False)
         if (system == 'Takahashi_Kerr_Schild'):
@@ -1144,7 +1149,7 @@ class Christoffel_KS(Kerr_Schild):
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
         super().__init__(r, theta, phi, pars, CONSTANTS, **kwargs)
         shape = [4, 4, 4] + list((self.r * self.th * self.ph).shape)
-        self.g = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        self.g = hr.Tools.zeroNd(shape, 1, **kwargs)
 
         self.calc_gt()
         self.calc_gr()
@@ -1280,8 +1285,8 @@ class Christoffel_KS(Kerr_Schild):
         
     def sph_to_int_Christoffel(self, Gamma, **kwargs):
         shape = [4, 4] + list((self.r * self.th * self.ph).shape)
-        dxdxp = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
-        dxpdx = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        dxdxp = hr.Tools.zeroNd(shape, 1, **kwargs)
+        dxpdx = hr.Tools.zeroNd(shape, 1, **kwargs)
         # Transformation to Spherical Kerr Schild from internal coordinates
         # for contravariant index
         dxdxp[0, 0] = 1.0
