@@ -1,13 +1,12 @@
 import numpy as np
 
+ONE = np.float32(1.)
+
 class Analytic():
     def __init__(self, CONSTANTS, **kwargs):
         self.CONSTANTS = CONSTANTS
         self.cgs = kwargs.get('cgs', True)
-        if (self.cgs):
-            self.c    = CONSTANTS['c'] # cm/s
-        else:
-            self.c    = 1.0
+        self.c   = CONSTANTS['c'] if self.cgs else ONE # cm/s
 
     # Calculate Eddington luminosity for black hole of mass MBH (solar masses)
     def calc_LEdd(self, MBH):
@@ -35,9 +34,10 @@ class Analytic():
     # Keplerian orbital frequency
     # Eq. 36 of Abramowicz & Fragile (2013)
     def calc_OmegaK(self, MBH, a, r_Rg):
-        G    = self.CONSTANTS['G']
-        Msun = self.CONSTANTS['Msun']
-        Rg   = G * MBH * Msun / (self.c * self.c)
+        MBH  = MBH                                if self.cgs else ONE
+        G    = self.CONSTANTS['G']                if self.cgs else ONE
+        Msun = self.CONSTANTS['Msun']             if self.cgs else ONE
+        Rg   = G * MBH * Msun / (self.c * self.c) if self.cgs else ONE
         return np.sqrt(G * MBH * Msun / Rg ** 3) * (
             1. / (r_Rg ** (3./2.) + a))
 
