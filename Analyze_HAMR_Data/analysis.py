@@ -2,7 +2,15 @@ import numpy as np
 from numba import jit
 from numba import prange
 from scipy.special import kn
-import tracemalloc
+import hamr_read as hr
+
+# Numerical constants for performance
+ONE       = np.float32(1.)
+HALF      = np.float32(0.5)
+ONE_THIRD = np.float32(1. / 3.)
+FOURPI    = np.float32(4. * np.pi)
+EIGHTPI   = np.float32(8. * np.pi)
+PI_2      = np.float32(np.pi / 2.)
 
 class Accretion():
     def __init__(self, grid, data, pars, CONSTANTS, **kwargs):
@@ -13,13 +21,13 @@ class Accretion():
         self.data                    = data
         self.cgs                     = kwargs.get('cgs', False)
         
-        self.MBH  = kwargs.get('MBH', 1.0) if self.cgs else 1. # g
-        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
-        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
-        self.G    = CONSTANTS['G']         if self.cgs else 1. # cm^3/g s^2
-        self.Msun = CONSTANTS['Msun']      if self.cgs else 1. # g
+        self.MBH  = kwargs.get('MBH', ONE) if self.cgs else ONE # g
+        self.rho0 = pars['density_scale']  if self.cgs else ONE # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else ONE # cm/s
+        self.G    = CONSTANTS['G']         if self.cgs else ONE # cm^3/g s^2
+        self.Msun = CONSTANTS['Msun']      if self.cgs else ONE # g
         B0        = np.sqrt(4 * np.pi * self.rho0) * self.c
-        self.B0   = B0                     if self.cgs else 1. # G
+        self.B0   = np.float32(B0)         if self.cgs else ONE # G
 
         self.Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c) 
         self.pars      = pars
@@ -47,27 +55,27 @@ class Accretion():
     # Tchekhovskoy et al. (2011)
     def calc_PhiBH(self, **kwargs):
         B = self.data['B']
-        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        norm = np.sqrt(FOURPI) if not self.cgs else ONE
         return (0.5 * norm * np.abs(B[1]) * (self.Rg * self.Rg) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
     
     # Calculate Phi_sph (Equation 1 in Begelman, Scepi & Dexter 2022)
     def calc_PhiSph(self, **kwargs):
         B    = self.data['B']
-        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        norm = np.sqrt(FOURPI) if not self.cgs else ONE
         if (kwargs.get('hemisphere', 'upper') == 'upper'):
-            norm = (self.th < np.pi/2.) * norm
+            norm = (self.th < PI_2) * norm
             return (norm * B[1] * (self.Rg * self.Rg) * (
                 self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
         else:
-            norm = (self.th > np.pi/2.) * norm
+            norm = (self.th > PI_2) * norm
             return -(norm * B[1] * (self.Rg * self.Rg) * (
                 self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
         
     # Calculate Phi_mid (Equation 2 in Begelman, Scepi & Dexter 2022)
     def calc_PhiMid(self, **kwargs):
         B    = self.data['B']
-        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        norm = np.sqrt(FOURPI) if not self.cgs else ONE
         ith0 = int(len(self.th[0, 0, :, 0])/2 - 1)
         return (0.5 * norm * (
             (B[2] * self.gdet)[:, :, ith0, :] + 
@@ -77,15 +85,15 @@ class Accretion():
     # Calculate Phi_max (Equation 8 in Liska et al. 2019)
     def calc_PhiMax(self, **kwargs):
         B    = self.data['B']
-        norm = np.sqrt(4. * np.pi) if not self.cgs else 1.
+        norm = np.sqrt(FOURPI) if not self.cgs else ONE
         len_2 = len(self.th[0, 0, :, 0]) / 2.
         if (kwargs.get('hemisphere', 'upper') == 'upper'):
-            norm = ((self.th < np.pi/2.) * norm * len_2)
+            norm = ((self.th < PI_2) * norm * len_2)
             return (norm * np.amax(
                 np.abs(B[1] * self.gdet), axis=2, keepdims=True) * (
                 (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(-1).sum(-1)
         else:
-            norm = ((self.th > np.pi/2.) * norm * len_2)
+            norm = ((self.th > PI_2) * norm * len_2)
             return -(norm * np.amax(
                 np.abs(B[1] * self.gdet), axis=2, keepdims=True) * (
                 (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(-1).sum(-1)
@@ -99,7 +107,7 @@ class Accretion():
                 index = [1, 0], **kwargs)
         else:
             stress_energy_MHD = kwargs.get('TMHD')
-        stress_energy_MHD *= (1. / rho0c2)
+        stress_energy_MHD *= (ONE / rho0c2)
         Edot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
             self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
@@ -114,7 +122,7 @@ class Accretion():
                 index = [1, 3], **kwargs)
         else:
             stress_energy_MHD = kwargs.get('TMHD')
-        stress_energy_MHD *= (1. / rho0c2)
+        stress_energy_MHD *= (ONE / rho0c2)
         Ldot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
             self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
             self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
@@ -136,8 +144,8 @@ class Accretion():
         if 'pgas' in kwargs:
             pgas = kwargs.get('pgas')
         else:
-            gamma_adi = kwargs.get('gamma_adi', 5./3.)
-            pgas = (gamma_adi - 1.) * self.data['u_gas']
+            gamma_adi = kwargs.get('gamma_adi', np.float32(5./3.))
+            pgas = (gamma_adi - 1) * self.data['u_gas']
         stress_energy_HD = Flu.calc_THD(**self.data, **self.grid, pgas=pgas, 
                                         EOS=self.kwargs.get('EOS'), **kwargs)
         stress_energy_EM = Fld.calc_TEM(**self.data, **self.grid, **kwargs)
@@ -150,6 +158,8 @@ class Accretion():
     # Return where sigma < sigma_cut if jet = False
     # Return where sigma > sigma_cut if jet = True
     def sigma_cut(self, **kwargs):
+        if 'sigma_mask' in kwargs:
+            return kwargs.get('sigma_mask', ONE)
         if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
             sigma = self.calc_sigma(**kwargs)
             return ((sigma < kwargs.get('sigma_cut')) 
@@ -161,7 +171,7 @@ class Accretion():
                     if not kwargs.get('jet', False)
                     else (sigma > kwargs.get('sigma_cut')))
         else:
-            return 1.0
+            return ONE
     
     # Calculate sigma parameter: b^2 / 4 pi rho c^2 (b^2/rho if cgs=False)
     def calc_sigma(self, **kwargs):
@@ -176,11 +186,11 @@ class Accretion():
     # Return where T > Temp_cut if cold = False
     def temp_cut(self, **kwargs):
         if 'Temp_cut' not in kwargs:
-            return 1.0
+            return ONE
         elif 'Temp_cut' in kwargs:
             cold = (kwargs.get('cold', True) if not kwargs.get('hot', False) 
                     else True)
-            T = kwargs.get('Temp', 0.) if 'Temp' in kwargs else self.data['Ti']
+            T = kwargs.get('Temp', 0) if 'Temp' in kwargs else self.data['Ti']
             T_cut = kwargs.get('Temp_cut')
             return (T < T_cut) if cold else (T > T_cut)
 
@@ -194,17 +204,17 @@ class Accretion():
                     if not kwargs.get('above', False) else 
                     (np.abs(np.cos(th)) > HoR))
         else:
-            return 1.0
+            return ONE
         
     def in_or_out(self, **kwargs):
         inward  = kwargs.get('in',  False)
         outward = kwargs.get('out', False)
         if (not inward and not outward):
-            return 1.0
+            return ONE
         elif (inward and not outward):
-            return (self.data['uu'][1] < 0.)
+            return (self.data['uu'][1] < 0)
         elif (outward and not inward):
-            return (self.data['uu'][1] > 0.)
+            return (self.data['uu'][1] > 0)
         elif (inward and outward):
             raise ValueError("Cannot specify both inward and outward.")
     
@@ -216,9 +226,9 @@ class Accretion():
                 Be = kwargs.get('Be')
             else:
                 Be = self.calc_Bernoulli(**kwargs)
-            return (Be < 1.) if bound else (Be > 1.)
+            return (Be < ONE) if bound else (Be > ONE)
         else:
-            return 1.0
+            return ONE
 
     def calc_Bernoulli(self, **kwargs):
         c      = self.c
@@ -227,8 +237,8 @@ class Accretion():
         if 'pgas' in kwargs:
             pgas = kwargs.get('pgas')
         else:
-            gamma_adi = kwargs.get('gamma_adi', 5./3.)
-            pgas = (gamma_adi - 1.) * self.data['u_gas']
+            gamma_adi = kwargs.get('gamma_adi', np.float32(5./3.))
+            pgas = (gamma_adi - 1) * self.data['u_gas']
         if 'b2' in kwargs:
             b2 = kwargs.get('b2')
         else:
@@ -237,7 +247,7 @@ class Accretion():
                               **self.grid, from_B=True) 
         w = self.data['rho']*c*c + pgas + self.data['u_gas'] + (b2/B02)*rho0c2
         u_t = np.einsum('ij...,j...->i...', self.grid['gcov'], self.data['uu'])[0]
-        return -w * u_t / (self.data['rho'] * c * c) - 1.
+        return -w * u_t / (self.data['rho'] * c * c) - ONE
 
     # If optically_thin = True, return where tau < tau_cut
     def tau_cut(self, **kwargs):
@@ -259,7 +269,7 @@ class Accretion():
             else:
                 return (tau >= kwargs.get('tau_cut'))
         else:
-            return 1.0
+            return ONE
 
     # Calculate optical depth if required for tau_cut  
     # Returns optical depth to electron scattering 
@@ -372,10 +382,30 @@ class Accretion():
                                           self.pars, self.CONSTANTS)
         return self.Rg * Integrals.cum_integrate_th(
             kappa * self.data['rho'], self.grid['gcov'][2, 2], **kwargs)
-    
+
+    def thph_sum(self, q, **kwargs):
+        w          = kwargs.get('weight', ONE)
+        sigma_mask = self.sigma_cut(**kwargs)
+        tau_mask   = self.tau_cut(**kwargs)
+        dx2        = np.float32(self.dx2)
+        dx3        = np.float32(self.dx3)
+        dtype      = kwargs.get('dtype', np.float32)
+        return (q * w * sigma_mask * tau_mask * (
+            self.gdet * dx2 * dx3)).sum(-1, dtype=dtype).sum(-1, dtype=dtype)
+
+    def ph_sum(self, q, **kwargs):
+        w          = kwargs.get('weight', ONE)
+        sigma_mask = self.sigma_cut(**kwargs)
+        tau_mask   = self.tau_cut(**kwargs)
+        dx3        = np.float32(self.dx3)
+        dtype      = kwargs.get('dtype', np.float32)
+        return (q * w * sigma_mask * tau_mask * (
+            self.gdet * dx3)).sum(-1, dtype=dtype)
+
     # Upscale q to 64-bit precision and apply units
     def upscale64(self, q, units):
-        q_dbl  = np.float64(q.copy())
+        q_dbl = hr.Tools.zeroNd(q.shape, 1, dtype=np.float64)
+        np.copyto(q_dbl, q, casting='safe')
         q_dbl *= units
         return q_dbl
 
@@ -444,10 +474,10 @@ class AccretionBK(Accretion):
 class Field():
     def __init__(self, pars, CONSTANTS, **kwargs):
         self.cgs  = kwargs.get('cgs', False)
-        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
-        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
-        B0        = np.sqrt(4 * np.pi * self.rho0) * self.c
-        self.B0   = B0                     if self.cgs else 1. # G
+        self.rho0 = pars['density_scale']  if self.cgs else ONE # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else ONE # cm/s
+        B0        = np.sqrt(FOURPI * self.rho0) * self.c
+        self.B0   = np.float32(B0)         if self.cgs else ONE # G
 
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
 
@@ -455,11 +485,10 @@ class Field():
     # Assumes B has units and returns b with units
     def calc_b(self, B, uu, gcov, **kwargs):
         c, B0  = self.c, self.B0
-        b      = np.zeros(B.shape, dtype=(np.float32 
-            if 'dtype' not in kwargs else kwargs.get('dtype')))
+        b      = hr.Tools.zeroNd(B.shape, 1, **kwargs) 
         # de-dimensionalize inputs
-        uu    *=  1. / c
-        B     *=  1. / B0
+        uu    *=  ONE / c
+        B     *=  ONE / B0
         # compute b^t
         b[0]   = Tools.dot(uu, B, gcov, **kwargs)
         # compute b^i
@@ -468,7 +497,8 @@ class Field():
         # re-dimensionalize inputs and b
         uu *= c
         B  *= B0
-        return b * B0
+        b  *= B0
+        return b
     
     # Compute b^2 
     # Assumes B and uu have units
@@ -492,36 +522,36 @@ class Field():
         B0     = self.B0
         B02    = self.B0 * self.B0
         # de-dimensionalize uu
-        uu    *= 1. / c
+        uu    *= ONE / c
         if 'uu_tnsr' not in kwargs:
             uu_tnsr = Tools.construct_dyadic(uu, gcov, **kwargs)
         elif 'uu_tnsr' in kwargs:
             uu_tnsr = kwargs.get('uu_tnsr')
         if 'b' in kwargs and 'b2' in kwargs:
             b       = kwargs.get('b')
-            b      *= 1. / B0
+            b      *= ONE / B0
             bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
             b      *= B0
             b2      = kwargs.get('b2') 
         elif 'b' in kwargs and 'b2' not in kwargs:
             b       = kwargs.get('b')
-            b      *= 1. / B0
+            b      *= ONE / B0
             bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
             b2      = self.calc_b2(b, b, gcov) * B02
             b      *= B0
         elif 'b' not in kwargs and 'b2' in kwargs:
             uu     *= c   
             b       = self.calc_b(B, uu, gcov)
-            uu     *= 1. / c   
-            b      *= 1. / B0   
+            uu     *= ONE / c   
+            b      *= ONE / B0   
             bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
             b      *= B0
             b2      = kwargs.get('b2')
         else:
             uu     *= c   
             b       = self.calc_b(B, uu, gcov)
-            uu     *= 1. / c
-            b      *= 1. / B0
+            uu     *= ONE / c
+            b      *= ONE / B0
             bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
             b2      = self.calc_b2(b, b, gcov) * B02
             b      *= B0
@@ -548,8 +578,8 @@ class Field():
                 b = self.calc_b(B, uu, gcov, **kwargs)
             elif 'b' in kwargs:
                 b = kwargs.get('b')
-            b  *= 1. / self.B0
-            uu *= 1. / self.c
+            b  *= ONE / self.B0
+            uu *= ONE / self.c
             uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
             b_cov  = np.einsum('ij...,j...->i...', gcov, b)
             levi_civita = Tools.calc_Levi_Civita(4, gdet)
@@ -559,9 +589,9 @@ class Field():
         elif (kwargs.get('frame', 'fluid') == 'generic'):
             if 'E' not in kwargs:
                 raise ValueError("Must supply E kwarg to use generic frame.")
-            E  *= 1. / np.sqrt(self.rho0) * self.c
-            B  *= 1. / self.B0
-            uu *= 1. / self.c
+            E  *= ONE / np.sqrt(self.rho0) * self.c
+            B  *= ONE / self.B0
+            uu *= ONE / self.c
             uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
             b_cov  = np.einsum('ij...,j...->i...', gcov, b)
             levi_civita = Tools.calc_Levi_Civita(4, gdet)
@@ -602,8 +632,8 @@ class Field():
                 b = self.calc_b(B, uu, gcov, **kwargs)
             elif 'b' in kwargs:
                 b = kwargs.get('b')
-            b  *= 1. / self.B0
-            uu *= 1. / self.c
+            b  *= ONE / self.B0
+            uu *= ONE / self.c
             dual_FEM = (np.einsum('i...,j...->ij...', b, uu) - 
                         np.einsum('j...,i...->ij...', b, uu))
             uu *= self.c
@@ -661,12 +691,12 @@ class Field():
             b2 = kwargs.get('b2')
         
         if 'pgas' not in kwargs:
-            gamma_adi = 5./3.
-            pgas = (gamma_adi - 1.) * u_gas
+            gamma_adi = np.float32(5./3.)
+            pgas = (gamma_adi - 1) * u_gas
         else:
             pgas = kwargs.get('pgas')
 
-        u_rad = kwargs.get('u_rad', 0.0) 
+        u_rad = kwargs.get('u_rad', 0) 
 
         return c * (b / B0) / np.sqrt(
             (rho / rho0)  +  (u_gas / rho0c2)  + (pgas / rho0c2) + 
@@ -676,19 +706,18 @@ class Field():
 class Fluid():
     def __init__(self, pars, CONSTANTS, **kwargs):
         self.cgs  = kwargs.get('cgs', False)
-        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
-        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
-        self.kB   = CONSTANTS['kB']        if self.cgs else 1. # erg/K
+        self.rho0 = pars['density_scale']  if self.cgs else ONE # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else ONE # cm/s
+        self.kB   = CONSTANTS['kB']        if self.cgs else ONE # erg/K
         # Equation 11 in Sadowski+ (2017)
-        self.mu_i = (4.0 / (4.0 * CONSTANTS['X_AB'] + CONSTANTS['Y_AB']) 
-                     if self.cgs else 1.)
+        X_AB, Y_AB = CONSTANTS['X_AB'], CONSTANTS['Y_AB']
+        self.mu_i = np.float32(4./(4. * X_AB + Y_AB)) if self.cgs else ONE
         # Equation 10 in Sadowski+ (2017)
-        self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB']) if self.cgs else 1.
-        self.mp   = CONSTANTS['mp']        if self.cgs else 1. # g
-        self.mi   = (((CONSTANTS['X_AB']+CONSTANTS['Y_AB']) * CONSTANTS['mp'])
-                     if self.cgs else 1.) # g 
-        self.me   = CONSTANTS['me']        if self.cgs else 1. # g
-        self.sigT = CONSTANTS['sigmaT']    if self.cgs else 1. # cm^2
+        self.mu_e = np.float32(2. / (1. + X_AB)) if self.cgs else ONE
+        self.mp   = CONSTANTS['mp']        if self.cgs else ONE # g
+        self.mi   = ((X_AB + Y_AB) * CONSTANTS['mp']) if self.cgs else ONE # g 
+        self.me   = CONSTANTS['me']        if self.cgs else ONE # g
+        self.sigT = CONSTANTS['sigmaT']    if self.cgs else ONE # cm^2
 
         self.Theta_min = 2.e-2
         self.kwargs    = kwargs
@@ -712,7 +741,7 @@ class Fluid():
         rho0c2 = rho0 * c * c
 
         if 'uu_tnsr' not in kwargs:
-            uu     *= 1. / c
+            uu     *= ONE / c
             uu_tnsr = Tools.construct_dyadic(uu, gcov, **kwargs)
             uu     *= c
         elif 'uu_tnsr' in kwargs:
@@ -755,7 +784,7 @@ class Fluid():
         u_i = (1./(gam_i-1.)) * (rho / (self.mu_i * self.mp)) * self.kB * Ti
         u_e = (1./(gam_e-1.)) * (rho / (self.mu_e * self.mp)) * self.kB * Te
 
-        # u_i > u_e whenever Ti > Te for narrow range of 
+        # u_i > u_e whenever Ti > Te except for narrow range of 
         # Te and Ti around Te < Ti < 2 Te and Te \approx 1e9 K, i.e., when
         # electrons are relativistic and ions are non-relativistic.
         # In that case, use ion gamma and mu for energy difference.
@@ -886,7 +915,7 @@ class Fluid():
         return 2. * kn(0, (1. / Theta_m))
 
     def Coulomb_log(self, ne, Te):
-        return 35.4 + np.log((Te / 1.e7) * np.sqrt(1.0e-3 / ne))
+        return 35.4 + np.log((Te / 1.e7) * np.sqrt(1.e-3 / ne))
     
     def calc_qie_cpp(self, rho, Te, Ti, **kwargs):
         if (not self.kwargs.get('cgs')):
@@ -901,7 +930,7 @@ class Fluid():
             raise ValueError("This array with shape " + 
                              str(dims) + " cannot be passed to C++.")
         [nb, nx1, nx2, nx3] = dims
-        qie = np.zeros(rho.shape, dtype=dtype)
+        qie = hr.Tools.zeroNd(rho.shape, 1, dtype=dtype)
         Fluidc.calc_qie(qie, rho, Te, Ti, nb, nx1, nx2, nx3)
         # If temperature difference < 2% of Te, then assume negligible qie
         qie[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
@@ -935,6 +964,53 @@ class Fluid():
         Beta_max= 1. / (4. * sigma_w)
         delta_e = 0.5 * np.exp(-(1. - Beta_i/Beta_max)/(0.8 + sigma_w ** 0.5))
         return delta_e
+
+class MRI():
+    def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
+        self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
+
+        self.cgs  = kwargs.get('cgs', False)
+        self.MBH  = kwargs.get('MBH', ONE) if self.cgs else ONE # g
+        self.c    = CONSTANTS['c']         if self.cgs else ONE # cm/s
+        self.G    = CONSTANTS['G']         if self.cgs else ONE # cm^3/g s^2
+        self.Msun = CONSTANTS['Msun']      if self.cgs else ONE # g
+        Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c)
+
+        self.r  = r / Rg
+        self.th = theta
+        self.ph = phi
+
+    # MRI quality (Q) factors
+    def calc_Q(self, rho, uu, B, u_gas, gcov, **kwargs):
+        Fld = Field(self.pars, self.CONSTANTS, cgs=self.cgs)
+        vA  = Fld.calc_vA(rho, uu, B, u_gas, gcov, **kwargs)
+        TWOPI = np.float32(2. * np.pi)
+        if 'amr' in kwargs:
+            self.calc_upscale(**kwargs)
+        else:
+            raise ValueError("Must supply amr dictionary and " + 
+                             "level_x1, x2, x3 to calculate quality factors")
+        dx1   = self.dx1 * np.sqrt(gcov[1, 1]) * self.upscalex1
+        dx2   = self.dx2 * np.sqrt(gcov[2, 2]) * self.upscalex2
+        dx3   = self.dx3 * np.sqrt(gcov[3, 3]) * self.upscalex3
+        vrot       = uu[3] / uu[0]
+        lambda_MRI = TWOPI * (vA / vrot) * self.r
+        Q       = hr.Tools.zeroNd(uu.shape, 1, dtype=np.float32)
+        Q[1]    = lambda_MRI / dx1  
+        Q[2]    = lambda_MRI / dx2
+        Q[3]    = lambda_MRI / dx3
+        return Q
+
+    def calc_upscale(self, amr, level_x1, level_x2, level_x3, **kwargs):
+        self.max_levelx1 = amr['max_levelx1']
+        self.max_levelx2 = amr['max_levelx2']
+        self.max_levelx3 = amr['max_levelx3']
+        lr1              = kwargs.get('lowres1', 1)
+        lr2              = kwargs.get('lowres2', 1)
+        lr3              = kwargs.get('lowres3', 1)
+        self.upscalex1   = 2 ** (self.max_levelx1 - level_x1) / lr1
+        self.upscalex2   = 2 ** (self.max_levelx2 - level_x2) / lr2
+        self.upscalex3   = 2 ** (self.max_levelx3 - level_x3) / lr3
 
 class Tools():
     def dot(a, b, gcov, **kwargs):
@@ -995,7 +1071,7 @@ class Tools():
 
     def get_identity(gcov, **kwargs):
         shape     = list(gcov.shape)
-        id_matrix = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+        id_matrix = hr.Tools.zeroNd(shape, 1, **kwargs)
         for mu in range(4):
             for nu in range(4):
                 id_matrix[mu, nu] = (mu == nu) 
@@ -1027,14 +1103,14 @@ class Tools():
     def calc_Levi_Civita(n, gdet, **kwargs):
         if (n == 3):
             shape   = [3, 3, 3] + list(gdet.shape)
-            epsilon = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+            epsilon = hr.Tools.zeroNd(shape, 1, **kwargs)
             for i in range(3):
                 for j in range(3):
                     for k in range(3):
                         epsilon[i, j, k] = Tools.antisymmetric_symbol3(i, j,k)
         elif (n == 4):
             shape   = [4, 4, 4, 4] + list(gdet.shape)
-            epsilon = np.zeros(shape, dtype=kwargs.get('dtype', np.float32))
+            epsilon = hr.Tools.zeroNd(shape, 1, **kwargs)
             for i in range(4):
                 for j in range(4):
                     for k in range(4):
@@ -1060,7 +1136,7 @@ class Tools():
                              str(dims) + " cannot be passed to C++.")
         [ndim, nb, nx1, nx2, nx3] = dims
         axisym = 1 if (gcov.shape[-1] == 1) else 0
-        a_cov = np.zeros(a.shape, dtype=dtype)
+        a_cov = hr.Tools.zeroNd(a.shape, 1, dtype=dtype)
         Toolsc.lower_index(np.float32(a), a_cov, gcov, 
             nb, nx1, nx2, nx3, axisym)
         return np.einsum('i...,i...->...', a_cov, b)
@@ -1075,7 +1151,7 @@ class Tools():
                              str(dims) + " cannot be passed to C++.")
         [ndim, nb, nx1, nx2, nx3] = dims
         axisym = 1 if (gcov.shape[-1] == 1) else 0 
-        a_cov = np.zeros(a.shape, dtype=dtype)
+        a_cov = hr.Tools.zeroNd(a.shape, 1, dtype=dtype)
         Toolsc.lower_index(np.float32(a), a_cov, gcov, 
             nb, nx1, nx2, nx3, axisym)
         return a_cov
@@ -1095,13 +1171,13 @@ class Tools():
             if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
                 uu_tnsr = u[mu] * u[nu]
             elif ('upper_lower' in kwargs):
-                u_nu    = np.zeros(u[nu].shape, dtype=dtype)
+                u_nu    = hr.Tools.zeroNd(u[nu].shape, 1, dtype=dtype)
                 Toolsc.lower_index_mu(np.float32(u), u_nu, gcov, nu, 
                                       nb, nx1, nx2, nx3, axisym)
                 uu_tnsr = u[mu] * u_nu
             elif ('lower_lower' in kwargs):
-                u_mu = np.zeros(u[mu].shape, dtype=dtype)
-                u_nu = np.zeros(u[nu].shape, dtype=dtype)
+                u_mu = hr.Tools.zeroNd(u[mu].shape, 1, dtype=dtype)
+                u_nu = hr.Tools.zeroNd(u[nu].shape, 1, dtype=dtype)
                 Toolsc.lower_index_mu(np.float32(u), u_mu, gcov, mu, 
                                       nb, nx1, nx2, nx3, axisym)
                 Toolsc.lower_index_mu(np.float32(u), u_nu, gcov, nu, 
@@ -1111,14 +1187,14 @@ class Tools():
             if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
                 uu_tnsr = np.einsum('i...,j...->ij...', u, u, optimize=True)
             elif ('upper_lower' in kwargs):
-                u_nu   = np.zeros(u.shape, dtype=dtype)
+                u_nu   = hr.Tools.zeroNd(u.shape, 1, dtype=dtype)
                 Toolsc.lower_index(np.float32(u), u_nu, gcov, 
                                    nb, nx1, nx2, nx3, axisym)
                 uu_tnsr = np.einsum(
                     'i...,j...->ij...', u, u_nu, optimize=True)
             elif ('lower_lower' in kwargs):
-                u_mu = np.zeros(u.shape, dtype=dtype)
-                u_nu = np.zeros(u.shape, dtype=dtype)
+                u_mu = hr.Tools.zeroNd(u.shape, 1, dtype=dtype)
+                u_nu = hr.Tools.zeroNd(u.shape, 1, dtype=dtype)
                 Toolsc.lower_index(np.float32(u), u_mu, gcov, 
                                    nb, nx1, nx2, nx3, axisym)
                 Toolsc.lower_index(np.float32(u), u_nu, gcov, 
@@ -1147,3 +1223,27 @@ class Tools():
 if __name__ == "__main__":
     print("Executing analysis.")
 
+'''
+
+# Calculate precession period
+def calc_PrecPeriod(angle_tilt):
+    gam,a,precperiod
+    uu_proj = project_vector(uu)
+    L = rho * r * uu_proj[3]
+    tilt=np.zeros((nb,bs1new,1,1),dtype=np.float32)
+    tilt[0,:,0,0]=(np.nan_to_num(angle_tilt)+0.1)/360.0*2.0*np.pi
+    Z1 = 1.0 + (1.0 - a ** 2.0) ** (1.0 / 3.0) * ((1.0 + a) ** (1.0 / 3.0) + (1.0 - a) ** (1.0 / 3.0))
+    Z2 = np.sqrt(3.0 * a ** 2.0 + Z1 ** 2.0)
+    r_isco = (3.0 + Z2 - np.sqrt((3.0 - Z1) * (3.0 + Z1 + 2.0 * Z2)))
+    L_tot = np.nan_to_num(L * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
+    vnod=1.0/(r**1.5+a)*(1.0-np.sqrt(1.0-4.0*a/r**1.5+3.0*a*a/r**2))
+    tau_tot = np.nan_to_num(L * vnod * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
+    precperiod = 2 * np.pi * L_tot / tau_tot
+
+def calc_lum():
+    global lum
+    p = (gam - 1.0) * ug
+    lum = np.sum((rho ** 3.0 * p ** (-2.0) * np.exp(-0.2 * (rho ** 2.0 / (np.sqrt(bsq) * p ** 2.0)) ** (1.0 / 3.0)) * (h > np.pi / 3.0) * (h < 2.0 / 3.0 * np.pi) * (r < 50.) * gdet * _dx1 * _dx2 * _dx3))
+
+   
+'''
