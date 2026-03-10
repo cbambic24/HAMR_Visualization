@@ -5,6 +5,8 @@ import argparse
 import numpy as np
 file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, f'{file_dir}')
+asys_path = os.path.join(os.path.dirname(file_dir), "Analyze_HAMR_Data")
+sys.path.insert(0, f'{asys_path}')
 import compute_variables as cv
 import hamr_read as hr
 import theory as theory
@@ -23,6 +25,7 @@ import figs
 MBH     = 10.
 figsize = [40.0, 26.0]
 FS      = 48
+FS      = 40
 plt.rcParams['xtick.labelsize'] = FS
 plt.rcParams['ytick.labelsize'] = FS
 
@@ -42,24 +45,28 @@ def main(**kwargs):
     cgs = True if (two_temp or radiation) else False
     Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
 
-    if (two_temp or radiation):
-        Msun = hr.CONSTANTS['Msun']
-        c    = hr.CONSTANTS['c']
-        G    = hr.CONSTANTS['G']
-        Rg   = G * MBH * Msun / (c * c)
-    else:
-        c, G, Rg = 1., 1., 1.
+    Msun = hr.CONSTANTS['Msun']     if cgs else 1.
+    c    = hr.CONSTANTS['c']        if cgs else 1.
+    G    = hr.CONSTANTS['G']        if cgs else 1.
+    Rg   = G * MBH * Msun / (c * c) if cgs else 1.
 
     # Determine profile directory
     averages_dir = cv.user_path + f'/Averages/{sim}'
     save_dir = cv.user_path +  '/PDF'
     
     keys = [
-        'Mdot_sigma', 'rho', 'Ti', 'Te', 'Pthm', 'Prad', 'Pmag',
-        'Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 'Edot_Rad', 
-        'Dtheta2', 'Phi_BH', 'Phi_mid', 'Phi_sph_upp', 'Phi_sph_low',
-        'vR', 'vphi', 'vz', 'bphi', 'bz'
+        'Mdot_sigma', 'rho', 'Ti', 
+        'Pthm', 'Pmag',
+        'Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 
+        'Dtheta2', 
+        'Phi_BH', 'Phi_mid', 'Phi_sph_upp', 'Phi_sph_low',
+        'vR', 'vphi', 'vz', 
+        'bphi', 'bz'
     ]
+    if two_temp:
+        keys += ['Te']
+    if radiation:
+        keys += ['Prad', 'Edot_Rad']
 
     norms     = dict.fromkeys(keys)
     vols      = dict.fromkeys(keys)
@@ -70,21 +77,19 @@ def main(**kwargs):
         vols[     f'{key}'] = get_vols(key)
         norms[    f'{key}'] = get_norms(key, cgs=cgs, MBH=MBH)
         logs[     f'{key}'] = get_logs(key)
-        linthresh[f'{key}'] = get_linthresh(key)
+        linthresh[f'{key}'] = get_linthresh(key, cgs=cgs)
 
     limits = {
         'Mdot_sigma' : [1.e-2, 1.e1],
-        'rho'        : [1.e-5, 1.e0],
-        'Ti'         : [1.e4, 1.e12],
-        'Te'         : [1.e4, 1.e12],
-        'Pthm'       : [1.e10, 1.e18],
-        'Prad'       : [1.e10, 1.e18],
-        'Pmag'       : [1.e10, 1.e18],
+        'rho'        : [1.e-5, 1.e0]  if cgs else [1.e-2, 1.e2], 
+        'Ti'         : [1.e4,  1.e12] if cgs else [1.e-5, 1.], 
+        'Pthm'       : [1.e10, 1.e18] if cgs else [1.e-6, 1.e1],
+        'Pmag'       : [1.e10, 1.e18] if cgs else [1.e-4, 1.e4],
         'vR'         : [-1, 0.1],
         'vphi'       : [0.1, 1.1],
-        'vz'         : [-0.01, 0.01],
-        'bphi'       : [-1.e9, 1.e9],
-        'bz'         : [-1.e9, 1.e9],
+        'vz'         : [-0.02, 0.02],
+        'bphi'       : [-1.e9, 1.e9] if cgs else [-1.e0, 1.e0], 
+        'bz'         : [-1.e9, 1.e9] if cgs else [-1.e0, 1.e0],
         'Edot_jet'   : [1.e-2, 2.e2],
         'Edot_Poyt'  : [1.e-2, 2.e2],
         'Edot_Fluid' : [1.e-2, 2.e2],
@@ -95,6 +100,10 @@ def main(**kwargs):
         'Phi_sph_upp': [1., 1.e3],
         'Phi_sph_low': [1., 1.e3]
     }
+    if cgs:
+        limits['Te']   = [1.e4,  1.e12]
+        limits['Prad'] = [1.e10, 1.e18]
+
 
     colors = {
         'Mdot_sigma' : 'black',
@@ -145,22 +154,22 @@ def main(**kwargs):
     }
 
     plot_labels = {
-        'Mdot_sigma' : r'$\dot{M}/\dot{M}_{\rm Edd}$',
-        'rho'        : r'$\langle \rho \rangle_{\rho} \: (\rm{g/cm}^3)$',
-        'Ti'         : r'$\rm{Temperature} \: (\rm{K})$',
+        'Mdot_sigma' : r'$\dot{M}/\dot{M}_{\rm Edd}$'                    if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
+        'rho'        : r'$\langle \rho \rangle_{\rho} \: (\rm{g/cm}^3)$' if cgs else r'$\langle \rho /\rho_0 \rangle_{\rho}$',
+        'Ti'         : r'$\rm{Temperature} \: (\rm{K})$'                 if cgs else r'${\rm{Temperature}} \: (m_i c^2)$',
         'Te'         : r'$\rm{Temperature} \: (\rm{K})$',
-        'Pthm'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$',
-        'Prad'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$',
-        'Pmag'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$',
+        'Pthm'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$'             if cgs else r'$\rm{Pressure} \: (\rho_0 c^2)$',
+        'Prad'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$'             if cgs else r'$\rm{Pressure} \: (\rho_0 c^2)$',
+        'Pmag'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$'             if cgs else r'$\rm{Pressure} \: (\rho_0 c^2)$',
         'vR'         : r'$\langle v^R / c \rangle_{\rho}$',
         'vphi'       : r'$\langle \Omega / \Omega_{\rm K} \rangle_{\rho}$',
         'vz'         : r'$\langle v^z / c \rangle_{\rho}$',
-        'bphi'       : r'$\langle b^{\varphi} \rangle_{\rho} \: (\rm{G})$',
-        'bz'         : r'$\langle b^z \rangle_{\rho} \: (\rm{G})$',
-        'Edot_jet'   : r'$\dot{E} \: (L_{\rm Edd})$',
-        'Edot_Poyt'  : r'$\dot{E} \: (L_{\rm Edd})$',
-        'Edot_Fluid' : r'$\dot{E} \: (L_{\rm Edd})$',
-        'Edot_Rad'   : r'$\dot{E} \: (L_{\rm Edd})$',
+        'bphi'       : r'$\langle b^{\varphi} \rangle_{\rho} \: (\rm{G})$' if cgs else r'$\langle b^{\varphi} / B_0 \rangle_{\rho}$',
+        'bz'         : r'$\langle b^z \rangle_{\rho} \: (\rm{G})$'         if cgs else r'$\langle b^z / B_0 \rangle_{\rho}$',
+        'Edot_jet'   : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
+        'Edot_Poyt'  : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
+        'Edot_Fluid' : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
+        'Edot_Rad'   : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
         'Dtheta2'    : r'$\langle H_{\rho} / R \rangle_{\rho}$',
         'Phi_BH'     : r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$',
         'Phi_mid'    : r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$',
@@ -336,39 +345,37 @@ def main(**kwargs):
 def get_vols(key):
     if 'Mdot' in key or 'Edot' in key:
         return False
-    elif (key == 'Phi_BH' or key == 'Phi_mid' or 
+    elif (key == 'Phi_BH'      or key == 'Phi_mid' or 
           key == 'Phi_sph_upp' or key == 'Phi_sph_low'):
         return False
     else:
         return True
 
 def get_norms(key, **kwargs):
-    cgs = kwargs.get('cgs', False)
-    if (cgs and 'Mdot' in key or 'Edot' in key):
-        if 'MBH' not in kwargs:
-            raise ValueError("Must supply MBH for cgs=True")
-        MBH      = kwargs.get('MBH', 1.0)
-        Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
-        L_Edd    = Analytic.calc_LEdd(MBH=MBH)
-        Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179)
-        if ('Mdot' in key and cgs):
-            return (1. / Mdot_Edd)
-        elif ('Edot' in key and cgs):
-            return -(1. / L_Edd)
+    cgs      = kwargs.get('cgs', False)
+    MBH      = kwargs.get('MBH', 1.0)
+    Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
+    L_Edd    = Analytic.calc_LEdd(MBH=MBH) if cgs else 1.
+    Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179) if cgs else 1.
+    if ('Mdot' in key):
+        return (1. / Mdot_Edd)
+    elif ('Edot' in key):
+        return -(1. / L_Edd)
     else:
         return 1.
-
+    
 def get_logs(key):
     if (key == 'vR' or key == 'vz' or key == 'bphi' or key == 'bz'):
         return False
     else:
         return True
 
-def get_linthresh(key):
+def get_linthresh(key, **kwargs):
+    cgs = kwargs.get('cgs', False)
     if key == 'vR':
         return 1.e-3
     elif (key == 'bphi' or key == 'bz'):
-        return 1.e7
+        return 1.e7 if cgs else 1.e-3
     else:
         return False
     

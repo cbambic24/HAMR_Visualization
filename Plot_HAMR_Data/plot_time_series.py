@@ -5,6 +5,8 @@ import argparse
 import numpy as np
 file_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, f'{file_dir}')
+asys_path = os.path.join(os.path.dirname(file_dir), "Analyze_HAMR_Data")
+sys.path.insert(0, f'{asys_path}')
 import compute_variables as cv
 import hamr_read as hr
 import analysis as ana
@@ -24,6 +26,7 @@ import figs
 MBH     = 10.
 figsize = [20.0, 26.0]
 FS      = 48
+FS      = 28
 plt.rcParams['xtick.labelsize'] = FS
 plt.rcParams['ytick.labelsize'] = FS
 
@@ -58,11 +61,11 @@ def main(**kwargs):
     keys = ['Mdot_sigma', 'Edot_jet', 'Edot_Rad', 'Dtheta2', 'Phi_BH']
 
     limits = {
-        'Mdot_sigma' : [1.e-2, 1.e1],
-        'Edot_jet'   : [1.e-2, 2.],
+        'Mdot_sigma' : [1.e-1, 2.], 
+        'Edot_jet'   : [1.e-2, 2.], 
         'Edot_Rad'   : [1.e-2, 2.],
         'Dtheta2'    : [1.e-2, 2.],
-        'Phi_BH'     : [1., 3.e2]
+        'Phi_BH'     : [0, 60] 
     }
 
     colors = {
@@ -82,12 +85,14 @@ def main(**kwargs):
     }
 
     plot_labels = {
-        'Mdot_sigma' : r'$\dot{M}/\dot{M}_{\rm Edd}$',
-        'Edot_jet'   : r'$\dot{E} \: (L_{\rm Edd})$',
+        'Mdot_sigma' : r'$\dot{M}/\dot{M}_{\rm Edd}$' if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
+        'Edot_jet'   : r'$\dot{E} \: (L_{\rm Edd})$'  if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
         'Edot_Rad'   : r'$\eta = \dot{E} / \langle \dot{M} c^2 \rangle_t$',
         'Dtheta2'    : r'$\langle H_{\rho} / R \rangle_{\rho}$',
         'Phi_BH'     : r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$'
     }
+    # 'Mdot_sigma' : r'$\dot{M} \: (\rho_0 R_g^2 c)$',
+    # 'Dtheta2'    : r'$\rho_0 \: (\rm{g/cm}^3)$',
 
     axes_ids = {
         'Mdot_sigma' : 0,
@@ -121,6 +126,7 @@ def main(**kwargs):
     time, Phi_BH   = TS.calc_time_series('Phi_BH',     profiles, r0=0.)
     time, Edot_jet = TS.calc_time_series('Edot_jet',   profiles, r0=r_Jet)
     time, HoR2     = TS.calc_time_series('Dtheta2',    profiles, r0=r_Hrho, vol=True)
+ 
     HoR = np.sqrt(HoR2)
     if (cgs):
         time, Edot_Rad = TS.calc_time_series('Edot_Rad', profiles, r0=r_Rad)
@@ -150,6 +156,9 @@ def main(**kwargs):
         axes[id].set_ylabel(plot_labels[f'{key}'], fontsize=FS)
         axes[id].set_ylim(limits[f'{key}'])
         axes[id].set_yscale('log')
+    
+    axes[1].set_yscale('linear')
+    #axes[2].set_yscale('linear')
 
     for ax in axes:
         cv.grid(ax, alpha=0.2, color='black') 
@@ -201,7 +210,7 @@ def get_linthresh(key):
     
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
-                        description="""Plot profiles.""")
+                        description="""Plot time series.""")
     parser.add_argument('sim', type=str, help = """simulation name in 
                         Averages directory""")
     parser.add_argument('--t_start', type=float, default=0.,
