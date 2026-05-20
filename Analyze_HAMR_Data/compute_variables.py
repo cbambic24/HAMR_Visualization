@@ -1957,8 +1957,8 @@ class Slices(Load_Data):
     def upscale(self, q, **kwargs):
         max_nr  = kwargs.get('max_nr',  max(self.nr))
         max_nth = kwargs.get('max_nth', max(self.nth))
-        level_x1 = (max_nr / len(q[:, 0])) - 1
-        level_x2 = (max_nth/ len(q[0, :])) - 1
+        level_x1 = np.log2(max_nr / len(q[:, 0])) 
+        level_x2 = np.log2(max_nth/ len(q[0, :])) 
         if (level_x1 == 0 and level_x2 == 0): 
             return q
         else:
@@ -2218,7 +2218,7 @@ class Profiles(Load_Data):
         return q_avg
 
     def upscale(self, q):
-        level = (max(self.nr) / len(q)) - 1
+        level = np.log2(max(self.nr) / len(q))
         if (level == 0): 
             return q
         else:
