@@ -33,7 +33,7 @@ def main(**kwargs):
     size, rank = 1, 0
     file_list = list(range(start_file, end_file + 1))
     file_list_local = cv.get_file_list_local(file_list, size, rank, data_dir)
-    fnums, nr, nth, nphi, t = [], [], [], [], []
+    fnums, nr, nth, nphi, t, r_max = [], [], [], [], [], []
     AMR_levelx1, AMR_levelx2, AMR_levelx3 = [], [], []
     for file_num in file_list_local:
         read_args = {
@@ -53,6 +53,7 @@ def main(**kwargs):
         AMR_levelx2.append(int(H.amr['max_levelx2']))
         AMR_levelx3.append(int(H.amr['max_levelx3']))
         t.append(H.params['t'])
+        r_max.append(H.params['Rout'])
 
     AMRx1 = (nr.count(  nr[0])   != len(nr))
     AMRx2 = (nth.count( nth[0])  != len(nth))
@@ -125,6 +126,7 @@ def main(**kwargs):
     print(f"The start simulation time is {tstart} x 10^4 Rg/c")
     print(f"The final simulation time is {tfinal} x 10^4 Rg/c")
     print(f"The simulation duration is {duration} x 10^4 Rg/c")
+    print(f"The maximum radius is {max(r_max)} Rg")
 
 def get_first_file_num(data_dir, last_file):
     min_num = last_file
