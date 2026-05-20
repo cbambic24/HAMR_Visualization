@@ -54,7 +54,7 @@ def main(**kwargs):
     save_dir = cv.user_path +  '/PDF'
     
     keys = [
-        'Mdot', 'rho', 'Ti', 
+        'Mdot_sigma', 'rho', 'Ti', 
         'Pthm', 'Pmag',
         'Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 
         'Dtheta2', 
@@ -79,7 +79,7 @@ def main(**kwargs):
         linthresh[f'{key}'] = get_linthresh(key, cgs=cgs)
 
     limits = {
-        'Mdot' : [1.e-2, 1.e2],
+        'Mdot_sigma' : [1.e-2, 1.e2],
         'rho'        : [1.e-5, 1.e0]  if cgs else [1.e-2, 1.e2], 
         'Ti'         : [1.e4,  1.e12] if cgs else [1.e-5, 1.], 
         'Pthm'       : [1.e10, 1.e18] if cgs else [1.e-6, 1.e1],
@@ -105,7 +105,7 @@ def main(**kwargs):
 
 
     colors = {
-        'Mdot' : 'black',
+        'Mdot_sigma' : 'black',
         'rho'        : 'black',
         'Ti'         : 'darkorange',
         'Te'         : 'dodgerblue',
@@ -129,7 +129,7 @@ def main(**kwargs):
     }
 
     labels = {
-        'Mdot' : None,
+        'Mdot_sigma' : None,
         'rho'        : None,
         'Ti'         : r'$\rm{Ions}$',
         'Te'         : r'$\rm{Electrons}$',
@@ -153,7 +153,7 @@ def main(**kwargs):
     }
 
     plot_labels = {
-        'Mdot' : r'$\dot{M}/\dot{M}_{\rm Edd}$'                    if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
+        'Mdot_sigma' : r'$\dot{M}/\dot{M}_{\rm Edd}$'                    if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
         'rho'        : r'$\langle \rho \rangle_{\rho} \: (\rm{g/cm}^3)$' if cgs else r'$\langle \rho /\rho_0 \rangle_{\rho}$',
         'Ti'         : r'$\rm{Temperature} \: (\rm{K})$'                 if cgs else r'${\rm{Temperature}} \: (m_i c^2)$',
         'Te'         : r'$\rm{Temperature} \: (\rm{K})$',
@@ -177,7 +177,7 @@ def main(**kwargs):
     }
 
     axes_ids = {
-        'Mdot' : 0,
+        'Mdot_sigma' : 0,
         'rho'        : 1,
         'Ti'         : 2,
         'Te'         : 2,
@@ -247,7 +247,7 @@ def main(**kwargs):
             r  = profiles[f'{fnums[0]}']['r']
             if ('Phi' in key):
                 r5_idx = np.argmin(np.abs(r - 5.))
-                Mdot_avg = profiles[f'{fnums[0]}']['Mdot'][r5_idx]
+                Mdot_avg = profiles[f'{fnums[0]}']['Mdot_sigma'][r5_idx]
                 norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
                 if (key == 'Phi_mid'):
                     norm *= -1
@@ -288,7 +288,7 @@ def main(**kwargs):
             r  = profiles[f'{Profs.fnums0}']['r']
             if ('Phi' in key):
                 r5_idx = np.argmin(np.abs(r - 5.))
-                Mdot_avg = Profs.time_avg('Mdot', profiles, fnums=fnums)[r5_idx]
+                Mdot_avg = Profs.time_avg('Mdot_sigma', profiles, fnums=fnums)[r5_idx]
                 norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
                 if (key == 'Phi_mid'):
                     norm *= -1
@@ -326,7 +326,7 @@ def main(**kwargs):
         if (log):
             axes[id].set_yscale('log')
         if ('Mdot' in key):
-            axes[id].set_ylabel(plot_labels['Mdot'], fontsize=FS)
+            axes[id].set_ylabel(plot_labels['Mdot_sigma'], fontsize=FS)
         elif ('Edot' in key):  
             axes[id].set_ylabel(plot_labels['Edot_Poyt'], fontsize=FS)
         else:
