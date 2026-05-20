@@ -77,10 +77,6 @@ def check_dumps_exist(path_to_dumps, file_list):
 def check_files_exist(path_to_averages, file_list, **kwargs):
     file_type = kwargs.get('file_type', False)
     reduced   = kwargs.get('reduced',   False)
-    if (file_type != 'Profiles' and file_type != 'Slices' and 
-        file_type != 'Heating_Profiles' and file_type != 'Heating_Slices'):
-        raise ValueError("file_type can be Profiles, Slices, " + 
-                         "Heating_Profiles, or Heating_Slices")
     file_dir  = (f'{path_to_averages}/Full_Resolution/{file_type}' if not reduced 
                  else f'{path_to_averages}/Reduced_Resolution/{file_type}')
     data_list = glob.glob(f'{file_type}*', root_dir=file_dir)
@@ -196,34 +192,81 @@ def grid(ax, **kwargs):
     ax.grid(which='minor', color=kwargs.get('color', 'white'), linestyle='-',
             linewidth=0.5, alpha=kwargs.get('alpha', 0.3))
 
-# Create profiles dictionary [file_number][key]
-def load_profiles(averages_dir, fnums, **kwargs):
-    reduced      = kwargs.get('reduced', False)
-    profiles_dir = (f'{averages_dir}/Full_Resolution/Profiles' if not reduced 
-                    else f'{averages_dir}/Reduced_Resolution/Profiles')
-    print(f"Loading from {profiles_dir}...")
-    profs = glob.glob("Profiles*", root_dir=profiles_dir)
-    prof_nums = [
-        int(prof_name.strip('Profiles_').strip('.npz')) for prof_name in profs
-    ]
-    prof_nums.sort()
-    nzeros    = len(str(prof_nums[-1]))
-    if 'profiles' not in kwargs:
-        profiles = {}
+def init_profiles(data_dir, file_num, keys, 
+    save_dir, nslices, restart, nzro, **kwargs):
+    profiles = {}
+    
+    # First, determine the limits of the slices.
+    H = hr.Read(data_dir, **kwargs)
+    H.read_params(file_num)
+    profiles['t'] = H.params['t']
+    profiles['a'] = H.params['a']
+
+    nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
+    nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
+    nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
+
+    if (nphi % nslices != 0):
+        raise ValueError(f'nslices must evenly divide nphi = {nphi}')
+    iphi_stp = int(nphi / nslices)
+
+    # Logic to allow restarts if profile extraction is interrupted.
+    if not restart:
+        first_call = True
     else:
-        profiles = kwargs.get('profiles')
-    for fnum in fnums:
-        profile_file = (
-            f'{profiles_dir}/Profiles_%s.npz' %str(fnum).zfill(nzeros))
-        if not kwargs.get('keys', False):
-            profiles[f'{fnum}'] = np.load(profile_file)
-            files = profiles[f'{fnum}'].files
-        else:
-            if 'profiles' not in kwargs:
-                profiles[f'{fnum}'] = {}
-            for key in kwargs.get('keys'):
-                 profiles[f'{fnum}'][f'{key}']=np.load(profile_file)[f'{key}']
-    return profiles
+        fnum_str = str(file_num).zfill(nzro)
+        profiles = dict(np.load(f'{save_dir}/Profiles_{fnum_str}.npz'))
+        first_call = False
+
+    # Initialize profiles dictionary
+    if first_call:
+        for key in keys:
+            profiles[f'{key}'] = np.zeros(nr, dtype=np.float64)
+        first_call = False
+        profiles['slice_num_restart'] = 0
+
+    return profiles, nphi, iphi_stp
+
+def init_slices(data_dir, file_num, keys, 
+    save_dir, nslices, restart, nzro, **kwargs):
+    slices = {}
+    
+    file_type = kwargs.get('file_type', 'Slices')
+    
+    # First, determine the limits of the slices.
+    H = hr.Read(data_dir, **kwargs)
+    H.read_params(file_num)
+    slices['t'] = H.params['t']
+    slices['a'] = H.params['a']
+
+    nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
+    nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
+    nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
+    if (nphi % nslices != 0):
+        raise ValueError(f'nslices must evenly divide nphi = {nphi}')
+    iphi_stp = int(nphi / nslices)
+
+    if 'r_max' in kwargs:
+        H.gridsizex1 = int(
+            H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
+        i_min, nr = H.get_rbox_coords()
+
+    # Logic to allow restarts if profile extraction is interrupted.
+    if not restart:
+        first_call = True
+    else:
+        fnum_str = str(file_num).zfill(nzro)
+        slices = dict(np.load(f'{save_dir}/{file_type}_{fnum_str}.npz'))
+        first_call = False
+
+    # Initialize slices dictionary
+    if first_call:
+        for key in keys:
+            slices[f'{key}'] = np.zeros([nr, nth])
+        first_call = False
+        slices['slice_num_restart'] = 0
+
+    return slices, nphi, iphi_stp
 
 # Compute quantities at constant phi
 class Phi_Slice():
@@ -1812,7 +1855,8 @@ class Load_Data():
         elif 'profiles' not in kwargs and 'slices' in kwargs:
             data = kwargs.get('slices')
         for fnum in fnums:
-            if (file_type == 'Slices' or file_type == 'Heating_Slices'):
+            if (file_type == 'Slices' or file_type == 'Heating_Slices' or 
+                file_type == 'Stresses'):
                 print(f"File number {fnum}...", flush=True)
             data_file = (
                 f'{data_dir}/{file_type}_%s.npz' %str(fnum).zfill(nzeros))
@@ -1841,7 +1885,7 @@ class Slices(Load_Data):
     def load_slices_time_averaged(self, averages_dir, fnums, **kwargs):
         reduced = kwargs.get('reduced', False)
         coords = self.load_slices(averages_dir, fnums, 
-                                  keys=['r' , 'theta', 'a'], reduced=reduced)
+            keys=['r' , 'theta', 'a', 'dx1', 'dx2'], reduced=reduced)
         self.check_AMR(fnums, coords)
         nt = len(fnums)
         if 'keys' in kwargs:
@@ -1867,6 +1911,8 @@ class Slices(Load_Data):
         slices['r']     = coords[f'{self.fnums0}']['r']
         slices['theta'] = coords[f'{self.fnums0}']['theta']
         slices['a']     = coords[f'{self.fnums0}']['a']
+        slices['dx1']   = coords[f'{self.fnums0}']['dx1']
+        slices['dx2']   = coords[f'{self.fnums0}']['dx2']
         return slices
 
     def check_AMR(self, fnums, slices):
@@ -1939,18 +1985,19 @@ class Slices(Load_Data):
             vols = kwargs.get('vols')
         else:
             raise ValueError("Cannot update slice without passing vols dict.")
-        
-        switch_slices = self.load_slices(averages_dir, load_fnums, keys=keys)
-        update_keys   = keys.copy()
-        if 'Vol' in update_keys: update_keys.remove('Vol')
-        for key in update_keys:
-            vol = vols[f'{key}']
-            slices[f'{key}'] *= nt_old
-            slices[f'{key}'] = self.sub_slice(
-                key, slices, switch_slices[f'{sub_fnum}'], vol=vol)
-            slices[f'{key}'] = self.add_slice(
-                key, slices, switch_slices[f'{add_fnum}'], vol=vol)
-            slices[f'{key}'] *= (1. / nt)
+
+        if (len(fnums_old) == len(fnums)):
+            switch_slices = self.load_slices(averages_dir, load_fnums, keys=keys)
+            update_keys   = keys.copy()
+            if 'Vol' in update_keys: update_keys.remove('Vol')
+            for key in update_keys:
+                vol = vols[f'{key}']
+                slices[f'{key}'] *= nt_old
+                slices[f'{key}'] = self.sub_slice(
+                    key, slices, switch_slices[f'{sub_fnum}'], vol=vol)
+                slices[f'{key}'] = self.add_slice(
+                    key, slices, switch_slices[f'{add_fnum}'], vol=vol)
+                slices[f'{key}'] *= (1. / nt)
         return slices
     
     def sub_slice(self, key, slices, switch_slices, **kwargs):
@@ -1983,6 +2030,21 @@ class Heating_Slices(Slices):
         return super(Slices, self).load_data(averages_dir, fnums, 
                                              file_type='Heating_Slices', **kwargs)
 
+class Custom_Slices(Slices):
+    def __init__(self, file_type):
+        self.file_type = file_type
+
+    # Retrieve file numbers based on file_number, start_file, and end file
+    def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
+        return super(Slices, self).get_fnums(averages_dir, file_number, 
+                                             start_file, end_file, 
+                                             file_type=self.file_type, **kwargs)
+
+    # Create slices dictionary [file_number][key]
+    def load_slices(self, averages_dir, fnums, **kwargs):
+        return super(Slices, self).load_data(averages_dir, fnums, 
+                                             file_type=self.file_type, **kwargs)
+
 class Stresses(Slices):
     # Retrieve file numbers based on file_number, start_file, and end file
     def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
@@ -1995,7 +2057,7 @@ class Stresses(Slices):
         return super(Slices, self).load_data(averages_dir, fnums, 
                                              file_type='Stresses', **kwargs)
 
-class Vertical_Profiles(Slices):
+class Load_Vertical_Data():
     # Load theta profiles at given r0
     # If time_average = True: profiles[file_number][key]
     # otherwise: profiles[key]
@@ -2122,6 +2184,12 @@ class Vertical_Profiles(Slices):
 
         return profiles
 
+class Vertical_Profiles(Load_Vertical_Data, Slices):
+    pass
+
+class Vertical_Stress_Profiles(Load_Vertical_Data, Stresses):
+    pass
+
 class Profiles(Load_Data):
     # Retrieve file numbers based on file_number, start_file, and end file
     def get_fnums(self, averages_dir, file_number, start_file, end_file, **kwargs):
@@ -2192,10 +2260,21 @@ class Time_Series(Profiles):
         time  = np.zeros(len(fnums))
         q     = np.zeros(len(fnums))
         r0    = kwargs.get('r0', 0.)
-        for i, fnum in enumerate(fnums):
-            r       = profiles[f'{fnum}']['r']
-            idx     = np.argmin(np.abs(r - r0))
-            time[i] = profiles[f'{fnum}']['t']
-            vol     = profiles[f'{fnum}']['Vol'] if kwargs.get('vol', False) else 1.
-            q[i]    = (profiles[f'{fnum}'][f'{key}']/vol)[idx]
+        isarr = sum((profiles[f'{fnums[0]}'][f'{key}']).shape)
+        if isarr:
+            for i, fnum in enumerate(fnums):
+                r       = profiles[f'{fnum}']['r']
+                idx     = np.argmin(np.abs(r - r0))
+                time[i] = profiles[f'{fnum}']['t']
+                vol     = (profiles[f'{fnum}']['Vol'] 
+                           if kwargs.get('vol', False) else 1.)
+                q[i]    = (profiles[f'{fnum}'][f'{key}']/vol)[idx]
+        else:
+            for i, fnum in enumerate(fnums):
+                r       = profiles[f'{fnum}']['r']
+                idx     = np.argmin(np.abs(r - r0))
+                time[i] = profiles[f'{fnum}']['t']
+                vol     = (profiles[f'{fnum}']['Vol'] 
+                           if kwargs.get('vol', False) else 1.)
+                q[i]    = (profiles[f'{fnum}'][f'{key}']/vol)
         return time, q
