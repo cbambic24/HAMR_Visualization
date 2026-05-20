@@ -118,9 +118,18 @@ def main(**kwargs):
     }
 
     profile_keys = keys + acc_keys + phi_keys + vec_keys
+
+    init_args = {
+        'data_dir' : data_dir,
+        'file_num' : file_num,
+        'keys'     : profile_keys,
+        'save_dir' : save_dir,
+        'nslices'  : nslices,
+        'restart'  : restart,
+        'nzro'     : nzeros
+    }
     
-    profiles, nphi, iphi_stp = init_profiles(data_dir, file_num, profile_keys,
-        save_dir, nslices, restart, nzeros, **read_args)
+    profiles, nphi, iphi_stp = cv.init_profiles(**init_args, **read_args)
     profiles['done'] = False
 
     # Loop over whole data slice that fits on single node.
@@ -210,7 +219,7 @@ def main(**kwargs):
         else:
             pgas      = hr.Tools.zeroNd(H.data['u_gas'].shape, 1)
             gamma_adi = (5. / 3.)
-            np.multiply(H.data['u_gas'], (gamma_adi - 1.), out=pgas)
+            np.multiply(H.data['u_gas'], (gamma_adi - ONE), out=pgas)
 
         # Mass and energy accretion/outflow rates
         stress_energy_HD  = Fluid.calc_THD(**H.data, **H.grid, pgas=pgas,
@@ -428,41 +437,6 @@ def main(**kwargs):
         
     print(f'Done with all profiles for file number {file_num}.')
 
-def init_profiles(data_dir, file_num, keys, 
-    save_dir, nslices, restart, nzro, **kwargs):
-    profiles = {}
-    
-    # First, determine the limits of the slices.
-    H = hr.Read(data_dir, **kwargs)
-    H.read_params(file_num)
-    profiles['t'] = H.params['t']
-    profiles['a'] = H.params['a']
-
-    nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
-    nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
-    nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
-
-    if (nphi % nslices != 0):
-        raise ValueError(f'nslices must evenly divide nphi = {nphi}')
-    iphi_stp = int(nphi / nslices)
-
-    # Logic to allow restarts if profile extraction is interrupted.
-    if not restart:
-        first_call = True
-    else:
-        fnum_str = str(file_num).zfill(nzro)
-        profiles = dict(np.load(f'{save_dir}/Profiles_{fnum_str}.npz'))
-        first_call = False
-
-    # Initialize profiles dictionary
-    if first_call:
-        for key in keys:
-            profiles[f'{key}'] = np.zeros(nr, dtype=np.float64)
-        first_call = False
-        profiles['slice_num_restart'] = 0
-
-    return profiles, nphi, iphi_stp
-
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
                         description="""Calculate 1D profiles for single 
@@ -491,7 +465,7 @@ if __name__ == '__main__':
                         help="""boolean to determine if two-temperature 
                         physics should be included in profile extraction.""")
     parser.add_argument('--vargamma', action=argparse.BooleanOptionalAction,
-                        default=True, 
+                        default=False, 
                         help="""boolean to determine if variable gamma 
                         should be used for ion/electron energy/pressure.""")  
     parser.add_argument('--reduced', action='store_true', required=False,
