@@ -57,16 +57,20 @@ def main(**kwargs):
     # Determine profile directory
     averages_dir = cv.user_path + f'/Averages/{sim}'
     save_dir = cv.user_path +  '/PDF'
-    
-    keys = ['Mdot_sigma', 'Edot_jet', 'Edot_Rad', 'Dtheta2', 'Phi_BH']
+
+    if (cgs):
+        keys = ['Mdot_sigma', 'Edot_jet', 'Edot_Rad', 'Dtheta2', 'Phi_BH']
+    else:
+        keys = ['Mdot_sigma', 'Edot_jet', 'Dtheta2', 'Phi_BH']
 
     limits = {
-        'Mdot_sigma' : [1.e-1, 2.], 
-        'Edot_jet'   : [1.e-2, 2.], 
+        'Mdot_sigma' : [1.e-1, 2.e1], 
+        'Edot_jet'   : [1.e-2, 2.e1], 
         'Edot_Rad'   : [1.e-2, 2.],
         'Dtheta2'    : [1.e-2, 2.],
         'Phi_BH'     : [0, 60] 
     }
+    limits['Dtheta2'] = [1.e-5, 1.e0]
 
     colors = {
         'Mdot_sigma' : 'black',
@@ -92,7 +96,7 @@ def main(**kwargs):
         'Phi_BH'     : r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$'
     }
     # 'Mdot_sigma' : r'$\dot{M} \: (\rho_0 R_g^2 c)$',
-    # 'Dtheta2'    : r'$\rho_0 \: (\rm{g/cm}^3)$',
+    plot_labels['Dtheta2'] = r'$\rho_0 \: (\rm{g/cm}^3)$'
 
     axes_ids = {
         'Mdot_sigma' : 0,
@@ -112,20 +116,18 @@ def main(**kwargs):
 
     TS = cv.Time_Series()
     fnums = TS.get_fnums(**file_info)
-    pkeys = keys + ['t', 'r', 'a', 'Vol', 'k_max']
+    pkeys = keys + ['t', 'r', 'a', 'Vol', 'k_max', 'rho0']
     profiles = TS.load_profiles(averages_dir, fnums, keys=pkeys, reduced=reduced)
 
-    if (cgs):
-        L_Edd    = Analytic.calc_LEdd(MBH=MBH)
-        Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179)    
-    else:
-        L_Edd    = 1.
-        Mdot_Edd = 1.
+    L_Edd    = Analytic.calc_LEdd(MBH=MBH)                if cgs else 1.
+    Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179) if cgs else 1.
+
     # Load all time series
     time, Mdot     = TS.calc_time_series('Mdot_sigma', profiles, r0=r_Mdot)
     time, Phi_BH   = TS.calc_time_series('Phi_BH',     profiles, r0=0.)
     time, Edot_jet = TS.calc_time_series('Edot_jet',   profiles, r0=r_Jet)
     time, HoR2     = TS.calc_time_series('Dtheta2',    profiles, r0=r_Hrho, vol=True)
+    time, rho0     = TS.calc_time_series('rho0',       profiles)
  
     HoR = np.sqrt(HoR2)
     if (cgs):
@@ -146,11 +148,14 @@ def main(**kwargs):
     axes[0].plot(time/1.e4, -Mdot/Mdot_Edd,   lw=2, linestyle='--', color=colors['Mdot_sigma'])
     axes[1].plot(time/1.e4, phi_BH,           lw=2, color=colors['Phi_BH'])
     axes[2].plot(time/1.e4, -Edot_jet/L_Edd,  lw=2, color=colors['Edot_jet'])
-    axes[2].plot(time/1.e4, -Edot_Rad/L_Edd,  lw=2, color=colors['Edot_Rad'])
     axes[3].plot(time/1.e4, -Edot_jet/Mdotc2, lw=2, color=colors['Edot_jet'])
-    axes[3].plot(time/1.e4, -Edot_Rad/Mdotc2, lw=2, color=colors['Edot_Rad'])
-    axes[4].plot(time/1.e4, HoR,              lw=2, color=colors['Dtheta2'])
+    if (cgs):
+        axes[2].plot(time/1.e4, -Edot_Rad/L_Edd,  lw=2, color=colors['Edot_Rad'])
+        axes[3].plot(time/1.e4, -Edot_Rad/Mdotc2, lw=2, color=colors['Edot_Rad'])
+    #axes[4].plot(time/1.e4, HoR,              lw=2, color=colors['Dtheta2'])
+    axes[4].plot(time/1.e4, rho0,              lw=2, color=colors['Dtheta2'])
 
+    if (not cgs): keys += ['Edot_Rad']
     for key in keys:
         id = int(axes_ids[f'{key}'])
         axes[id].set_ylabel(plot_labels[f'{key}'], fontsize=FS)
