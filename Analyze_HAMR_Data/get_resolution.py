@@ -34,6 +34,7 @@ def main(**kwargs):
     file_list = list(range(start_file, end_file + 1))
     file_list_local = cv.get_file_list_local(file_list, size, rank, data_dir)
     fnums, nr, nth, nphi, t = [], [], [], [], []
+    AMR_levelx1, AMR_levelx2, AMR_levelx3 = [], [], []
     for file_num in file_list_local:
         read_args = {
             'cgs_grid' : cgs,
@@ -48,14 +49,17 @@ def main(**kwargs):
         nr.append(  int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1))
         nth.append( int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2))
         nphi.append(int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3))
+        AMR_levelx1.append(int(H.amr['max_levelx1']))
+        AMR_levelx2.append(int(H.amr['max_levelx2']))
+        AMR_levelx3.append(int(H.amr['max_levelx3']))
         t.append(H.params['t'])
 
     AMRx1 = (nr.count(  nr[0])   != len(nr))
     AMRx2 = (nth.count( nth[0])  != len(nth))
     AMRx3 = (nphi.count(nphi[0]) != len(nphi))
-    max_AMRx1 = int(np.log2(max(nr) / min(nr)))
-    max_AMRx2 = int(np.log2(max(nth) / min(nth)))
-    max_AMRx3 = int(np.log2(max(nphi) / min(nphi))) 
+    max_AMRx1 = max(AMR_levelx1)
+    max_AMRx2 = max(AMR_levelx2)
+    max_AMRx3 = max(AMR_levelx3)
 
     nr    = np.array(nr)
     nth   = np.array(nth)
