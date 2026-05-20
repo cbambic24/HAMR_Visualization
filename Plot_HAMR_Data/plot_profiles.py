@@ -24,7 +24,6 @@ import figs
 
 MBH     = 10.
 figsize = [40.0, 26.0]
-FS      = 48
 FS      = 40
 plt.rcParams['xtick.labelsize'] = FS
 plt.rcParams['ytick.labelsize'] = FS
@@ -55,7 +54,7 @@ def main(**kwargs):
     save_dir = cv.user_path +  '/PDF'
     
     keys = [
-        'Mdot_sigma', 'rho', 'Ti', 
+        'Mdot', 'rho', 'Ti', 
         'Pthm', 'Pmag',
         'Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 
         'Dtheta2', 
@@ -80,14 +79,14 @@ def main(**kwargs):
         linthresh[f'{key}'] = get_linthresh(key, cgs=cgs)
 
     limits = {
-        'Mdot_sigma' : [1.e-2, 1.e1],
+        'Mdot' : [1.e-2, 1.e2],
         'rho'        : [1.e-5, 1.e0]  if cgs else [1.e-2, 1.e2], 
         'Ti'         : [1.e4,  1.e12] if cgs else [1.e-5, 1.], 
         'Pthm'       : [1.e10, 1.e18] if cgs else [1.e-6, 1.e1],
         'Pmag'       : [1.e10, 1.e18] if cgs else [1.e-4, 1.e4],
         'vR'         : [-1, 0.1],
         'vphi'       : [0.1, 1.1],
-        'vz'         : [-0.02, 0.02],
+        'vz'         : [-0.01, 0.01],
         'bphi'       : [-1.e9, 1.e9] if cgs else [-1.e0, 1.e0], 
         'bz'         : [-1.e9, 1.e9] if cgs else [-1.e0, 1.e0],
         'Edot_jet'   : [1.e-2, 2.e2],
@@ -106,7 +105,7 @@ def main(**kwargs):
 
 
     colors = {
-        'Mdot_sigma' : 'black',
+        'Mdot' : 'black',
         'rho'        : 'black',
         'Ti'         : 'darkorange',
         'Te'         : 'dodgerblue',
@@ -130,7 +129,7 @@ def main(**kwargs):
     }
 
     labels = {
-        'Mdot_sigma' : None,
+        'Mdot' : None,
         'rho'        : None,
         'Ti'         : r'$\rm{Ions}$',
         'Te'         : r'$\rm{Electrons}$',
@@ -154,7 +153,7 @@ def main(**kwargs):
     }
 
     plot_labels = {
-        'Mdot_sigma' : r'$\dot{M}/\dot{M}_{\rm Edd}$'                    if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
+        'Mdot' : r'$\dot{M}/\dot{M}_{\rm Edd}$'                    if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
         'rho'        : r'$\langle \rho \rangle_{\rho} \: (\rm{g/cm}^3)$' if cgs else r'$\langle \rho /\rho_0 \rangle_{\rho}$',
         'Ti'         : r'$\rm{Temperature} \: (\rm{K})$'                 if cgs else r'${\rm{Temperature}} \: (m_i c^2)$',
         'Te'         : r'$\rm{Temperature} \: (\rm{K})$',
@@ -178,7 +177,7 @@ def main(**kwargs):
     }
 
     axes_ids = {
-        'Mdot_sigma' : 0,
+        'Mdot' : 0,
         'rho'        : 1,
         'Ti'         : 2,
         'Te'         : 2,
@@ -212,10 +211,22 @@ def main(**kwargs):
 
     Profs = cv.Profiles()
     fnums = Profs.get_fnums(**file_info)
-    pkeys = keys + ['Vol', 'r', 'a']
+
+    pkeys = keys + ['Vol', 'r', 'a', 't']
     profiles = Profs.load_profiles(averages_dir, fnums, keys=pkeys, reduced=reduced)
     single_file = True if (len(fnums) == 1) else False
 
+    for fnum in fnums:
+        vR   = profiles[f'{fnum}']['vR']
+        vphi = profiles[f'{fnum}']['bphi']
+        vz   = profiles[f'{fnum}']['bz']
+        if np.any(np.isnan(vR)):
+            print(fnum)
+        if np.any(np.isnan(vphi)):
+            print(fnum)
+        if np.any(np.isnan(vz)):
+            print(fnum)
+    
     fig  = plt.figure(figsize = figsize)
     gs   = gridspec.GridSpec(3, 4, figure = fig)
     axes = []
@@ -236,7 +247,7 @@ def main(**kwargs):
             r  = profiles[f'{fnums[0]}']['r']
             if ('Phi' in key):
                 r5_idx = np.argmin(np.abs(r - 5.))
-                Mdot_avg = profiles[f'{fnums[0]}']['Mdot_sigma'][r5_idx]
+                Mdot_avg = profiles[f'{fnums[0]}']['Mdot'][r5_idx]
                 norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
                 if (key == 'Phi_mid'):
                     norm *= -1
@@ -277,7 +288,7 @@ def main(**kwargs):
             r  = profiles[f'{Profs.fnums0}']['r']
             if ('Phi' in key):
                 r5_idx = np.argmin(np.abs(r - 5.))
-                Mdot_avg = Profs.time_avg('Mdot_sigma', profiles, fnums=fnums)[r5_idx]
+                Mdot_avg = Profs.time_avg('Mdot', profiles, fnums=fnums)[r5_idx]
                 norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
                 if (key == 'Phi_mid'):
                     norm *= -1
@@ -315,7 +326,7 @@ def main(**kwargs):
         if (log):
             axes[id].set_yscale('log')
         if ('Mdot' in key):
-            axes[id].set_ylabel(plot_labels['Mdot_sigma'], fontsize=FS)
+            axes[id].set_ylabel(plot_labels['Mdot'], fontsize=FS)
         elif ('Edot' in key):  
             axes[id].set_ylabel(plot_labels['Edot_Poyt'], fontsize=FS)
         else:
@@ -331,11 +342,17 @@ def main(**kwargs):
 
     legend_keys = ['Edot_Poyt', 'Ti', 'Pthm', 'Phi_BH']
     for key in legend_keys:
-        axes[axes_ids[f'{key}']].legend(loc='upper right', fontsize=FS-24, frameon=False, ncols=2)
+        axes[axes_ids[f'{key}']].legend(loc='upper right', fontsize=FS-18, frameon=False, ncols=2)
     
     for ax in axes:
         ax.set_xscale('log')
         cv.grid(ax, alpha=0.2, color='black')
+
+    opt = dict(ha='left', va='center', color='black',
+        bbox=dict(facecolor='none', edgecolor='none'))
+    tstring = get_tstring(profiles, fnums, 3)
+    axes[0].text(0.05, 0.10, r'$t = $' + tstring + r' $R_g/c$', 
+                fontsize=FS-2, transform=axes[0].transAxes, **opt)  
     
     print("Saving figure ...", flush=True)
     fig.tight_layout()
@@ -378,6 +395,28 @@ def get_linthresh(key, **kwargs):
         return 1.e7 if cgs else 1.e-3
     else:
         return False
+
+def get_tstring(profiles, fnums, ndec=2):
+    tstrt = profiles[f'{fnums[0]}']['t']
+    tend  = profiles[f'{fnums[-1]}']['t']
+
+    oom_strt = int(np.floor(np.log10(tstrt)))
+    oom_end  = int(np.floor(np.log10(tend)))
+
+    if (oom_strt == oom_end):
+        strt_str = tstrt / (10 ** oom_end)
+        end_str  = tend / (10 ** oom_end)
+        tstr = (rf'$%.{ndec}f-%.{ndec}f$' %(strt_str, end_str) + 
+            r'$\times$' + r'$10^{%d}$' %oom_end)
+    else:
+        strt_str = tstrt / (10 ** oom_strt)
+        end_str  = tend / (10 ** oom_end)
+        tstr = (rf'$%.{ndec}f$' %(strt_str) + 
+            r'$\times$' + r'$10^{%d}$' %oom_strt + '-' +
+            rf'$%.{ndec}f$' %(end_str) +
+            r'$\times$' + r'$10^{%d}$' %oom_end)
+    return tstr
+
     
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(

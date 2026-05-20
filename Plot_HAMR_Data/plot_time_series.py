@@ -71,6 +71,10 @@ def main(**kwargs):
         'Phi_BH'     : [0, 60] 
     }
     limits['Dtheta2'] = [1.e-5, 1.e0]
+    limits['Mdot_sigma'] = [1.e-1, 1.e2]
+    limits['Phi_BH']     = [0, 100]
+    limits['Edot_jet']   = [1.e-1, 2.e2]
+    limits['Edot_Rad']   = [1.e-1, 2.e2]
 
     colors = {
         'Mdot_sigma' : 'black',
