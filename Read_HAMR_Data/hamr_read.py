@@ -26,7 +26,7 @@ CONSTANTS = {
     'Msun'    :  1.998e33,       # Mass of the Sun (g) 
 }
 
-amr, physics, params = {}, {}, {}
+amr, params = {}, {}
 amr_keys = [
     'ACTIVE', 'LEVEL', 'REFINED',
     'COORD1', 'COORD2', 'COORD3',
@@ -193,8 +193,9 @@ class Read():
         # indices from 0 to nv defined in "amr" dictionary.
         fin.close()
 
-    def read_params(self, fnum):
-        print("Loading parameters file")
+    def read_params(self, fnum, **kwargs):
+        if not kwargs.get('suppress_output', False):
+            print("Loading parameters file")
         # Read in parameters from parameters file.
         if (os.path.isfile(self.dir + "/dumps%d/parameters" % fnum)):
             fin = open(self.dir + "/dumps%d/parameters" % fnum, "rb")
@@ -219,20 +220,21 @@ class Read():
         del trash
         phys_int = np.fromfile(fin, dtype=np.int32, count=1, sep='')[0]
         # Using phys_int, determine which physics modules are active
+        self.physics = {}
         for key in phys_keys:
-            physics['%s' % key] = 0
+            self.physics['%s' % key] = 0
         phys_int = '{:09}'.format(phys_int)
 
-        if (phys_int[-1] == '1'): physics['RAD_M1']       = 1
-        if (phys_int[-2] == '1'): physics['RESISTIVE']    = 1
-        if (phys_int[-3] == '1'): physics['TWO_T']        = 1
-        if (phys_int[-4] == '1'): physics['P_NUM']        = 1
-        if (phys_int[-5] == '1'): physics['DO_YE']        = 1
-        if (phys_int[-6] == '1'): physics['NEUTRINOS_M1'] = 1
-        if (phys_int[-7] == '1'): physics['DO_NUCLEAR']   = 1
-        if (phys_int[-8] == '1'): physics['DOTRACER']     = 1
-        if (phys_int[-9] == '1'): physics['DUMP_DISS']    = 1
-        if (phys_int[-9] == '2'): physics['DUMP_DISS']    = 2
+        if (phys_int[-1] == '1'): self.physics['RAD_M1']       = 1
+        if (phys_int[-2] == '1'): self.physics['RESISTIVE']    = 1
+        if (phys_int[-3] == '1'): self.physics['TWO_T']        = 1
+        if (phys_int[-4] == '1'): self.physics['P_NUM']        = 1
+        if (phys_int[-5] == '1'): self.physics['DO_YE']        = 1
+        if (phys_int[-6] == '1'): self.physics['NEUTRINOS_M1'] = 1
+        if (phys_int[-7] == '1'): self.physics['DO_NUCLEAR']   = 1
+        if (phys_int[-8] == '1'): self.physics['DOTRACER']     = 1
+        if (phys_int[-9] == '1'): self.physics['DUMP_DISS']    = 1
+        if (phys_int[-9] == '2'): self.physics['DUMP_DISS']    = 2
 
         trash = Tools.get_fromfile(fin, np.int32)
         del trash
@@ -315,7 +317,7 @@ class Read():
         skip_read_params = kwargs.get('skip_read_params', False)
         direct           = kwargs.get('direct', False)
         if not skip_read_params:
-            self.read_params(fnum)
+            self.read_params(fnum, suppress_output=True)
 
         # Read in grid from gdump files or directly compute grid variables
         self.check_lowres_settings()
@@ -425,7 +427,7 @@ class Read():
         else:
             Readc = hamr_readc.PyRead(self.dir, self.axisym, self.by_block,
                 self.export_raytracing, amr, self.amr_info, self.block_info, 
-                self.options, params, physics)
+                self.options, params, self.physics)
             
             Readc.read_grid(x1, x2, x3, r, theta, phi, 
                 gcov, gcon, gdet, dxdxp)
@@ -499,7 +501,7 @@ class Read():
         elif (self.resolution and direct):
             Readc = hamr_readc.PyRead(self.dir, self.axisym, self.by_block,
                 self.export_raytracing, amr, self.amr_info, self.block_info, 
-                self.options, params, physics)   
+                self.options, params, self.physics)   
             Readc.read_grid_resolution(res_level_x1, res_level_x2, 
                                        res_level_x3)
             
@@ -511,7 +513,7 @@ class Read():
     def read_prims(self, fnum, **kwargs):
         skip_read_params = kwargs.get('skip_read_params', False)
         if not skip_read_params:
-            self.read_params(fnum)
+            self.read_params(fnum, suppress_output=True)
 
         if (self.by_block):
             bs1_new = int(params['bs1'] / self.lowres1)
@@ -563,38 +565,38 @@ class Read():
         rho, u_gas = Tools.zeroNd([dim, nx, ny, nz], 2)
         uu, B      = Tools.zeroNd([4, dim, nx, ny, nz], 2)
         
-        if (physics['RAD_M1']):
+        if (self.physics['RAD_M1']):
             u_rad  = Tools.zeroNd([dim, nx, ny, nz], 1)
             uu_rad = Tools.zeroNd([4, dim, nx, ny, nz], 1)
         else: 
             u_rad, uu_rad = rho, uu
 
-        if (physics['RESISTIVE']):
+        if (self.physics['RESISTIVE']):
             E = Tools.zeroNd([4, dim, nx, ny, nz], 1)
         else:
             E = B
         
-        if (physics['TWO_T']):
+        if (self.physics['TWO_T']):
             Te, Ti = Tools.zeroNd([dim, nx, ny, nz], 2)
         else:
             Te, Ti = rho, rho
 
-        if (physics['P_NUM']):
+        if (self.physics['P_NUM']):
             p_num = Tools.zeroNd([dim, nx, ny, nz], 1)
         else:
             p_num = rho
 
-        if (physics['DO_YE']):
+        if (self.physics['DO_YE']):
             Ye = Tools.zeroNd([dim, nx, ny, nz], 1)
         else:
             Ye = rho
 
-        if (physics['DO_NUCLEAR']):
+        if (self.physics['DO_NUCLEAR']):
             X_alpha, X_atm = Tools.zeroNd([dim, nx, ny, nz], 2)
         else:
             X_alpha, X_atm = rho, rho
         
-        if (physics['NEUTRINOS_M1']):
+        if (self.physics['NEUTRINOS_M1']):
             u_nu1,  u_nu2,  u_nu3  = Tools.zeroNd([dim, nx, ny, nz], 3)
             uu_nu1, uu_nu2, uu_nu3 = Tools.zeroNd([4, dim, nx, ny, nz], 3)
             n_nu1,  n_nu2,  n_nu3  = Tools.zeroNd([dim, nx, ny, nz], 3)
@@ -603,19 +605,19 @@ class Read():
             uu_nu1, uu_nu2, uu_nu3 = uu, uu, uu
             n_nu1,  n_nu2,  n_nu3  = rho, rho, rho
 
-        if (physics['DOTRACER']):
+        if (self.physics['DOTRACER']):
             tr1, tr2 = Tools.zeroNd([dim, nx, ny, nz], 2)
         else: 
             tr1, tr2 = rho, rho
 
-        if (physics['DUMP_DISS']):
-            if (physics['DUMP_DISS'] == 1):
+        if (self.physics['DUMP_DISS']):
+            if (self.physics['DUMP_DISS'] == 1):
                 diss = Tools.zeroNd([dim, nx, ny, nz], 1)
                 if (self.cgs_data):
                     self.diss_dbl = Tools.zeroNd(
                         [dim, nx, ny, nz], 1, dtype=np.float64)
                 rad_src = rho
-            elif (physics['DUMP_DISS'] == 2):
+            elif (self.physics['DUMP_DISS'] == 2):
                 diss, rad_src = Tools.zeroNd([dim, nx, ny, nz], 2)
                 if (self.cgs_data):
                     self.diss_dbl, self.rad_src_dbl = Tools.zeroNd(
@@ -637,7 +639,7 @@ class Read():
         
         Readc = hamr_readc.PyRead(self.dir, self.axisym, self.by_block,
             self.export_raytracing, amr, self.amr_info, self.block_info, 
-            self.options, params, physics)
+            self.options, params, self.physics)
         
         Readc.read_prims(fnum, rho, u_gas, uu, B, 
             E, u_rad, uu_rad, Te, Ti, p_num, Ye, X_alpha, X_atm, 
@@ -651,28 +653,28 @@ class Read():
             'B'     : B
         }
 
-        if (physics['RAD_M1']):
+        if (self.physics['RAD_M1']):
             self.data['u_rad']  = u_rad
             self.data['uu_rad'] = uu_rad
 
-        if (physics['RESISTIVE']):
+        if (self.physics['RESISTIVE']):
             self.data['E'] = E
 
-        if (physics['TWO_T']):
+        if (self.physics['TWO_T']):
             self.data['Te'] = Te
             self.data['Ti'] = Ti
 
-        if (physics['P_NUM']):
+        if (self.physics['P_NUM']):
             self.data['p_num'] = p_num
 
-        if (physics['DO_YE']):
+        if (self.physics['DO_YE']):
             self.data['Ye'] = Ye
         
-        if (physics['DO_NUCLEAR']):
+        if (self.physics['DO_NUCLEAR']):
             self.data['X_alpha'] = X_alpha
             self.data['X_atm']   = X_atm
 
-        if (physics['NEUTRINOS_M1']):
+        if (self.physics['NEUTRINOS_M1']):
             self.data['u_nu1']  = u_nu1
             self.data['u_nu2']  = u_nu2
             self.data['u_nu3']  = u_nu3
@@ -683,13 +685,13 @@ class Read():
             self.data['n_nu2']  = n_nu2
             self.data['n_nu3']  = n_nu3
 
-        if (physics['DOTRACER']):
+        if (self.physics['DOTRACER']):
             self.data['tr1'] = tr1
             self.data['tr2'] = tr2
 
-        if (physics['DUMP_DISS']):
+        if (self.physics['DUMP_DISS']):
             self.data['dissipation'] = diss
-            if (physics['DUMP_DISS'] == 2):
+            if (self.physics['DUMP_DISS'] == 2):
                 self.data['rad_src'] = rad_src
 
         if (self.select_block):
@@ -715,14 +717,14 @@ class Read():
         self.data['uu']    *= c            # cm/s
         self.data['B']     *= np.sqrt(4 * np.pi) * np.sqrt(rho0) * c # Gauss
 
-        if (physics['RAD_M1']):
+        if (self.physics['RAD_M1']):
             self.data['u_rad']  *= rho0 * c * c     # erg/cm^3
             self.data['uu_rad'] *= c # cm/s
 
-        if (physics['RESISTIVE']):
+        if (self.physics['RESISTIVE']):
             self.data['E'] *= np.sqrt(rho0) * c # statVolt/cm (same as Gauss)
 
-        if (physics['TWO_T']):
+        if (self.physics['TWO_T']):
             kB   = CONSTANTS['kB']
             mp   = CONSTANTS['mp']
             X_ab = CONSTANTS['X_AB']
@@ -733,7 +735,7 @@ class Read():
             self.data['Te'] *= mu_e * mp * c * c / kB 
             self.data['Ti'] *= mu_i * mp * c * c / kB 
         
-        if (physics['DUMP_DISS']):
+        if (self.physics['DUMP_DISS']):
             if (self.MBH == 0.0):
                 raise TypeError("Must define black hole mass in Read class.")
             G    = CONSTANTS['G']
@@ -749,7 +751,7 @@ class Read():
             self.data['dissipation'] *= rho0 * c * c * (c / Rg)
             del diss
 
-            if (physics['DUMP_DISS'] == 2):
+            if (self.physics['DUMP_DISS'] == 2):
                 rad_src = self.data.pop('rad_src')
                 rad_src = np.nan_to_num(rad_src, copy=False)
                 np.copyto(self.rad_src_dbl, rad_src, casting='safe')
@@ -881,7 +883,7 @@ class Read():
     def coords_directBK(self, x1, x2, x3, r, theta, phi, indices):
         Readc = hamr_readc.PyRead(self.dir, self.axisym, 
             self.by_block, self.export_raytracing, amr, self.amr_info, 
-            self.block_info, self.options, params, physics)
+            self.block_info, self.options, params, self.physics)
 
         Readc.read_grid_coords(x1, x2, x3, r, theta, phi)
         if self.coords1D:
@@ -1067,7 +1069,7 @@ class Read_Legacy(Read):
         fin.close()
 
         for key in phys_keys:
-            physics['%s' %key] = 0
+            self.physics['%s' %key] = 0
 
         # Set grid spacing
         params['dx1'] = (np.log(params['Rout']) - np.log(params['Rin'])) / (
