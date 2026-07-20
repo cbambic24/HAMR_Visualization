@@ -14,15 +14,10 @@ import theory as theory
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import matplotlib.patches as patches
-import cmasher as cmr 
 import matplotlib.style as style
-matplotlib.rcParams['text.usetex'] = True
 style.use('seaborn-v0_8-bright')
 matplotlib.rcParams['figure.dpi'] = 300
-import figs
 
-MBH     = 10.
 figsize = [40.0, 26.0]
 FS      = 40
 plt.rcParams['xtick.labelsize'] = FS
@@ -33,13 +28,15 @@ def main(**kwargs):
     file_number    = int(kwargs.get('file_number'))
     start_file     = int(kwargs.get('start_file'))
     end_file       = int(kwargs.get('end_file'))
-    time_average   = kwargs.get('time_average')
-    time_evolution = kwargs.get('time_evolution')
     reduced        = kwargs.get('reduced')
     radiation      = kwargs.get('radiation')
     two_temp       = kwargs.get('two_temp')
     r_max          = kwargs.get('r_max')
     plot_title     = kwargs.get('plot_title')
+    disable_TeX    = kwargs.get('disable_TeX')
+    MBH            = kwargs.get('MBH')
+
+    matplotlib.rcParams['text.usetex'] = False if disable_TeX else True
 
     cgs = True if (two_temp or radiation) else False
     Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
@@ -52,155 +49,76 @@ def main(**kwargs):
     # Determine profile directory
     averages_dir = cv.user_path + f'/Averages/{sim}'
     save_dir = cv.user_path +  '/PDF'
-    
-    keys = [
-        'Mdot_sigma', 'rho', 'Ti', 
-        'Pthm', 'Pmag',
-        'Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 
-        'Dtheta2', 
-        'Phi_BH', 'Phi_mid', 'Phi_sph_upp', 'Phi_sph_low',
-        'vR', 'vphi', 'vz', 
-        'bphi', 'bz'
+
+    plot_keys = [
+        'Mdot',     'rho',        'Temp',     'vR',
+        'Edot',  'scaleheight', 'pressures', 'vphi',
+        'PhiBH',    'bphi',        'bz',      'vz'
     ]
-    if two_temp:
-        keys += ['Te']
-    if radiation:
-        keys += ['Prad', 'Edot_Rad']
 
-    norms     = dict.fromkeys(keys)
-    vols      = dict.fromkeys(keys)
-    logs      = dict.fromkeys(keys)
-    linthresh = dict.fromkeys(keys) 
+    plot_info = dict.fromkeys(plot_keys)
+    for key in plot_keys:
+        plot_info[key] = dict.fromkeys(['quant', 'colors', 'axis_id', 'labels', 'title', 'log', 'linthresh'])
+    
+    # Limits for each figure
+    user_limits = {
+        'Mdot'        : None,
+        'rho'         : None,
+        'Temp'        : [1.e4,  1.e12] if cgs else [1.e-5, 1.],
+        'vR'          : [-1, 0.1],
+        'vphi'        : [0.1, 1.1],
+        'vz'          : [-0.01, 0.01],
+        'Edot'        : None,
+        'scaleheight' : [0.01, 2],
+        'pressures'   : None,
+        'PhiBH'       : [1., 1.e3],
+        'bphi'        : None,
+        'bz'          : None
+    } 
 
-    for key in keys: 
-        vols[     f'{key}'] = get_vols(key)
-        norms[    f'{key}'] = get_norms(key, cgs=cgs, MBH=MBH)
-        logs[     f'{key}'] = get_logs(key)
-        linthresh[f'{key}'] = get_linthresh(key, cgs=cgs)
+    # Quantities for each figure
+    plot_info['Mdot'][       'quant'] = 'Mdot_sigma'
+    plot_info['rho'][        'quant'] = 'rho'
+    plot_info['Temp'][       'quant'] = ['Ti', 'Te'] if two_temp else 'Ti'
+    plot_info['vR'][         'quant'] = 'vR'
+    plot_info['vphi'][       'quant'] = 'vphi'
+    plot_info['vz'][         'quant'] = 'vz'
+    plot_info['bphi'][       'quant'] = 'bphi'
+    plot_info['bz'][         'quant'] = 'bz'
+    plot_info['Edot'][       'quant'] = ['Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 'Edot_Rad'] if radiation else ['Edot_jet', 'Edot_Poyt', 'Edot_Fluid']
+    plot_info['scaleheight']['quant'] = 'Dtheta2'
+    plot_info['pressures'][  'quant'] = ['Pthm', 'Pmag', 'Prad'] if radiation else ['Pthm', 'Pmag']
+    plot_info['PhiBH'][      'quant'] = ['Phi_BH', 'Phi_mid', 'Phi_sph_upp', 'Phi_sph_low']
 
-    limits = {
-        'Mdot_sigma' : [1.e-2, 1.e2],
-        'rho'        : [1.e-5, 1.e0]  if cgs else [1.e-2, 1.e2], 
-        'Ti'         : [1.e4,  1.e12] if cgs else [1.e-5, 1.], 
-        'Pthm'       : [1.e10, 1.e18] if cgs else [1.e-6, 1.e1],
-        'Pmag'       : [1.e10, 1.e18] if cgs else [1.e-4, 1.e4],
-        'vR'         : [-1, 0.1],
-        'vphi'       : [0.1, 1.1],
-        'vz'         : [-0.01, 0.01],
-        'bphi'       : [-1.e9, 1.e9] if cgs else [-1.e0, 1.e0], 
-        'bz'         : [-1.e9, 1.e9] if cgs else [-1.e0, 1.e0],
-        'Edot_jet'   : [1.e-2, 2.e2],
-        'Edot_Poyt'  : [1.e-2, 2.e2],
-        'Edot_Fluid' : [1.e-2, 2.e2],
-        'Edot_Rad'   : [1.e-2, 2.e2],
-        'Dtheta2'    : [1.e-2, 2.],
-        'Phi_BH'     : [1., 1.e3],
-        'Phi_mid'    : [1., 1.e3],
-        'Phi_sph_upp': [1., 1.e3],
-        'Phi_sph_low': [1., 1.e3]
-    }
-    if cgs:
-        limits['Te']   = [1.e4,  1.e12]
-        limits['Prad'] = [1.e10, 1.e18]
+    # Log-scale and linthresh if symlog
+    for key in plot_keys: plot_info[key]['log']       = True
+    for key in plot_keys: plot_info[key]['linthresh'] = None
 
+    plot_info['vz']['log'] = False
 
-    colors = {
-        'Mdot_sigma' : 'black',
-        'rho'        : 'black',
-        'Ti'         : 'darkorange',
-        'Te'         : 'dodgerblue',
-        'Pthm'       : 'darkorange',
-        'Prad'       : 'crimson',
-        'Pmag'       : 'dodgerblue',
-        'vR'         : 'black',
-        'vphi'       : 'black',
-        'vz'         : 'black',
-        'bphi'       : 'black',
-        'bz'         : 'black',
-        'Edot_jet'   : 'darkorange',
-        'Edot_Poyt'  : 'dodgerblue',
-        'Edot_Fluid' : 'goldenrod',
-        'Edot_Rad'   : 'crimson',
-        'Dtheta2'    : 'black',
-        'Phi_BH'     : 'black',
-        'Phi_mid'    : 'darkorange',
-        'Phi_sph_upp': 'dodgerblue',
-        'Phi_sph_low': 'dodgerblue'
-    }
+    plot_info['bphi']['linthresh'] = 'infer'
+    plot_info['bz'][  'linthresh'] = 'infer'
+    plot_info['vR'][  'linthresh'] = 1.e-3
+    
+    # Colors for each figure
+    for key in plot_keys: plot_info[key]['colors'] = 'black'
+    plot_info['Temp']['colors']      = ['darkorange', 'dodgerblue'] if two_temp else 'darkorange'
+    plot_info['Edot']['colors']      = ['darkorange', 'dodgerblue', 'goldenrod', 'crimson'] if radiation else ['darkorange', 'dodgerblue', 'goldenrod']
+    plot_info['pressures']['colors'] = ['darkorange', 'dodgerblue', 'crimson'] if radiation else ['darkorange', 'dodgerblue']
+    plot_info['PhiBH']['colors']     = ['black', 'darkorange', 'dodgerblue', 'dodgerblue']
 
-    labels = {
-        'Mdot_sigma' : None,
-        'rho'        : None,
-        'Ti'         : r'$\rm{Ions}$',
-        'Te'         : r'$\rm{Electrons}$',
-        'Pthm'       : r'$\rm{Thermal}$',
-        'Prad'       : r'$\rm{Radiation}$',
-        'Pmag'       : r'$\rm{Magnetic}$',
-        'vR'         : None,
-        'vphi'       : None,
-        'vz'         : None,
-        'bphi'       : None,
-        'bz'         : None,
-        'Edot_jet'   : r'$\rm{Jet}$',
-        'Edot_Poyt'  : r'$\rm{Poynting}$',
-        'Edot_Fluid' : r'$\rm{Enthalpy}$',
-        'Edot_Rad'   : r'$\rm{Radiation}$',
-        'Dtheta2'    : None,
-        'Phi_BH'     : r'$\rm{BH}$',
-        'Phi_mid'    : r'$\rm{mid}$',
-        'Phi_sph_upp': r'$\rm{sph}$',
-        'Phi_sph_low': None
-    }
+    # Labels for each figure
+    for key in plot_keys: plot_info[key]['labels'] = None
+    plot_info['Temp']['labels']      = [r'$\rm{Ions}$', r'$\rm{Electrons}$'] if cgs else None
+    plot_info['Edot']['labels']      = [r'$\rm{Jet}$', r'$\rm{Poynting}$', r'$\rm{Enthalpy}$', r'$\rm{Radiation}$'] if radiation else [r'$\rm{Jet}$', r'$\rm{Poynting}$', r'$\rm{Enthalpy}$']
+    plot_info['pressures']['labels'] = [r'$\rm{Thermal}$', r'$\rm{Magnetic}$', r'$\rm{Radiation}$'] if radiation else [r'$\rm{Thermal}$', r'$\rm{Magnetic}$']
+    plot_info['PhiBH']['labels']     = [r'$\rm{BH}$', r'$\rm{mid}$', r'$\rm{sph}$', None]
 
-    plot_labels = {
-        'Mdot_sigma' : r'$\dot{M}/\dot{M}_{\rm Edd}$'                    if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
-        'rho'        : r'$\langle \rho \rangle_{\rho} \: (\rm{g/cm}^3)$' if cgs else r'$\langle \rho /\rho_0 \rangle_{\rho}$',
-        'Ti'         : r'$\rm{Temperature} \: (\rm{K})$'                 if cgs else r'${\rm{Temperature}} \: (m_i c^2)$',
-        'Te'         : r'$\rm{Temperature} \: (\rm{K})$',
-        'Pthm'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$'             if cgs else r'$\rm{Pressure} \: (\rho_0 c^2)$',
-        'Prad'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$'             if cgs else r'$\rm{Pressure} \: (\rho_0 c^2)$',
-        'Pmag'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$'             if cgs else r'$\rm{Pressure} \: (\rho_0 c^2)$',
-        'vR'         : r'$\langle v^R / c \rangle_{\rho}$',
-        'vphi'       : r'$\langle \Omega / \Omega_{\rm K} \rangle_{\rho}$',
-        'vz'         : r'$\langle v^z / c \rangle_{\rho}$',
-        'bphi'       : r'$\langle b^{\varphi} \rangle_{\rho} \: (\rm{G})$' if cgs else r'$\langle b^{\varphi} / B_0 \rangle_{\rho}$',
-        'bz'         : r'$\langle b^z \rangle_{\rho} \: (\rm{G})$'         if cgs else r'$\langle b^z / B_0 \rangle_{\rho}$',
-        'Edot_jet'   : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
-        'Edot_Poyt'  : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
-        'Edot_Fluid' : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
-        'Edot_Rad'   : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
-        'Dtheta2'    : r'$\langle H_{\rho} / R \rangle_{\rho}$',
-        'Phi_BH'     : r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$',
-        'Phi_mid'    : r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$',
-        'Phi_sph_upp': r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$',
-        'Phi_sph_low': r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$'
-    }
+    # Axis ID
+    for id, key in enumerate(plot_keys):
+        plot_info[key]['axis_id'] = id
 
-    axes_ids = {
-        'Mdot_sigma' : 0,
-        'rho'        : 1,
-        'Ti'         : 2,
-        'Te'         : 2,
-        'Pthm'       : 6,
-        'Prad'       : 6,
-        'Pmag'       : 6,
-        'vR'         : 3,
-        'vphi'       : 7,
-        'vz'         : 11,
-        'bphi'       : 9,
-        'bz'         : 10,
-        'Edot'       : 4,
-        'Edot_jet'   : 4,
-        'Edot_Poyt'  : 4,
-        'Edot_Fluid' : 4,
-        'Edot_Rad'   : 4,
-        'Dtheta2'    : 5,
-        'Phi_BH'     : 8,
-        'Phi_mid'    : 8,
-        'Phi_sph_upp': 8,
-        'Phi_sph_low': 8
-    }
-
+    # Determine valid profile files
     file_info = {
         'averages_dir' : averages_dir,
         'file_number'  : file_number,
@@ -212,211 +130,238 @@ def main(**kwargs):
     Profs = cv.Profiles()
     fnums = Profs.get_fnums(**file_info)
 
-    pkeys = keys + ['Vol', 'r', 'a', 't']
-    profiles = Profs.load_profiles(averages_dir, fnums, keys=pkeys, reduced=reduced)
+    # Load in data
+    data_keys = [
+        'Mdot_sigma', 'rho', 'Ti', 'Pthm', 'Pmag', 
+        'Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 'Dtheta2', 
+        'Phi_BH', 'Phi_mid', 'Phi_sph_upp', 'Phi_sph_low',
+        'vR', 'vphi', 'vz', 'bphi', 'bz'
+    ]
+    if two_temp:
+        data_keys += ['Te']
+    if radiation:
+        data_keys += ['Prad', 'Edot_Rad']
+
+    prof_args = {
+        'averages_dir' : file_info['averages_dir'],
+        'fnums'        : fnums,
+        'keys'         : data_keys + ['Vol', 'r', 'a', 't'],
+        'reduced'      : reduced
+    }
+
+    profiles = Profs.load_profiles(**prof_args)
     single_file = True if (len(fnums) == 1) else False
 
-    for fnum in fnums:
-        vR   = profiles[f'{fnum}']['vR']
-        vphi = profiles[f'{fnum}']['bphi']
-        vz   = profiles[f'{fnum}']['bz']
-        if np.any(np.isnan(vR)):
-            print(fnum)
-        if np.any(np.isnan(vphi)):
-            print(fnum)
-        if np.any(np.isnan(vz)):
-            print(fnum)
-    
+    # Determine radius for plotting 
+    if not single_file:
+        Profs.check_AMR(fnums, profiles)
+    fnums0 = f'{fnums[0]}' if single_file else f'{Profs.fnums0}'
+    r = profiles[fnums0]['r']
+
+    # Calculate average mass-accretion rate for Phi_BH normalization
+    r5_idx = np.argmin(np.abs(r - 5.))
+    if single_file:
+        Mdot_avg = profiles[fnums0]['Mdot_sigma'][r5_idx]
+    else:
+        Mdot_avg = Profs.time_avg('Mdot_sigma', profiles)[r5_idx]
+
+    # Produce figure
     fig  = plt.figure(figsize = figsize)
     gs   = gridspec.GridSpec(3, 4, figure = fig)
     axes = []
     for i in range(3):
         for j in range(4):
             axes.append(fig.add_subplot(gs[i, j]))
-    
-    for key in keys:
-        id        = int(axes_ids[f'{key}'])
-        vol       = vols[f'{key}']
-        norm      = norms[f'{key}']
-        lims      = limits[f'{key}']
-        log       = logs[f'{key}']
-        color     = colors[f'{key}']
-        linestyle = '-'
-        a         = profiles[f'{fnums[0]}']['a']
-        if (single_file):
-            r  = profiles[f'{fnums[0]}']['r']
-            if ('Phi' in key):
-                r5_idx = np.argmin(np.abs(r - 5.))
-                Mdot_avg = profiles[f'{fnums[0]}']['Mdot_sigma'][r5_idx]
-                norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
-                if (key == 'Phi_mid'):
-                    norm *= -1
-            if (vol):
-                y  = norm * profiles[f'{fnums[0]}'][f'{key}'] / profiles[f'{fnums[0]}']['Vol']
+
+    for key in plot_keys:
+        id = plot_info[key]['axis_id']
+        plotted_data = []
+
+        # Normalizations
+        norm = 1.
+        if key == 'Mdot':
+            if (cgs):
+                Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179)
+                norm = (1. / Mdot_Edd)
+        if key == 'Edot':
+            if (cgs):
+                L_Edd = Analytic.calc_LEdd(MBH=MBH)
+                norm = -(1. / L_Edd)
             else:
-                y  = norm * profiles[f'{fnums[0]}'][f'{key}']
-            if (key == 'Dtheta2'): 
-                y = np.sqrt(y)
-            if (key == 'vphi'):
-                vphi = c * profiles[f'{fnums[0]}'][f'{key}'] / profiles[f'{fnums[0]}']['Vol']
-                OmegaK = Analytic.calc_OmegaK(MBH, a, r)
-                Omega  = vphi / (r * Rg)
-                y = Omega / OmegaK
+                norm = -1.
+        if key == 'PhiBH':
+            norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
+        if key == 'vphi':
+            a  = profiles[fnums0]['a']
+            OmegaK = Analytic.calc_OmegaK(MBH, a, r)
+            norm = (1. / OmegaK) * (c / (r * Rg)) # This is now Omega/OmegaK
 
-            if ('Mdot' in key  or 'Edot' in key):
-                axes[id].plot(r, -y, lw=2., color=color, linestyle='--', alpha=0.5)
-            if (key == 'Prad'):
-                Trad = (3. * y / hr.CONSTANTS['aRAD']) ** (1./4.)
-                axes[axes_ids['Te']].plot(r, Trad, color=colors['Prad'], lw=2., label=r'$\rm{Radiation}$')
-
-            if (key == 'Phi_sph_upp'):
-                rH     = Analytic.calc_R_Horizon(a)
-                rH_idx = np.argmin(np.abs(r - rH))
-                phi_Disk_upp = norm * (profiles[f'{fnums[0]}']['Phi_sph_upp'] - profiles[f'{fnums[0]}']['Phi_BH'][rH_idx])
-                axes[id].plot(r, phi_Disk_upp, lw=2., color='crimson', linestyle='-', label=r'$\rm{sph} - \rm{BH}$')
-            if (key == 'Phi_sph_low'):
-                linestyle = '--'
-                rH     = Analytic.calc_R_Horizon(a)
-                rH_idx = np.argmin(np.abs(r - rH))
-                phi_Disk_low = norm * (profiles[f'{fnums[0]}']['Phi_sph_low'] - profiles[f'{fnums[0]}']['Phi_BH'][rH_idx])
-                axes[id].plot(r, phi_Disk_low, lw=2., color='crimson', linestyle='--', alpha=0.5)
-
-            axes[id].plot(r, y, lw=2., color=color, linestyle=linestyle, label=labels[f'{key}'])
-        
-        elif (time_average):
-            Profs.check_AMR(fnums, profiles)
-            r  = profiles[f'{Profs.fnums0}']['r']
-            if ('Phi' in key):
-                r5_idx = np.argmin(np.abs(r - 5.))
-                Mdot_avg = Profs.time_avg('Mdot_sigma', profiles, fnums=fnums)[r5_idx]
-                norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
-                if (key == 'Phi_mid'):
-                    norm *= -1
-            y = norm * Profs.time_avg(key, profiles, fnums=fnums, vol=vol)
-            if (key == 'Dtheta2'): y = np.sqrt(y)
-            if (key == 'vphi'):
-                vphi = c * Profs.time_avg(key, profiles, fnums=fnums, vol=True)
-                OmegaK = Analytic.calc_OmegaK(MBH, a, r)
-                Omega  = vphi / (r * Rg)
-                y = Omega / OmegaK
-            if ('Mdot' in key  or 'Edot' in key):
-                axes[id].plot(r, -y, lw=2., color=color, linestyle='--', alpha=0.5)
-            if (key == 'Prad'):
-                Trad = (3. * y / hr.CONSTANTS['aRAD']) ** (1./4.)
-                axes[axes_ids['Te']].plot(r, Trad, color=colors['Prad'], lw=2., label=r'$\rm{Radiation}$')
-
-            if (key == 'Phi_sph_upp'):
-                rH     = Analytic.calc_R_Horizon(a)
-                rH_idx = np.argmin(np.abs(r - rH))
-                phi_Disk_upp = norm * (
-                    Profs.time_avg('Phi_sph_upp', profiles, fnums=fnums) - 
-                    Profs.time_avg('Phi_BH',      profiles, fnums=fnums)[rH_idx])
-                axes[id].plot(r, phi_Disk_upp, lw=2., color='crimson', linestyle='-', label=r'$\rm{sph} - \rm{BH}$')
-            if (key == 'Phi_sph_low'):
-                linestyle = '--'
-                rH     = Analytic.calc_R_Horizon(a)
-                rH_idx = np.argmin(np.abs(r - rH))
-                phi_Disk_low = norm * (
-                    Profs.time_avg('Phi_sph_low', profiles, fnums=fnums) - 
-                    Profs.time_avg('Phi_BH',      profiles, fnums=fnums)[rH_idx])
-                axes[id].plot(r, phi_Disk_low, lw=2., color='crimson', linestyle='--', alpha=0.5)
-
-            axes[id].plot(r, y, lw=2., color=color, linestyle=linestyle, label=labels[f'{key}'])
-
-        if (log):
-            axes[id].set_yscale('log')
-        if ('Mdot' in key):
-            axes[id].set_ylabel(plot_labels['Mdot_sigma'], fontsize=FS)
-        elif ('Edot' in key):  
-            axes[id].set_ylabel(plot_labels['Edot_Poyt'], fontsize=FS)
+        # Calculate profile
+        if key == 'Mdot' or key == 'Edot' or key == 'PhiBH':
+            vol = False
         else:
-            axes[id].set_ylabel(plot_labels[f'{key}'], fontsize=FS)
+            vol = True
 
-        if (linthresh[f'{key}']):
-            axes[id].set_yscale('symlog', linthresh=linthresh[f'{key}'])
+        if isinstance(plot_info[key]['quant'], list):
+            for quant, color, label in zip(plot_info[key]['quant'], plot_info[key]['colors'], plot_info[key]['labels']):
+                if single_file:
+                    q = profiles[fnums0][quant] / profiles[fnums0]['Vol'] if vol else profiles[fnums0][quant]
+                else:
+                    q = Profs.time_avg(quant, profiles, vol=vol)
+                q_norm = norm * q
+                if quant == 'Phi_mid':
+                    q_norm *= -1
+                if quant == 'Phi_sph_upp' or quant == 'Phi_sph_low':
+                    a  = profiles[fnums0]['a']
+                    rH = Analytic.calc_R_Horizon(a)
+                    rH_idx = np.argmin(np.abs(r - rH))
+                    phi_BH = norm * profiles[fnums0]['Phi_BH'][rH_idx]
+                    q_diff = q_norm - phi_BH
+                    linestyle  = '--' if quant == 'Phi_sph_low' else '-'
+                    alpha      = 0.5  if quant == 'Phi_sph_low' else 1.
+                    flux_label = r'$\rm{sph} - \rm{BH}$' if quant == 'Phi_sph_upp' else None
+                    axes[id].plot(r, q_diff, lw=2., color='crimson', linestyle=linestyle, alpha=alpha, label=flux_label)
 
-        axes[id].set_ylim(lims)
-        axes[id].set_xlabel(r'$r/R_g$', fontsize=FS)
+                axes[id].plot(r, q_norm, lw=2., color=color, linestyle='-', label=label) 
+                plotted_data.append(q_norm)
+
+                if key == 'Edot':
+                    axes[id].plot(r, -q_norm, lw=2., color=color, linestyle='--', alpha=0.5)
+             
+        else:
+            quant = plot_info[key]['quant']
+            if single_file:
+                q = profiles[fnums0][quant] / profiles[fnums0]['Vol'] if vol else profiles[fnums0][quant]
+            else:
+                q = Profs.time_avg(quant, profiles, vol=vol)
+            q_norm = norm * q
+            if key == 'scaleheight':
+                q_norm = np.sqrt(q_norm) # Apply square root to the scale height
+            axes[id].plot(r, q_norm, lw=2., color=plot_info[key]['colors'], linestyle='-', label=plot_info[key]['labels'])
+            plotted_data.append(q_norm)
+            
+            if key == 'Mdot':
+                axes[id].plot(r, -q_norm, lw=2., color=plot_info[key]['colors'], linestyle='--', alpha=0.5)
+
+        # Plot radiation temperature if radiation = True 
+        if key == 'Temp':
+            if radiation:
+                if single_file:
+                    Prad = profiles[fnums0]['Prad'] / profiles[fnums0]['Vol']
+                else:
+                    Prad = Profs.time_avg('Prad', profiles, vol=True)
+                Trad = (3. * Prad / hr.CONSTANTS['aRAD']) ** (1./4.)
+                axes[id].plot(r, Trad, color='crimson', lw=2., label=r'$\rm{Radiation}$')
+
+        if plot_info[key]['log']:
+            axes[id].set_yscale('log')
+
+        axes[id].set_ylabel(get_plot_title(key, cgs), fontsize=FS)
+        
         if (r_max != 0.):
             axes[id].set_xlim([1., r_max])
+            for i, plotted_curve in enumerate(plotted_data):
+                plotted_data[i] = plotted_curve[(r < r_max)]
+                
+        if plot_info[key]['linthresh']:
+            linthresh = get_linthresh(plot_info[key]['linthresh'], plotted_data)
+            axes[id].set_yscale('symlog', linthresh=linthresh)
 
-    legend_keys = ['Edot_Poyt', 'Ti', 'Pthm', 'Phi_BH']
-    for key in legend_keys:
-        axes[axes_ids[f'{key}']].legend(loc='upper right', fontsize=FS-18, frameon=False, ncols=2)
+        limits = get_limits(key, user_limits, plotted_data, plot_info)
+        axes[id].set_ylim(limits)
+        
+        axes[id].set_xlabel(r'$r/R_g$', fontsize=FS)
+
+        legend_keys = ['Temp', 'Edot', 'pressures', 'PhiBH'] if two_temp else ['Edot', 'pressures', 'PhiBH'] 
+        if key in legend_keys:
+            axes[id].legend(loc='upper right', fontsize=FS-18, frameon=False, ncols=2)
     
     for ax in axes:
         ax.set_xscale('log')
         cv.grid(ax, alpha=0.2, color='black')
 
-    opt = dict(ha='left', va='center', color='black',
-        bbox=dict(facecolor='none', edgecolor='none'))
-    tstring = get_tstring(profiles, fnums, 3)
-    axes[0].text(0.05, 0.10, r'$t = $' + tstring + r' $R_g/c$', 
-                fontsize=FS-2, transform=axes[0].transAxes, **opt)  
+    opt = dict(ha='left', va='center', color='black', bbox=dict(facecolor='none', edgecolor='none'))
+    tstring = get_tstring(profiles, fnums, single_file, ndec=3)
+    axes[0].text(0.05, 0.10, r'$t = $' + tstring + r' $R_g/c$', fontsize=FS-2, transform=axes[0].transAxes, **opt)  
     
+    os.makedirs(save_dir, exist_ok=True)
     print("Saving figure ...", flush=True)
     fig.tight_layout()
     plt.savefig(f'{save_dir}/{plot_title}.png', format='png')
     plt.close()
 
-def get_vols(key):
-    if 'Mdot' in key or 'Edot' in key:
-        return False
-    elif (key == 'Phi_BH'      or key == 'Phi_mid' or 
-          key == 'Phi_sph_upp' or key == 'Phi_sph_low'):
-        return False
+def get_plot_title(key, cgs):
+    plot_titles = {
+        'Mdot'       : r'$\dot{M}/\dot{M}_{\rm Edd}$'                    if cgs else r'$\dot{M} \: (\rho_0 R_g^2 c)$',
+        'rho'        : r'$\langle \rho \rangle_{\rho} \: (\rm{g/cm}^3)$' if cgs else r'$\langle \rho /\rho_0 \rangle_{\rho}$',
+        'Temp'       : r'$\rm{Temperature} \: (\rm{K})$'                 if cgs else r'${\rm{Temperature}} \: (m_i c^2)$',
+        'pressures'  : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$'             if cgs else r'$\rm{Pressure} \: (\rho_0 c^2)$',
+        'vR'         : r'$\langle v^R / c \rangle_{\rho}$',
+        'vphi'       : r'$\langle \Omega / \Omega_{\rm K} \rangle_{\rho}$',
+        'vz'         : r'$\langle v^z / c \rangle_{\rho}$',
+        'bphi'       : r'$\langle b^{\varphi} \rangle_{\rho} \: (\rm{G})$' if cgs else r'$\langle b^{\varphi} / B_0 \rangle_{\rho}$',
+        'bz'         : r'$\langle b^z \rangle_{\rho} \: (\rm{G})$'         if cgs else r'$\langle b^z / B_0 \rangle_{\rho}$',
+        'Edot'       : r'$\dot{E} \: (L_{\rm Edd})$' if cgs else r'$\dot{E} \: (\rho_0 c^3 R_g^2)$',
+        'scaleheight': r'$\langle H_{\rho} / R \rangle_{\rho}$',
+        'PhiBH'      : r'$\phi \equiv \Phi_{\rm B} / \sqrt{\langle \dot{M} \rangle_t R_g^2 c}$'
+    }
+    return plot_titles[key]
+
+def get_limits(key, user_limits, quants, plot_info):
+    if user_limits[key] == None:
+        all_data = np.concatenate(quants)
+        if plot_info[key]['log']:
+            pos_data = all_data[all_data > 0]
+            neg_data = all_data[all_data < 0]
+            if plot_info[key]['linthresh']:
+                return get_sym_log_lims(pos_data, neg_data)
+            log_min = np.floor(np.amin(np.log10(np.abs(pos_data))))
+            log_max = np.floor(np.amax(np.log10(np.abs(pos_data))))
+            return [10 ** log_min, 10 ** (log_max + 1)]
+        else:
+            return [np.amin(all_data), np.amax(all_data)]
     else:
-        return True
+        return user_limits[key]
+              
+def get_sym_log_lims(pos_data, neg_data):
+    log_pos = np.log10(np.amax(pos_data)) if len(pos_data) > 0 else -6
+    log_neg = np.log10(np.abs(np.amin(neg_data))) if len(neg_data) > 0 else -6
+    sym_log = np.floor(max(log_pos, log_neg)) + 1
+    return [-10 ** sym_log, 10 ** sym_log]
+ 
+def get_linthresh(linthresh, quants):
+    if linthresh == 'infer':
+        all_data    = np.concatenate(quants)
+        log_thresh  = np.floor(np.amax(np.log10(np.abs(all_data)))) - 2
+        linthresh = 10 ** log_thresh
+    return linthresh
 
-def get_norms(key, **kwargs):
-    cgs      = kwargs.get('cgs', False)
-    MBH      = kwargs.get('MBH', 1.0)
-    Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
-    L_Edd    = Analytic.calc_LEdd(MBH=MBH) if cgs else 1.
-    Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179) if cgs else 1.
-    if ('Mdot' in key):
-        return (1. / Mdot_Edd)
-    elif ('Edot' in key):
-        return -(1. / L_Edd)
+def get_tstring(profiles, fnums, single_file, ndec=2):
+    if single_file:
+        time = profiles[f'{fnums[0]}']['t']
+        oom  = int(np.floor(np.log10(time)))
+        dec_str = time / (10 ** oom)
+        return (rf'$%.{ndec}f$' %dec_str + r'$\times 10^{%d}$' %oom)
     else:
-        return 1.
-    
-def get_logs(key):
-    if (key == 'vR' or key == 'vz' or key == 'bphi' or key == 'bz'):
-        return False
-    else:
-        return True
+        tstrt = profiles[f'{fnums[0]}']['t']
+        tend  = profiles[f'{fnums[-1]}']['t']
 
-def get_linthresh(key, **kwargs):
-    cgs = kwargs.get('cgs', False)
-    if key == 'vR':
-        return 1.e-3
-    elif (key == 'bphi' or key == 'bz'):
-        return 1.e7 if cgs else 1.e-3
-    else:
-        return False
+        oom_strt = int(np.floor(np.log10(tstrt)))
+        oom_end  = int(np.floor(np.log10(tend)))
 
-def get_tstring(profiles, fnums, ndec=2):
-    tstrt = profiles[f'{fnums[0]}']['t']
-    tend  = profiles[f'{fnums[-1]}']['t']
-
-    oom_strt = int(np.floor(np.log10(tstrt)))
-    oom_end  = int(np.floor(np.log10(tend)))
-
-    if (oom_strt == oom_end):
-        strt_str = tstrt / (10 ** oom_end)
-        end_str  = tend / (10 ** oom_end)
-        tstr = (rf'$%.{ndec}f-%.{ndec}f$' %(strt_str, end_str) + 
-            r'$\times$' + r'$10^{%d}$' %oom_end)
-    else:
-        strt_str = tstrt / (10 ** oom_strt)
-        end_str  = tend / (10 ** oom_end)
-        tstr = (rf'$%.{ndec}f$' %(strt_str) + 
-            r'$\times$' + r'$10^{%d}$' %oom_strt + '-' +
-            rf'$%.{ndec}f$' %(end_str) +
-            r'$\times$' + r'$10^{%d}$' %oom_end)
-    return tstr
-
+        if (oom_strt == oom_end):
+            strt_str = tstrt / (10 ** oom_end)
+            end_str  = tend / (10 ** oom_end)
+            tstr = (rf'$%.{ndec}f-%.{ndec}f$' %(strt_str, end_str) + 
+                r'$\times$' + r'$10^{%d}$' %oom_end)
+        else:
+            strt_str = tstrt / (10 ** oom_strt)
+            end_str  = tend / (10 ** oom_end)
+            tstr = (rf'$%.{ndec}f$' %(strt_str) + 
+                r'$\times$' + r'$10^{%d}$' %oom_strt + '-' +
+                rf'$%.{ndec}f$' %(end_str) +
+                r'$\times$' + r'$10^{%d}$' %oom_end)
+        return tstr
     
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
@@ -430,29 +375,26 @@ if __name__ == '__main__':
     parser.add_argument('--end_file', type=int, required=False,
                         default=-1, help = """dump number
                         of end file in profile average/evolution""")
-    parser.add_argument('--time_average', action=argparse.BooleanOptionalAction,
-                        default=False, 
-                        help="""boolean to determine if profiles from
-                        --start_file to --end_file should be averaged.""")
-    parser.add_argument('--time_evolution', 
-                        action=argparse.BooleanOptionalAction,
-                        default=False, 
-                        help="""boolean to determine if evolution of profiles 
-                        from --start_file to --end_file should be shown.""")
     parser.add_argument('--r_max', type=float, default=0.,
                         required=False,
                         help = """radial extent in Rg (default: R_max)""")
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
-                        should be included in profile extraction.""")
+                        should be included in profile figure.""")
     parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if two-temperature 
-                        physics should be included in slice extraction.""")   
+                        physics was used to produce profiles.""")   
+    parser.add_argument('--MBH', type=float, default=10.,
+                        required=False,
+                        help = """black hole mass in Msun (default: 10)""")
     parser.add_argument('--reduced', action='store_true', required=False,
-                        help="""boolean to determine if profile extraction
+                        help="""boolean to determine if profile plotting
                         should be done on reduced data.""")
+    parser.add_argument('--disable_TeX', action=argparse.BooleanOptionalAction,
+                        default=False, 
+                        help="""boolean to disable TeX in plotting""")
     parser.add_argument('--plot_title', type=str, required=False, 
                         default='Profiles', 
                         help="""title of PDF output""")

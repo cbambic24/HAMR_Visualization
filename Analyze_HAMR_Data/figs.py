@@ -147,7 +147,7 @@ class Cartesian():
 
         if 'fix_pole' in kwargs:
             FP.remove_poles_xz_mirror(X, Z, Dl, Dr)
-
+        
         if (contours_l):
             self.plot_contours(ax, im['l'], X['l'], Z['l'], contours_l)
         if (contours_r):

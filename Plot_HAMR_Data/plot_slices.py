@@ -17,14 +17,12 @@ import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
 import cmasher as cmr 
 import matplotlib.style as style
-matplotlib.rcParams['text.usetex'] = True
 style.use('seaborn-v0_8-bright')
 matplotlib.rcParams['figure.dpi'] = 300
 import figs
 
-MBH     = 10.
 figsize = [42.0, 24.0]
-FS      = 48
+FS      = 40
 plt.rcParams['xtick.labelsize'] = FS
 plt.rcParams['ytick.labelsize'] = FS
 
@@ -36,16 +34,20 @@ def main(**kwargs):
     file_number    = int(kwargs.get('file_number'))
     start_file     = int(kwargs.get('start_file'))
     end_file       = int(kwargs.get('end_file'))
-    time_average   = kwargs.get('time_average')
     reduced        = kwargs.get('reduced')
     radiation      = kwargs.get('radiation')
     two_temp       = kwargs.get('two_temp')
     r_max          = kwargs.get('r_max')
     plot_title     = kwargs.get('plot_title')
     plot_vec       = kwargs.get('plot_vec')
+    disable_TeX    = kwargs.get('disable_TeX')
+    MBH            = kwargs.get('MBH')
+
+    matplotlib.rcParams['text.usetex'] = False if disable_TeX else True
 
     cgs = True if (two_temp or radiation) else False
     Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
+    L_Edd    = Analytic.calc_LEdd(MBH=MBH) if cgs else 1.
 
     if (two_temp or radiation):
         Msun = hr.CONSTANTS['Msun']
@@ -75,115 +77,93 @@ def main(**kwargs):
     # Determine slice directory
     averages_dir = cv.user_path + f'/Averages/{sim}'
     save_dir = cv.user_path +  '/PDF'
+
+    plot_keys = [
+        'rho',   'Ti',      'Te',        'Ti_Te',
+        'Be',   'kappa',  'Pmag_Ptot',   'sigma',
+        'Qie',   'QIC',    'Qie_QIC',   'QIC_Qemi'
+    ]
+
+    plot_info = dict.fromkeys(plot_keys)
+    for key in plot_keys:
+        plot_info[key] = dict.fromkeys(['cmap', 'axis_id', 'label', 'label_color', 'log', 'linthresh', 'vecs'])
+
+    # Limits for each figure
+    user_limits = {
+        'rho'        : None,
+        'Ti'         : [1.e4,  1.e12],
+        'Te'         : [1.e4,  1.e12],
+        'Ti_Te'      : [1.e0,  1.e3],
+        'Be'         : [-1.,   1.],
+        'kappa'      : [1.e-3, 1.e3],
+        'Pmag_Ptot'  : [1.e-3, 1.e3],
+        'sigma'      : [1.e-3, 1.e3],
+        'Qie'        : [1.e-12, 1.],
+        'QIC'        : [1.e-12, 1.],
+        'Qie_QIC'    : [1.e-2, 1.e2],
+        'QIC_Qemi'   : [1.e-2, 1.e2]
+    }
+
+    if plot_vec:
+        vec_args = {
+            'dens'               : 2.0,
+            'linewidth'          : 0.6,
+            'broken_streamlines' : True,
+            'arrowsize'          : 1.
+        }    
+
+    # Log-scale and linthresh if symlog
+    for key in plot_keys: plot_info[key]['log']       = True
+    for key in plot_keys: plot_info[key]['linthresh'] = None
     
-    keys = [
-        'rho', 'Eion', 'Eelc', 'Pthm', 'Prad', 'Pmag', 'rhokappa', 'Be_Rad', 
-        'qie', 'qIC', 'qemi'
-    ]
-    vec_keys = [
-        'wuR', 'wuz', 'bR', 'bz',
-        'THD_tR', 'THD_tz', 'TEM_tR', 'TEM_tz', 'R_tR', 'R_tz'
-    ]
+    plot_info['Be']['linthresh'] = 1.e-3
 
-    norms     = dict.fromkeys(keys)
-    vols      = dict.fromkeys(keys)
-    logs      = dict.fromkeys(keys)
-    linthresh = dict.fromkeys(keys) 
-    extend    = dict.fromkeys(keys)
+    # Color map for each figure
+    plot_info['rho'][      'cmap'] = cmr.torch
+    plot_info['Ti'][       'cmap'] = cmr.prinsenvlag_r
+    plot_info['Te'][       'cmap'] = cmr.prinsenvlag_r
+    plot_info['Ti_Te'][    'cmap'] = cmr.torch
+    plot_info['Be'][       'cmap'] = cmr.prinsenvlag
+    plot_info['kappa'][    'cmap'] = cmr.prinsenvlag
+    plot_info['Pmag_Ptot']['cmap'] = cmr.prinsenvlag
+    plot_info['sigma'][    'cmap'] = cmr.prinsenvlag
+    plot_info['Qie'][      'cmap'] = cmr.torch
+    plot_info['QIC'][      'cmap'] = cmr.torch
+    plot_info['Qie_QIC'][  'cmap'] = cmr.prinsenvlag_r
+    plot_info['QIC_Qemi'][ 'cmap'] = cmr.prinsenvlag_r
 
-    for key in keys: 
-        vols[     f'{key}'] = get_vols(key)
-        norms[    f'{key}'] = get_norms(key, cgs=cgs, MBH=MBH, Rg=Rg)
-        logs[     f'{key}'] = get_logs(key)
-        linthresh[f'{key}'] = get_linthresh(key)
-        extend[   f'{key}'] = get_extend(key)
+    # Labels for each figure
+    plot_info['rho'][      'label'] = r'$\rho \: (\rm{g/cm}^3)$'
+    plot_info['Ti'][       'label'] = r'$T_i \: (\rm{K})$'
+    plot_info['Te'][       'label'] = r'$T_e \: (\rm{K})$'
+    plot_info['Ti_Te'][    'label'] = r'$T_i / T_e$'
+    plot_info['Be'][       'label'] = r'$\rm{Be}$'
+    plot_info['kappa'][    'label'] = r'$\kappa_{\rm eff} / \kappa_{\rm es}$'
+    plot_info['Pmag_Ptot']['label'] = r'$P_{\rm mag} / P_{\rm rad + gas}$'
+    plot_info['sigma'][    'label'] = r'$\sigma$'
+    plot_info['Qie'][      'label'] = r'$\mathcal{Q}_{\rm ie} R_g^3 / L_{\rm Edd}$'
+    plot_info['QIC'][      'label'] = r'$\mathcal{Q}_{\rm IC} R_g^3 / L_{\rm Edd}$'
+    plot_info['Qie_QIC'][  'label'] = r'$\mathcal{Q}_{\rm ie} / \mathcal{Q}_{\rm IC}$'
+    plot_info['QIC_Qemi'][ 'label'] = r'$\mathcal{Q}_{\rm IC} / \mathcal{Q}_{\rm emi}$'
 
-    limits = {
-        'rho'        : [1.e-9, 0.1],
-        'Eion'       : [1.e4, 1.e12],
-        'Eelc'       : [1.e4, 1.e12],
-        'Pthm'       : [1.e-3, 1.e3],
-        'Prad'       : [1.e-3, 1.e3],
-        'Pmag'       : [1.e-3, 1.e3],
-        'rhokappa'   : [1.e-3, 1.e3],
-        'Be_Rad'     : [-1., 1.],
-        'qie'        : [1.e-12, 1.],
-        'qIC'        : [1.e-12, 1.],
-        'qemi'       : [1.e-2, 1.e2]
-    }
+    # Label colors
+    for key in plot_keys: plot_info[key]['label_color'] = 'black'
+    plot_info['rho'][  'label_color'] = 'white'
+    plot_info['Ti_Te']['label_color'] = 'white'
+    plot_info['Qie'][  'label_color'] = 'white'
+    plot_info['QIC'][  'label_color'] = 'white'
 
-    color_maps = {
-        'rho'        : cmr.torch,
-        'Eion'       : cmr.prinsenvlag_r,
-        'Eelc'       : cmr.prinsenvlag_r,
-        'Pthm'       : cmr.prinsenvlag,
-        'Prad'       : cmr.prinsenvlag,
-        'Pmag'       : cmr.prinsenvlag,
-        'rhokappa'   : cmr.prinsenvlag,
-        'Be_Rad'     : cmr.prinsenvlag,
-        'qie'        : cmr.torch,
-        'qIC'        : cmr.torch,
-        'qemi'       : cmr.prinsenvlag_r
-    }
+    # Axis ID
+    for id, key in enumerate(plot_keys):
+        plot_info[key]['axis_id'] = id
 
-    plot_labels = {
-        'rho'        : r'$\rho \: (\rm{g/cm}^3)$',
-        'Eion'       : r'$T_i \: (\rm{K})$',
-        'Eelc'       : r'$T_e \: (\rm{K})$',
-        'Pthm'       : r'$\rm{Pressure} \: (\rm{erg/cm}^3)$',
-        'Prad'       : r'$P_{\rm mag} / P_{\rm rad + gas}$',
-        'Pmag'       : r'$\sigma$', 
-        'rhokappa'   : r'$\kappa_{\rm eff} / \kappa_{\rm es}$',
-        'Be_Rad'     : r'$\rm{Be}$',
-        'qie'        : r'$\mathcal{Q}_{\rm ie} R_g^3 / L_{\rm Edd}$',
-        'qIC'        : r'$\mathcal{Q}_{\rm IC} R_g^3 / L_{\rm Edd}$',
-        'qemi'       : r'$\mathcal{Q}_{\rm IC} / \mathcal{Q}_{\rm emi}$'
-    }
-
-    label_colors = {
-        'rho'        : 'white',
-        'Eion'       : 'black',
-        'Eelc'       : 'black',
-        'Pthm'       : 'black',
-        'Prad'       : 'black',
-        'Pmag'       : 'black',
-        'rhokappa'   : 'black',
-        'Be_Rad'     : 'black',
-        'qie'        : 'white',
-        'qIC'        : 'white',
-        'qemi'       : 'black'
-    }
-
-    axes_ids = {
-        'rho'        : 0,
-        'Eion'       : 1,
-        'Eelc'       : 2,
-        'Pthm'       : -1,
-        'Prad'       : 6,
-        'Pmag'       : 7,
-        'rhokappa'   : 5,
-        'Be_Rad'     : 4,
-        'qie'        : 8,
-        'qIC'        : 9,
-        'qemi'       : 11
-    }
-
-    vecs = {
-        'rho'      : None,
-        'Eion'     : None,
-        'Eelc'     : None,
-        'Pthm'     : None,
-        'Prad'     : 'Radiation_Flux',
-        'Pmag'     : 'Magnetic_Field',
-        'rhokappa' : 'Total_Energy_Flux',
-        'Be_Rad'   : 'Mass_Flux',
-        'qie'      : None,
-        'qIC'      : None,
-        'qemi'     : None
-    }
-    if not plot_vec:
-        for key in vecs.keys():
-            vecs[f'{key}'] = None
+    # Vector plots corresponding to figure panel
+    for key in plot_keys: plot_info[key]['vecs'] = None
+    if plot_vec:
+        plot_info['Pmag_Ptot']['vecs'] = 'Radiation_Flux'
+        plot_info['sigma'][    'vecs'] = 'Magnetic_Field'
+        plot_info['kappa'][    'vecs'] = 'Total_Energy_Flux'
+        plot_info['Be'][       'vecs'] = 'Mass_Flux'
 
     file_info = {
         'averages_dir' : averages_dir,
@@ -197,18 +177,34 @@ def main(**kwargs):
     fnums  = Slice.get_fnums(**file_info)
     single_file  = True if (len(fnums) == 1) else False
     time_average = True if (len(fnums) != 1) else False
+
+    # Keys to load in
+    data_keys = [
+        'rho', 'Eion', 'Eelc', 'Pthm', 'Prad', 'Pmag', 'rhokappa', 'Be_Rad', 
+        'qie', 'qIC', 'qemi'
+    ]
+    vec_keys = [
+        'w', 'wuR', 'wuz', 'bR', 'bz',
+        'THD_tR', 'THD_tz', 'TEM_tR', 'TEM_tz', 'R_tR', 'R_tz'
+    ]
+        
+    slice_args = {
+        'averages_dir' : file_info['averages_dir'],
+        'fnums'        : fnums,
+        'reduced'      : reduced
+    }
+
     if (single_file):
-        pkeys  = keys + vec_keys + ['Vol', 'Vol_sigma_cut', 'r', 'theta', 'a']
-        slices = Slice.load_slices(averages_dir, fnums, keys=pkeys, reduced=reduced)
+        slice_args['keys'] = data_keys + vec_keys + ['Vol', 'Vol_sigma_cut', 'r', 'theta', 'a']
+        slices = Slice.load_slices(**slice_args)
     elif (time_average):
-        pkeys = keys + vec_keys + ['Vol_sigma_cut']
-        # Include volume for time-averaging of vectors
-        for key in vec_keys: vols[f'{key}'] = True
+        slice_args['keys'] = data_keys + vec_keys + ['Vol_sigma_cut']
+        vols = dict.fromkeys(data_keys + vec_keys, True)
         vols['rhokappa']      = False
         vols['Vol_sigma_cut'] = False
-        slices = Slice.load_slices_time_averaged(averages_dir, fnums, 
-            keys=pkeys, vols=vols, reduced=reduced)
-        
+        slice_args['vols']    = vols
+        slices = Slice.load_slices_time_averaged(**slice_args)
+
     Cart = figs.Cartesian([])
     fig  = plt.figure(figsize = figsize)
     gs   = gridspec.GridSpec(3, 4, figure = fig)
@@ -216,259 +212,151 @@ def main(**kwargs):
     for i in range(3):
         for j in range(4):
             axes.append(fig.add_subplot(gs[i, j]))
-
-    for key in keys:
-        id        = int(axes_ids[f'{key}'])
-        vol       = vols[f'{key}']
-        norm      = norms[f'{key}']
-        lims      = limits[f'{key}']
-        log       = logs[f'{key}']
-        cmap      = color_maps[f'{key}']
-        vec       = vecs[f'{key}']
-        if (single_file):
-            r     = slices[f'{fnums[0]}']['r'][None, :, None, None]
-            theta = slices[f'{fnums[0]}']['theta'][None, None, :, None]
-            R     = {
-                'r' :  (r * np.sin(theta))[0, :, :, 0],
-                'l' : -(r * np.sin(theta))[0, :, :, 0],
-            }
-            Z = {
-                'r' : (r * np.cos(theta))[0, :, :, 0],
-                'l' : (r * np.cos(theta))[0, :, :, 0],
-            }
-
-            Volume = slices[f'{fnums[0]}']['Vol'] if vol else 1.
-            Q  = {
-                'r' : norm * slices[f'{fnums[0]}'][f'{key}'] / Volume
-            }
-            if key == 'Eion':
-                Eion = slices[f'{fnums[0]}']['Eion'] / Volume
-                Eelc = slices[f'{fnums[0]}']['Eelc'] / Volume
-                rho  = slices[f'{fnums[0]}']['rho'] / Volume
-                gamma = 5./3.
-                Ti = (gamma-1.) * (1./kB) * Eion / (rho / (mu_i*mp))
-                Te = (gamma-1.) * (1./kB) * Eelc / (rho / (mu_e*mp))
-                Q     = {'r' : Ti}
-                Ti_Te = {'r' : Ti / Te}
-            elif key == 'Eelc':
-                Eelc = slices[f'{fnums[0]}']['Eelc'] / Volume
-                rho  = slices[f'{fnums[0]}']['rho'] / Volume
-                gamma = 5./3.
-                Te = (gamma-1.) * (1./kB) * Eelc / (rho / (mu_e*mp))
-                Q  = {'r' : Te}
-            elif key == 'rhokappa':
-                Volume   = slices[f'{fnums[0]}']['Vol_sigma_cut']
-                rhokappa = slices[f'{fnums[0]}'][f'{key}'] / Volume
-                rho      = slices[f'{fnums[0]}']['rho'] / Volume 
-                kappa_eff= np.nan_to_num(rhokappa / rho)
-                kappa_es = 0.2 * (1 + hr.CONSTANTS['X_AB'])
-                Q        = {'r' : kappa_eff / kappa_es}
-            elif key == 'Be_Rad':
-                Volume = slices[f'{fnums[0]}']['Vol']
-                rho    = slices[f'{fnums[0]}']['rho'] / Volume
-                wu_t   = (1. / c) * slices[f'{fnums[0]}'][f'{key}'] / Volume
-                Q      = {'r' : (-wu_t / (rho * c * c)) - 1.}
-            elif key == 'Prad':
-                Prad = slices[f'{fnums[0]}']['Prad'] / Volume
-                Pthm = slices[f'{fnums[0]}']['Pthm'] / Volume
-                Pmag = slices[f'{fnums[0]}']['Pmag'] / Volume
-                Q    = {'r' : Pmag / (Pthm + Prad)}
-            elif key == 'Pmag':
-                Pmag  = slices[f'{fnums[0]}']['Pmag'] / Volume
-                rho   = slices[f'{fnums[0]}']['rho']  / Volume
-                sigma = 2. * Pmag / (rho * c * c) 
-                Q     = {'r' : sigma}
-            elif key == 'qie':
-                qie     = slices[f'{fnums[0]}']['qie'] / Volume
-                qIC     = slices[f'{fnums[0]}']['qIC'] / Volume
-                qie_qIC = {'r' : qie / qIC}
-            elif key == 'qemi':
-                Volume  = slices[f'{fnums[0]}']['Vol']
-                qemi    = slices[f'{fnums[0]}']['qemi'] / Volume
-                qIC     = slices[f'{fnums[0]}']['qIC'] / Volume
-                Q       = {'r' : qIC / qemi}
-            
-            if vec != None:
-                npts = 100
-                R1D = np.linspace(0., r_max, npts)
-                z1D = np.linspace(-r_max/2, r_max/2, npts)
-                R_uni, Z_uni = np.meshgrid(R1D, z1D)
-
-            if vec == 'Mass_Flux':
-                # Enthalpy-weighted velocity
-                Volume = slices[f'{fnums[0]}']['Vol']
-                rho    = slices[f'{fnums[0]}']['rho'] / Volume
-                Pmag   = slices[f'{fnums[0]}']['Pmag'] / Volume
-                Pthm   = slices[f'{fnums[0]}']['Pthm'] / Volume
-                Prad   = slices[f'{fnums[0]}']['Prad'] / Volume
-                Eion   = slices[f'{fnums[0]}']['Eion'] / Volume
-                Eelc   = slices[f'{fnums[0]}']['Eelc'] / Volume
-                w      = rho*c*c + Pthm + Eion + Eelc + 2.*Pmag + 4.*Prad
-                wuR    = slices[f'{fnums[0]}']['wuR'] / Volume
-                wuz    = slices[f'{fnums[0]}']['wuz'] / Volume
-                uR     = wuR / w
-                uz     = wuz / w
-                Vec_R  = {'r' : uR}
-                Vec_Z  = {'r' : uz} 
-            elif vec == 'Magnetic_Field':
-                Volume = slices[f'{fnums[0]}']['Vol']
-                bR     = slices[f'{fnums[0]}']['bR'] / Volume
-                bz     = slices[f'{fnums[0]}']['bz'] / Volume
-                Vec_R  = {'r' : bR}
-                Vec_Z  = {'r' : bz} 
-            elif vec == 'Total_Energy_Flux':
-                Volume = slices[f'{fnums[0]}']['Vol']
-                THD_tR = slices[f'{fnums[0]}']['THD_tR'] / Volume
-                THD_tz = slices[f'{fnums[0]}']['THD_tz'] / Volume
-                TEM_tR = slices[f'{fnums[0]}']['TEM_tR'] / Volume
-                TEM_tz = slices[f'{fnums[0]}']['TEM_tz'] / Volume
-                Vec_R  = {'r' : -(THD_tR + TEM_tR)}
-                Vec_Z  = {'r' : -(THD_tz + TEM_tz)}
-            elif vec == 'Radiation_Flux':
-                Volume = slices[f'{fnums[0]}']['Vol']
-                R_tR   = slices[f'{fnums[0]}']['R_tR'] / Volume
-                R_tz   = slices[f'{fnums[0]}']['R_tz'] / Volume
-                Vec_R  = {'r' : -R_tR}
-                Vec_Z  = {'r' : -R_tz}
         
-        elif (time_average):
-            r     = slices['r'][None, :, None, None]
-            theta = slices['theta'][None, None, :, None]
-            R     = {
-                'r' :  (r * np.sin(theta))[0, :, :, 0],
-                'l' : -(r * np.sin(theta))[0, :, :, 0],
-            }
-            Z = {
-                'r' : (r * np.cos(theta))[0, :, :, 0],
-                'l' : (r * np.cos(theta))[0, :, :, 0],
-            }
-            Q  = {
-                'r' : norm * slices[f'{key}']
-            }
-            if key == 'Eion':
-                Eion = slices['Eion']
-                Eelc = slices['Eelc']
-                rho  = slices['rho']
-                gamma = 5./3.
-                Ti = (gamma-1.) * (1./kB) * Eion / (rho / (mu_i*mp))
-                Te = (gamma-1.) * (1./kB) * Eelc / (rho / (mu_e*mp))
-                Q     = {'r' : Ti}
-                Ti_Te = {'r' : Ti / Te}
-            elif key == 'Eelc':
-                Eelc = slices['Eelc'] 
-                rho  = slices['rho']
-                gamma = 5./3.
-                Te = (gamma-1.) * (1./kB) * Eelc / (rho / (mu_e*mp))
-                Q  = {'r' : Te}
-            elif key == 'rhokappa':
-                Vol_sigma_cut = slices['Vol_sigma_cut']
-                rhokappaVol = slices['rhokappa']
-                rhokappa    = rhokappaVol / Vol_sigma_cut
-                rho         = slices['rho']
-                kappa_eff= np.nan_to_num(rhokappa / rho)
-                kappa_es = 0.2 * (1 + hr.CONSTANTS['X_AB'])
-                Q        = {'r' : kappa_eff / kappa_es}
-            elif key == 'Be_Rad':
-                rho    = slices['rho']
-                wu_t   = (1. / c) * slices['Be_Rad']
-                Q      = {'r' : (-wu_t / (rho * c * c)) - 1.}
-            elif key == 'Prad':
-                Prad = slices['Prad']
-                Pthm = slices['Pthm']
-                Pmag = slices['Pmag']
-                Q    = {'r' : Pmag / (Pthm + Prad)}
-            elif key == 'Pmag':
-                Pmag  = slices['Pmag']
-                rho   = slices['rho']
-                sigma = 2. * Pmag / (rho * c * c) 
-                Q     = {'r' : sigma}
-            elif key == 'qie':
-                qie     = slices['qie']
-                qIC     = slices['qIC']
-                qie_qIC = {'r' : qie / qIC}
-            elif key == 'qemi':
-                qemi    = slices['qemi']
-                qIC     = slices['qIC']
-                Q       = {'r' : qIC / qemi}
+    fnum_str = f'{fnums[0]}'
+    r     = slices[fnum_str]['r'][None, :, None, None] if single_file else slices['r'][None, :, None, None]
+    theta = slices[fnum_str]['theta'][None, None, :, None] if single_file else slices['theta'][None, None, :, None]
+    # Coordinate arrays
+    R = {
+        'r' :  (r * np.sin(theta))[0, :, :, 0],
+        'l' : -(r * np.sin(theta))[0, :, :, 0],
+    }
+    Z = {
+        'r' : (r * np.cos(theta))[0, :, :, 0],
+        'l' : (r * np.cos(theta))[0, :, :, 0],
+    }
 
-            if vec != None:
-                npts = 100
-                R1D = np.linspace(0., r_max, npts)
-                z1D = np.linspace(-r_max/2, r_max/2, npts)
-                R_uni, Z_uni = np.meshgrid(R1D, z1D)
+    for key in plot_keys:
+        # Create Q dictionary for scalar plotting.
+        if key == 'rho':
+            Vol = slices[fnum_str]['Vol']     if single_file else 1.
+            rho = slices[fnum_str]['rho']/Vol if single_file else slices['rho']
+            Q  = {'r' : rho}
+        if key == 'Ti':
+            Vol  = slices[fnum_str]['Vol']      if single_file else 1.
+            rho  = slices[fnum_str]['rho']/Vol  if single_file else slices['rho']
+            Eion = slices[fnum_str]['Eion']/Vol if single_file else slices['Eion']
+            gamma_adi = 5./3.
+            Ti   = (gamma_adi-1.) * (1./kB) * Eion / (rho / (mu_i*mp))
+            Q    = {'r' : Ti}
+        if key == 'Te':
+            Vol  = slices[fnum_str]['Vol']      if single_file else 1.
+            rho  = slices[fnum_str]['rho']/Vol  if single_file else slices['rho']
+            Eelc = slices[fnum_str]['Eelc']/Vol if single_file else slices['Eelc']
+            Te   = (gamma_adi-1.) * (1./kB) * Eelc / (rho / (mu_e*mp))
+            Q    = {'r' : Te}
+        if key == 'Ti_Te':
+            gamma_adi = 5./3.
+            Vol  = slices[fnum_str]['Vol']      if single_file else 1.
+            rho  = slices[fnum_str]['rho']/Vol  if single_file else slices['rho']
+            Eion = slices[fnum_str]['Eion']/Vol if single_file else slices['Eion']
+            Eelc = slices[fnum_str]['Eelc']/Vol if single_file else slices['Eelc']
+            Ti   = (gamma_adi-1.) * (1./kB) * Eion / (rho / (mu_i*mp))
+            Te   = (gamma_adi-1.) * (1./kB) * Eelc / (rho / (mu_e*mp))
+            Q    = {'r' : Ti / Te}
+        if key == 'Be':
+            Vol  = slices[fnum_str]['Vol']      if single_file else 1.
+            rho  = slices[fnum_str]['rho']/Vol  if single_file else slices['rho']
+            wu_t = (1./c) * slices[fnum_str]['Be_Rad']/Vol if single_file else (1./c) * slices['Be_Rad']
+            Q    = {'r' : (-wu_t / (rho * c * c)) - 1.}
+        if key == 'kappa':
+            Vol  = slices[fnum_str]['Vol']      if single_file else 1.
+            rho  = slices[fnum_str]['rho']/Vol  if single_file else slices['rho']
+            Vol_sigma = slices[fnum_str]['Vol_sigma_cut'] if single_file else slices['Vol_sigma_cut']
+            rhokappa  = slices[fnum_str]['rhokappa']/Vol_sigma if single_file else slices['rhokappa']/Vol_sigma
+            kappa_eff = np.nan_to_num(rhokappa / rho)
+            kappa_es  = 0.2 * (1 + hr.CONSTANTS['X_AB'])
+            Q = {'r' : kappa_eff / kappa_es}
+        if key == 'Pmag_Ptot':
+            Vol  = slices[fnum_str]['Vol']      if single_file else 1.
+            Pthm = slices[fnum_str]['Pthm']/Vol if single_file else slices['Pthm']
+            Pmag = slices[fnum_str]['Pmag']/Vol if single_file else slices['Pmag']
+            Prad = slices[fnum_str]['Prad']/Vol if single_file else slices['Prad']
+        if key == 'sigma':
+            Vol   = slices[fnum_str]['Vol']      if single_file else 1.
+            rho   = slices[fnum_str]['rho']/Vol  if single_file else slices['rho']
+            Pmag  = slices[fnum_str]['Pmag']/Vol if single_file else slices['Pmag']
+            sigma = 2. * Pmag / (rho * c * c) 
+            Q     = {'r' : sigma}
+        if key == 'Qie':
+            Vol   = slices[fnum_str]['Vol']      if single_file else 1.
+            qie   = slices[fnum_str]['qie']/Vol  if single_file else slices['qie']
+            Q     = {'r' : -qie * Rg * Rg * Rg / L_Edd}
+        if key == 'QIC':
+            Vol   = slices[fnum_str]['Vol']      if single_file else 1.
+            qIC   = slices[fnum_str]['qIC']/Vol  if single_file else slices['qIC']
+            Q     = {'r' : -qIC * Rg * Rg * Rg / L_Edd}
+        if key == 'Qie_QIC':
+            Vol   = slices[fnum_str]['Vol']      if single_file else 1.
+            qie   = slices[fnum_str]['qie']/Vol  if single_file else slices['qie']
+            qIC   = slices[fnum_str]['qIC']/Vol  if single_file else slices['qIC']
+            Q     = {'r' : qie / qIC}
+        if key == 'QIC_Qemi':
+            Vol   = slices[fnum_str]['Vol']      if single_file else 1.
+            qIC   = slices[fnum_str]['qIC']/Vol  if single_file else slices['qIC']
+            qemi  = slices[fnum_str]['qemi']/Vol if single_file else slices['qemi']
+            Q     = {'r' : qIC / qemi}
 
+        # Create Vec_R, Vec_Z dictionaries for vector plotting.
+        if plot_info[key]['vecs']:
+            npts = 100
+            R1D = np.linspace(0., r_max, npts)
+            z1D = np.linspace(-r_max/2, r_max/2, npts)
+            R_uni, Z_uni = np.meshgrid(R1D, z1D)
+            
+            vec = plot_info[key]['vecs']
             if vec == 'Mass_Flux':
                 # Enthalpy-weighted velocity
-                rho    = slices['rho']
-                Pmag   = slices['Pmag']
-                Pthm   = slices['Pthm']
-                Prad   = slices['Prad']
-                Eion   = slices['Eion']
-                Eelc   = slices['Eelc']
-                w      = rho*c*c + Pthm + Eion + Eelc + 2.*Pmag + 4.*Prad
-                wuR    = slices['wuR']
-                wuz    = slices['wuz']
-                uR     = wuR / w
-                uz     = wuz / w
-                Vec_R  = {'r' : uR}
-                Vec_Z  = {'r' : uz}
-            elif vec == 'Magnetic_Field':
-                bR     = slices['bR']
-                bz     = slices['bz']
-                Vec_R  = {'r' : bR}
-                Vec_Z  = {'r' : bz} 
-            elif vec == 'Total_Energy_Flux':
-                THD_tR = slices['THD_tR']
-                THD_tz = slices['THD_tz']
-                TEM_tR = slices['TEM_tR']
-                TEM_tz = slices['TEM_tz']
+                Vol = slices[fnum_str]['Vol']     if single_file else 1.
+                w   = slices[fnum_str]['w']/Vol   if single_file else slices['w']
+                wuR = slices[fnum_str]['wuR']/Vol if single_file else slices['wuR']
+                wuz = slices[fnum_str]['wuz']/Vol if single_file else slices['wuz']
+                Vec_R = {'r' : wuR / w}
+                Vec_Z = {'r' : wuz / w}
+            if vec == 'Magnetic_Field':
+                # Magnetic field
+                Vol = slices[fnum_str]['Vol']    if single_file else 1.
+                bR  = slices[fnum_str]['bR']/Vol if single_file else slices['bR']
+                bz  = slices[fnum_str]['bz']/Vol if single_file else slices['bz']
+                Vec_R = {'r' : bR}
+                Vec_Z = {'r' : bz} 
+            if vec == 'Total_Energy_Flux':
+                # Energy flux (Enthalpy + Electromagnetic)
+                Vol    = slices[fnum_str]['Vol']        if single_file else 1.
+                THD_tR = slices[fnum_str]['THD_tR']/Vol if single_file else slices['THD_tR']
+                THD_tz = slices[fnum_str]['THD_tz']/Vol if single_file else slices['THD_tz']
+                TEM_tR = slices[fnum_str]['TEM_tR']/Vol if single_file else slices['TEM_tR']
+                TEM_tz = slices[fnum_str]['TEM_tz']/Vol if single_file else slices['TEM_tz']
                 Vec_R  = {'r' : -(THD_tR + TEM_tR)}
                 Vec_Z  = {'r' : -(THD_tz + TEM_tz)}
-            elif vec == 'Radiation_Flux':
-                R_tR  = slices['R_tR']
-                R_tz  = slices['R_tz']
+            if vec == 'Radiation_Flux':
+                # Radiation flux
+                Vol  = slices[fnum_str]['Vol']      if single_file else 1.
+                R_tR = slices[fnum_str]['R_tR']/Vol if single_file else slices['R_tR']
+                R_tz = slices[fnum_str]['R_tz']/Vol if single_file else slices['R_tz']
                 Vec_R = {'r' : -R_tR}
                 Vec_Z = {'r' : -R_tz}
 
+        # Plot scalars.
+        id   = plot_info[key]['axis_id']
+        cmap = plot_info[key]['cmap']
         plt_args = {
-            'lim' : lims,
-            'log' : log,
-            'sym' : False if not linthresh[f'{key}'] else linthresh[f'{key}'],
-            'linthresh' : linthresh[f'{key}'],
-            'extend'    : extend[f'{key}']
+            'lim' : user_limits[key],
+            'log' : plot_info[key]['log'],
+            'sym' : True if plot_info[key]['linthresh'] else False,
+            'linthresh' : plot_info[key]['linthresh'],
+            'extend'    : cv.check_extend(Q['r'], user_limits[key]) if user_limits[key] else 'both'
         }
+        Cart.plot_Rz(fig, axes[id], R, Z, Q, cmap, FS, **plt_args) 
+        opt['color'] = plot_info[key]['label_color']
+        axes[id].text(0.05, 0.90, plot_info[key]['label'], 
+                        fontsize=FS+4, transform=axes[id].transAxes, **opt)
 
-        vec_args = {
-            'dens'               : 6.0,
-            'linewidth'          : 0.6,
-            'color'              : 'black',
-            'broken_streamlines' : True,
-            'arrowsize'          : 1.
-        }
+        # Plot vector streamlines.
+        if plot_info[key]['vecs']:
+            vec_args['color'] = plot_info[key]['label_color']
 
-        if id >= 0:
-            Cart.plot_Rz(fig, axes[id], R, Z, Q, cmap, FS, **plt_args) 
-            opt['color'] = label_colors[f'{key}'] 
-            axes[id].text(0.05, 0.90, plot_labels[f'{key}'], 
-                          fontsize=FS+4, transform=axes[id].transAxes, **opt)
-            if vec != None:
-                Cart.plot_Rz_vec(fig, axes[id], R, Z, R_uni, Z_uni, 
-                                 Vec_R, Vec_Z, **vec_args)
-
-        if key == 'Eion':
-            plt_args['lim']    = [1., 1.e3]
-            plt_args['extend'] = 'max'
-            Cart.plot_Rz(fig, axes[3], R, Z, Ti_Te, cmr.torch, FS, **plt_args)
-            opt['color'] = 'white'
-            axes[3].text(0.05, 0.90, r'$T_i/T_e$', fontsize=FS+4, 
-                         transform=axes[3].transAxes, **opt)
-        if key == 'qie':
-            plt_args['lim'] = [1.e-2, 1.e2]
-            Cart.plot_Rz(fig, axes[10], R, Z, qie_qIC, cmr.prinsenvlag_r, FS, **plt_args)
-            opt['color'] = 'black'
-            axes[10].text(0.05, 0.90, 
-                          r'$\mathcal{Q}_{\rm ie} / \mathcal{Q}_{\rm IC}$', 
-                          fontsize=FS+4, transform=axes[10].transAxes, **opt)
+            Cart.plot_Rz_vec(fig, axes[id], R, Z, R_uni, Z_uni, Vec_R, Vec_Z, **vec_args)
 
     for ax in axes:
         if (r_max != 0.):
@@ -482,58 +370,7 @@ def main(**kwargs):
     fig.tight_layout()
     plt.savefig(f'{save_dir}/{plot_title}.png', format='png')
     plt.close()
-
-def get_vols(key):
-    if 'Mdot' in key or 'Edot' in key:
-        return False
-    elif (key == 'Phi_BH' or key == 'Phi_mid' or 
-          key == 'Phi_sph_upp' or key == 'Phi_sph_low'):
-        return False
-    else:
-        return True
-
-def get_norms(key, **kwargs):
-    cgs = kwargs.get('cgs', False)
-    if (cgs and ('Mdot' in key or 'Edot' in key or 
-        key == 'qie' or key == 'qIC')):
-        if 'MBH' not in kwargs:
-            raise ValueError("Must supply MBH for cgs=True")
-        MBH      = kwargs.get('MBH', 1.0)
-        Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
-        L_Edd    = Analytic.calc_LEdd(MBH=MBH)
-        Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179)
-        if ('Mdot' in key):
-            return (1. / Mdot_Edd)
-        elif ('Edot' in key):
-            return -(1. / L_Edd)
-        elif (key == 'qie' or key == 'qIC'):
-            Rg = kwargs.get('Rg', 1.)
-            return -(Rg * Rg * Rg / L_Edd)
-    else:
-        return 1.
-
-def get_logs(key):
-    if (key == 'vR' or key == 'vz' or key == 'bphi' or key == 'bz'):
-        return False
-    else:
-        return True
-
-def get_linthresh(key):
-    if key == 'vR':
-        return 1.e-3
-    elif (key == 'bphi' or key == 'bz'):
-        return 1.e7
-    elif (key == 'Be' or key == 'Be_Rad'):
-        return 1.e-2
-    else:
-        return False
-    
-def get_extend(key):
-    if key == 'Pmag':
-        return 'min'
-    else:
-        return 'both'
-    
+ 
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
                         description="""Plot profiles.""")
@@ -546,10 +383,6 @@ if __name__ == '__main__':
     parser.add_argument('--end_file', type=int, required=False,
                         default=-1, help = """dump number
                         of end file in profile average/evolution""")
-    parser.add_argument('--time_average', action=argparse.BooleanOptionalAction,
-                        default=False, 
-                        help="""boolean to determine if profiles from
-                        --start_file to --end_file should be averaged.""")
     parser.add_argument('--r_max', type=float, default=0.,
                         required=False,
                         help = """radial extent in Rg (default: R_max)""")
@@ -565,9 +398,15 @@ if __name__ == '__main__':
                         default=True, 
                         help="""boolean to determine if two-temperature 
                         physics should be included in slice extraction.""")   
+    parser.add_argument('--MBH', type=float, default=10.,
+                        required=False,
+                        help = """black hole mass in Msun (default: 10)""")
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")
+    parser.add_argument('--disable_TeX', action=argparse.BooleanOptionalAction,
+                        default=False, 
+                        help="""boolean to disable TeX in plotting""")
     parser.add_argument('--plot_title', type=str, required=False, 
                         default='Slices', 
                         help="""title of PDF output""")
