@@ -13,6 +13,27 @@ EIGHTPI   = np.float32(8. * np.pi)
 PI_2      = np.float32(np.pi / 2.)
 
 class Accretion():
+    """
+    Accretion class manages all mass, energy, and angular momentum 
+    accretion and outflow rates. Designed to be aware of the global grid and 
+    perform integrals in phi (ph_sum) and theta and phi (thph_sum). 
+    Implements cuts on sigma, tau (optical depth), temperature, scaleheight,
+    inflow/outflow (ur), and Bernoulli parameter. Various calculations of the
+    magnetic flux are implemented here.
+
+    Attributes
+    ----------
+    grid : dict from H-AMR read object
+        Dictionary containing grid variables (r, theta, phi, gcov, gdet, etc.).
+    data : dict from H-AMR read object
+        Dictionary containing primitive variables (rho, uu, u_gas, B, etc.).
+    pars : dict from H-AMR read object
+        Parameters dictionary (dx1, dx2, density_scale, etc.).
+    CONSTANTS : dict
+        Constants dictionary (hr.CONSTANTS, usually).
+    **kwargs : dict
+        Optional configurations (e.g. cgs).
+    """
     def __init__(self, grid, data, pars, CONSTANTS, **kwargs):
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
         self.gdet                    = grid['gdet']
@@ -34,15 +55,62 @@ class Accretion():
         self.CONSTANTS = CONSTANTS
         self.kwargs    = kwargs
 
-    # Calculate disk mass
     def calc_Mtot(self, **kwargs):
+        """Calculate disk mass."""
         rho, uu = self.data['rho'], self.data['uu']
         Mtot =  np.sum((rho * uu[0]) * self.sigma_cut(**kwargs) * (
                         self.gdet * self.dx1 * self.dx2 * self.dx3))
         return self.upscale64(Mtot, self.Rg * self.Rg * self.Rg)
 
-    # Calculate inward mass accretion rate as function of radius
     def calc_Mdot(self, **kwargs):
+        """
+        Calculate inward mass-accretion rate as function of radius.
+        Inward: positive Mdot. Outward: negative Mdot.
+
+        Parameters
+        ----------
+        **kwargs : dict
+            Optional configurations. Accepted keys include:
+
+            sigma_cut : float
+                Mask all values with sigma > sigma_cut if jet=False (default).
+                If jet=True, mask all values with sigma < sigma_cut.
+                If sigma_mask is in kwargs, that mask will be used.
+                If sigma is in kwargs, that sigma will be used to make mask.
+                Otherwise, sigma will be recalculated.
+            Temp_cut : float
+                Mask all values with Temperature (Ti) < Temp_cut 
+                if cold=True (default). If hot=True, then masks values
+                with Temperature > Temp_cut. If 'Temp' is in kwargs,
+                then Temperature=Temp. Otherwise, Temperature=data['Ti'].
+            HoR_cut : float
+                Mask all values where local disk thickness H/R > HoR_cut
+                unless the "above" keyword is passed. Then, only keep
+                data above HoR = 1.
+            inward : bool
+                Mask all values where u1 > 0.
+            outward : bool
+                Mask all values where u1 < 0.
+            unbound : bool
+                Mask all values where Bernoulli parameter (Be) < 0.
+            bound : bool
+                Mask all values where Bernoulli parameter (Be) > 0.
+                If Be is provided, then the provided Be will be used
+                for the Bernoulli paramter. Otherwise, Be will be 
+                calculated.
+            tau_cut : float
+                Mask all values with optical depth tau > tau_cut if
+                optically_thin=True (default). If optically_thin=False,
+                then mask out values where tau < tau_cut. 
+                If tau is in kwargs, that optical depth will be used.
+                Otherwise, tau will be recalculated. If tau is not provided,
+                then an opacities dict must be passed.
+        
+        Returns
+        -------
+        array of double (1D)
+            Mdot (r).
+        """
         rho, uu = self.data['rho'], self.data['uu']
         Mdot = (-rho * uu[1] * self.sigma_cut(**kwargs) * (
             self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
@@ -50,17 +118,19 @@ class Accretion():
             self.gdet * self.dx2 * self.dx3)))).sum(-1).sum(-1)
         return self.upscale64(Mdot, self.Rg * self.Rg)
     
-    # Calculate unsigned radial magnetic flux (Phi_BH) as a function of radius
-    # Factor of sqrt(4 pi) accounts for conversion to Gaussian units in 
-    # Tchekhovskoy et al. (2011)
     def calc_PhiBH(self, **kwargs):
+        """
+        Calculate unsigned radial magnetic flux (Phi_BH) as function of radius.
+        Factor of sqrt(4 pi) accounts for conversion to Gaussian units in 
+        Tchekhovskoy et al. (2011).
+        """
         B = self.data['B']
         norm = np.sqrt(FOURPI) if not self.cgs else ONE
         return (0.5 * norm * np.abs(B[1]) * (self.Rg * self.Rg) * (
             self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
     
-    # Calculate Phi_sph (Equation 1 in Begelman, Scepi & Dexter 2022)
     def calc_PhiSph(self, **kwargs):
+        """Calculate Phi_sph (Equation 1 in Begelman, Scepi & Dexter 2022)."""
         B    = self.data['B']
         norm = np.sqrt(FOURPI) if not self.cgs else ONE
         if (kwargs.get('hemisphere', 'upper') == 'upper'):
@@ -72,8 +142,8 @@ class Accretion():
             return -(norm * B[1] * (self.Rg * self.Rg) * (
                 self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
         
-    # Calculate Phi_mid (Equation 2 in Begelman, Scepi & Dexter 2022)
     def calc_PhiMid(self, **kwargs):
+        """Calculate Phi_mid (Equation 2 in Begelman, Scepi & Dexter 2022)."""
         B    = self.data['B']
         norm = np.sqrt(FOURPI) if not self.cgs else ONE
         ith0 = int(len(self.th[0, 0, :, 0])/2 - 1)
@@ -82,8 +152,8 @@ class Accretion():
             (B[2] * self.gdet)[:, :, ith0+1, :]) * (
             (self.Rg * self.Rg) * self.dx3)).sum(-1)
 
-    # Calculate Phi_max (Equation 8 in Liska et al. 2019)
     def calc_PhiMax(self, **kwargs):
+        """Calculate Phi_max (Equation 8 in Liska et al. 2019)."""
         B    = self.data['B']
         norm = np.sqrt(FOURPI) if not self.cgs else ONE
         len_2 = len(self.th[0, 0, :, 0]) / 2.
@@ -98,185 +168,266 @@ class Accretion():
                 np.abs(B[1] * self.gdet), axis=2, keepdims=True) * (
                 (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(-1).sum(-1)
     
-    # Calculate energy accretion rate as a function of radius
-    # Note that T^{mu}_{nu} > 0 implies inward accretion.
     def calc_Edot(self, **kwargs):
+        """
+        Calculate energy-accretion rate as a function of radius.
+        Note that T^{mu}_{nu} > 0 implies inward accretion. To calculate
+        Edot from individual components of the stress-energy tensor (i.e.
+        Fluid, Electromagnetic, or Radiation), pass the desired stress-energy
+        tensor with kwarg TMHD=stress_energy_tensor.
+        
+        Parameters
+        ----------
+        **kwargs : dict
+            Optional configurations. See 'calc_Mdot' for a full description 
+            of accepted keys (e.g., sigma_cut, Temp_cut, in, out, bound, etc.).
+        
+        Returns
+        -------
+        array of double (1D)
+            Edot (r).
+        """
         rho0c2 = self.rho0 * self.c * self.c
         if 'TMHD' not in kwargs:
-            stress_energy_MHD = self.calc_TMHD(upper_lower=True, 
-                index = [1, 0], **kwargs)
+            stress_energy_MHD = self.calc_TMHD(upper_lower=True, index=[1,0], 
+                                               **kwargs)
         else:
             stress_energy_MHD = kwargs.get('TMHD')
         stress_energy_MHD *= (ONE / rho0c2)
         Edot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
             self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+            self.in_or_out(**kwargs) * self.Bernoulli_cut(**kwargs) * (
+            self.gdet * self.dx2 * self.dx3)))).sum(-1).sum(-1)
         stress_energy_MHD *= rho0c2
         return self.upscale64(Edot, self.Rg * self.Rg * self.c * rho0c2)
 
-    # Calculate angular momentum accretion rate as a function of radius
     def calc_Ldot(self, **kwargs):
+        """
+        Calculate angular momentum-accretion rate as a function of radius.
+        
+        Parameters
+        ----------
+        **kwargs : dict
+            Optional configurations. See 'calc_Mdot' for a full description 
+            of accepted keys (e.g., sigma_cut, Temp_cut, inward, outward, bound, etc.).
+        
+        Returns
+        -------
+        array of double (1D)
+            Ldot (r).
+        """
         rho0c2 = self.rho0 * self.c * self.c
         if 'TMHD' not in kwargs:
-            stress_energy_MHD = self.calc_TMHD(upper_lower=True, 
-                index = [1, 3], **kwargs)
+            stress_energy_MHD = self.calc_TMHD(upper_lower=True, index=[1,3], 
+                                               **kwargs)
         else:
             stress_energy_MHD = kwargs.get('TMHD')
         stress_energy_MHD *= (ONE / rho0c2)
         Ldot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
             self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3))).sum(-1).sum(-1)
+            self.in_or_out(**kwargs) * self.Bernoulli_cut(**kwargs) * (
+            self.gdet * self.dx2 * self.dx3)))).sum(-1).sum(-1)
         stress_energy_MHD *= rho0c2
         return self.upscale64(Ldot, self.Rg * self.Rg * rho0c2)
 
-    # Calculate full MHD (+ Radiation) stress-energy tensor
     def calc_TMHD(self, **kwargs):
-        Flu = Fluid(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
-        Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
-        if kwargs.get('radiation') and self.kwargs.get('radiation'):
+        """
+        Calculate full MHD (+ Radiation) stress-energy tensor.
+        If pgas is supplied, that thermal pressure is used. Otherwise,
+        pgas = (5/3 - 1) u_gas. If EOS='2T' is used, then pgas is calculated
+        from Te and Ti.
+        """
+        cgs     = self.kwargs.get('cgs')
+        use_rad = kwargs.get('radiation')
+        if use_rad and not self.kwargs.get('radiation'):
+            raise ValueError(
+                "Cannot use radiation in calculation of stress-energy tensor "
+                "without initializing Accretion class with radiation=True."
+            )
+
+        Flu = Fluid(self.pars, self.CONSTANTS, cgs=cgs)
+        Fld = Field(self.pars, self.CONSTANTS, cgs=cgs)
+        
+        pgas = kwargs.get('pgas')
+        if pgas is None:
+            gamma_adi = kwargs.get('gamma_adi', np.float32(self.pars['gam']))
+            pgas      = (gamma_adi - 1) * self.data['u_gas']
+            
+        stress_energy = (
+            Flu.calc_THD(**self.data, **self.grid, 
+                         pgas=pgas, EOS=self.kwargs.get('EOS'), **kwargs)
+            + Fld.calc_TEM(**self.data, **self.grid, **kwargs)
+        )
+        
+        if use_rad:
             import radiation
-            Rad = radiation.Radiation(self.pars, self.CONSTANTS, 
-                                      cgs=self.kwargs.get('cgs'))
-        elif kwargs.get('radiation') and not self.kwargs.get('radiation'):
-            raise ValueError("""Cannot use radiation in calculation of 
-                              stress-energy tensor without initializing
-                              Accretion class with radiation=True.""")
-        if 'pgas' in kwargs:
-            pgas = kwargs.get('pgas')
-        else:
-            gamma_adi = kwargs.get('gamma_adi', np.float32(5./3.))
-            pgas = (gamma_adi - 1) * self.data['u_gas']
-        stress_energy_HD = Flu.calc_THD(**self.data, **self.grid, pgas=pgas, 
-                                        EOS=self.kwargs.get('EOS'), **kwargs)
-        stress_energy_EM = Fld.calc_TEM(**self.data, **self.grid, **kwargs)
-        if kwargs.get('radiation'):
-            stress_energy_RAD = Rad.calc_TRAD(**self.data, **self.grid, **kwargs)
-            return stress_energy_HD + stress_energy_EM + stress_energy_RAD
-        else:
-            return stress_energy_HD + stress_energy_EM
+            Rad = radiation.Radiation(self.pars, self.CONSTANTS, cgs=cgs)
+            stress_energy += Rad.calc_TRAD(**self.data, **self.grid, **kwargs)
+            
+        return stress_energy
     
-    # Return where sigma < sigma_cut if jet = False
-    # Return where sigma > sigma_cut if jet = True
     def sigma_cut(self, **kwargs):
+        """
+        Returns where sigma < sigma_cut if jet = False.
+        Returns where sigma > sigma_cut if jet = True.
+        """
         if 'sigma_mask' in kwargs:
             return kwargs.get('sigma_mask', ONE)
-        if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
-            sigma = self.calc_sigma(**kwargs)
-            return ((sigma < kwargs.get('sigma_cut')) 
-                    if not kwargs.get('jet', False)
-                    else (sigma > kwargs.get('sigma_cut')))
-        elif 'sigma_cut' in kwargs and 'sigma' in kwargs:
-            sigma = kwargs.get('sigma')
-            return ((sigma < kwargs.get('sigma_cut')) 
-                    if not kwargs.get('jet', False)
-                    else (sigma > kwargs.get('sigma_cut')))
-        else:
+            
+        if 'sigma_cut' not in kwargs:
             return ONE
+
+        sigma = kwargs.get('sigma')
+        if sigma is None:
+            sigma = self.calc_sigma(**kwargs)
+
+        sigma_cut_val = kwargs.get('sigma_cut')
+        if kwargs.get('jet', False):
+            return sigma > sigma_cut_val
+        else:
+            return sigma < sigma_cut_val
     
-    # Calculate sigma parameter: b^2 / 4 pi rho c^2 (b^2/rho if cgs=False)
     def calc_sigma(self, **kwargs):
+        """
+        Calculate sigma parameter: 
+        b^2 / 4 pi rho c^2 (b^2/rho if cgs=False).
+        """
         B02 = self.B0 * self.B0
         Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
         b2  = Fld.calc_b2(b=self.data['B'], **self.data, 
                           **self.grid, from_B=True)
         sigma = (b2 / B02) / (self.data['rho'] / self.rho0)
         return sigma
-    
-    # Return where T < Temp_cut if cold = True (default)
-    # Return where T > Temp_cut if cold = False
+
     def temp_cut(self, **kwargs):
+        """
+        Return where T < Temp_cut if cold = True (default).
+        Return where T > Temp_cut if cold = False.
+        """
+        if 'Temp_mask' in kwargs:
+            return kwargs.get('Temp_mask', ONE)
+        
         if 'Temp_cut' not in kwargs:
             return ONE
-        elif 'Temp_cut' in kwargs:
-            cold = (kwargs.get('cold', True) if not kwargs.get('hot', False) 
-                    else True)
-            T = kwargs.get('Temp', 0) if 'Temp' in kwargs else self.data['Ti']
-            T_cut = kwargs.get('Temp_cut')
-            return (T < T_cut) if cold else (T > T_cut)
 
-    # Return where |z| < H if above = False (default)
-    # Return where |z| > H if above = True
+        cold = False if kwargs.get('hot', False) else kwargs.get('cold', True)
+
+        T = kwargs.get('Temp')
+        if T is None:
+            T = self.data['Ti']
+
+        T_cut = kwargs.get('Temp_cut')
+        return (T < T_cut) if cold else (T > T_cut)
+
     def height_cut(self, **kwargs):
-        th = self.th * np.ones_like(self.data['rho'])
-        if 'HoR_cut' in kwargs:
-            HoR = kwargs.get('HoR_cut') * np.ones_like(self.data['rho'])
-            return ((np.abs(np.cos(th)) < HoR) 
-                    if not kwargs.get('above', False) else 
-                    (np.abs(np.cos(th)) > HoR))
-        else:
+        """
+        Return where |z| < H if above = False (default).
+        Return where |z| > H if above = True.
+        """
+        if 'HoR_cut' not in kwargs:
             return ONE
+
+        hor_cut = kwargs.get('HoR_cut')
+        above   = kwargs.get('above', False)
+
+        cos_th_abs = np.abs(np.cos(self.th))
+
+        return (cos_th_abs > hor_cut) if above else (cos_th_abs < hor_cut)
         
     def in_or_out(self, **kwargs):
-        inward  = kwargs.get('in',  False)
-        outward = kwargs.get('out', False)
-        if (not inward and not outward):
-            return ONE
-        elif (inward and not outward):
-            return (self.data['uu'][1] < 0)
-        elif (outward and not inward):
-            return (self.data['uu'][1] > 0)
-        elif (inward and outward):
+        """Select material either moving "in" or "out" based on u1."""
+        inward  = kwargs.get('inward',  False)
+        outward = kwargs.get('outward', False)
+        
+        if inward and outward:
             raise ValueError("Cannot specify both inward and outward.")
-    
+            
+        if not inward and not outward:
+            return ONE
+            
+        return (self.data['uu'][1] > 0) if outward else (self.data['uu'][1] < 0)
+
     def Bernoulli_cut(self, **kwargs):
+        """
+        Select material based on Bernoulli parameter Be.
+        If Be is not provided as a kwarg, Be is recalculated.
+        Note that this Be does not include radiation contributions.
+        """
         unbound = kwargs.get('unbound', False)
         bound   = kwargs.get('bound',   False)
-        if (bound or unbound and not (bound * unbound)):
-            if 'Be' in kwargs:
-                Be = kwargs.get('Be')
-            else:
-                Be = self.calc_Bernoulli(**kwargs)
-            return (Be < ONE) if bound else (Be > ONE)
-        else:
+        
+        # Enforce that exactly one flag must be True
+        if bound == unbound:
             return ONE
+            
+        # Grab Be if provided, otherwise calculate it
+        Be = kwargs.get('Be', self.calc_Bernoulli(**kwargs))
+        
+        return (Be < ONE) if bound else (Be > ONE)
 
     def calc_Bernoulli(self, **kwargs):
+        """Calculate Bernoulli parameter without radiation contribution."""
         c      = self.c
         rho0c2 = self.rho0 * c * c 
         B02    = self.B0 * self.B0
-        if 'pgas' in kwargs:
-            pgas = kwargs.get('pgas')
-        else:
-            gamma_adi = kwargs.get('gamma_adi', np.float32(5./3.))
-            pgas = (gamma_adi - 1) * self.data['u_gas']
-        if 'b2' in kwargs:
-            b2 = kwargs.get('b2')
-        else:
+
+        # Retrieve pgas or recalculate it if not in kwargs.
+        pgas = kwargs.get('pgas')
+        if pgas is None:
+            gamma_adi = kwargs.get('gamma_adi', self.pars['gam'])
+            pgas      = (gamma_adi - 1) * self.data['u_gas']
+            
+        # Retrieve b2 or recalculate it if not in kwargs.
+        b2 = kwargs.get('b2')
+        if b2 is None:
             Fld = Field(self.pars, self.CONSTANTS, cgs=self.kwargs.get('cgs'))
             b2  = Fld.calc_b2(b=self.data['B'], **self.data, 
-                              **self.grid, from_B=True) 
+                              **self.grid, from_B=True)
+
+        # Calculate enthalpy
         w = self.data['rho']*c*c + pgas + self.data['u_gas'] + (b2/B02)*rho0c2
+        
+        # Calculate u_t = g_{t,mu} u^{mu}
         u_t = np.einsum('ij...,j...->i...', self.grid['gcov'], self.data['uu'])[0]
-        return -w * u_t / (self.data['rho'] * c * c) - ONE
 
-    # If optically_thin = True, return where tau < tau_cut
+        # Return Bernoulli parameter
+        return -w * (u_t / c) / (self.data['rho'] * c * c) - ONE
+
     def tau_cut(self, **kwargs):
-        if ('sigma_cut' not in kwargs and 'tau' not in kwargs and 
-            'tau_cut' in kwargs):
-            import warnings
-            warnings.warn("""Warning: integrating optical depth without
-                          a cut on sigma...""")
-        if 'tau_cut' in kwargs and 'tau' not in kwargs:
-            tau = self.calc_tau(**kwargs)
-            if (kwargs.get('optically_thin', True)):
-                return (tau < kwargs.get('tau_cut'))
-            else:
-                return (tau >= kwargs.get('tau_cut'))
-        elif 'tau_cut' in kwargs and 'tau' in kwargs:
-            tau = kwargs.get('tau')
-            if (kwargs.get('optically_thin', True)):
-                return (tau < kwargs.get('tau_cut'))
-            else:
-                return (tau >= kwargs.get('tau_cut'))
-        else:
-            return ONE
+        """
+        If optically_thin = True, return where tau < tau_cut.
+        Otherwise, return where tau > tau_cut. If tau is not provided,
+        then tau is recalculated from opacities dictionary.
+        """
+        if 'tau_mask' in kwargs:
+            return kwargs.get('tau_mask', ONE)
 
-    # Calculate optical depth if required for tau_cut  
-    # Returns optical depth to electron scattering 
-    # if opacities = ['electron_scattering']
-    # otherwise, returns effective absorption+scattering 
-    # optical depth
+        if 'tau_cut' not in kwargs:
+            return ONE
+        
+        if 'sigma_cut' not in kwargs and 'tau' not in kwargs:
+            import warnings
+            warnings.warn(
+                "Warning: integrating optical depth without a cut on sigma..."
+            )
+
+        tau = kwargs.get('tau')
+        if tau is None:
+            tau = self.calc_tau(**kwargs)
+
+        tau_cut_val = kwargs.get('tau_cut')
+        if kwargs.get('optically_thin', True):
+            return tau < tau_cut_val
+        else:
+            return tau >= tau_cut_val
+
     def calc_tau(self, **kwargs):
+        """
+        Calculate optical depth if required for tau_cut. 
+        Returns optical depth to electron scattering 
+        if opacities = ['electron_scattering'].
+        Otherwise, returns effective (absorption + scattering) optical depth.
+        """
         c     = self.c
         kappa = self.calc_kappa(**kwargs)
         
@@ -292,24 +443,27 @@ class Accretion():
 
         return self.integrate_kappa(kappa, **kwargs)
 
-    # Returns opacity used for optical depth integration 
-    # if opacities = ['electron_scattering']
-    # otherwise, returns sqrt(kappa_a * (kappa_a + kappa_es))
     def calc_kappa(self, **kwargs):
-        if self.kwargs.get('radiation'):
-            import radiation
-            Rad = radiation.Radiation(self.pars, self.CONSTANTS, 
-                                      cgs=self.kwargs.get('cgs'))     
-        else:
-            raise ValueError("""Cannot calculate optical depth tau 
-                             without initializing Accretion class with 
-                             radiation=True.""")
-        if 'opacities' in kwargs:
-            opacities = kwargs.get('opacities')
-        else:
-            raise ValueError("""Cannot calculate tau without opacities 
-                             dictionary passed as kwarg.""")
+        """
+        Returns opacity used for optical depth integration 
+        if opacities = ['electron_scattering']. 
+        Otherwise, returns sqrt(kappa_a * (kappa_a + kappa_es)).
+        """
+        if not self.kwargs.get('radiation'):
+            raise ValueError(
+                "Cannot calculate optical depth tau without initializing "
+                "Accretion class with radiation=True."
+            )
+            
+        opacities = kwargs.get('opacities')
+        if opacities is None:
+            raise ValueError(
+                "Cannot calculate tau without opacities dictionary passed "
+                "as kwarg."
+            )
         
+        import radiation
+
         opacity_args = {
             'pars'      : self.pars,
             'CONSTANTS' : self.CONSTANTS,
@@ -318,30 +472,41 @@ class Accretion():
         
         if 'synchrotron' in opacities:
             # b2 is required for synchrotron opacities
-            if 'b2' not in kwargs:
+            self.b2 = kwargs.get('b2')
+            if self.b2 is None:
                 Fld = Field(self.pars, self.CONSTANTS, 
                             cgs=self.kwargs.get('cgs'))
                 self.b2 = Fld.calc_b2(b=self.data['B'], **self.data, 
                                       **self.grid, from_B=True)
-            else:
-                self.b2 = kwargs.get('b2')
             opacity_args['b2'] = self.b2
 
-        if not kwargs.get('RIAF', False):
-            Opac = radiation.Opacity(opacities, **self.data, **opacity_args)
-        else: 
-            Opac = radiation.RIAF_Opacity(opacities, **self.data, **opacity_args)
+        RIAF         = kwargs.get('RIAF', False)
+        OpacityClass = radiation.RIAF_Opacity if RIAF else radiation.Opacity
+        Opac         = OpacityClass(opacities, **self.data, **opacity_args)
 
-        if (len(Opac.opacities) == 1 and 'electron_scattering' in opacities):
-            kappa = Opac.opacities['electron_scattering']
-        else:
-            kappa_abs = Opac.opacities['absorption_total']
-            kappa_es  = Opac.opacities['electron_scattering']
-            kappa     = np.sqrt(kappa_abs * (kappa_abs + kappa_es))
-        return kappa
+        if len(Opac.opacities) == 1 and 'electron_scattering' in opacities:
+            return Opac.opacities['electron_scattering']
 
-    # Determine how to integrate kappa ds (s = z, r, theta)
+        kappa_abs = Opac.opacities['absorption_total']
+        kappa_es  = Opac.opacities['electron_scattering']
+        return np.sqrt(kappa_abs * (kappa_abs + kappa_es))
+
     def integrate_kappa(self, kappa, **kwargs):
+        """Determine how to integrate kappa ds (s = z, r, theta)."""
+        import coordinates
+        Rg = self.Rg
+        
+        # Initialize Integrals class
+        integral_args = {
+            'r'         : (self.r / Rg) * np.ones_like(self.data['rho']),
+            'theta'     : self.th       * np.ones_like(self.data['rho']),
+            'phi'       : self.phi      * np.ones_like(self.data['rho']),
+            'pars'      : self.pars,
+            'CONSTANTS' : self.CONSTANTS 
+        }
+
+        self.Integrals = coordinates.Integrals(**integral_args)
+
         if kwargs.get('integral', 'theta') == 'z':
             return self.integrate_in_z(kappa, **kwargs)
         elif kwargs.get('integral', 'theta') == 'r':
@@ -350,60 +515,59 @@ class Accretion():
             return self.integrate_in_theta(kappa, **kwargs)
 
     def integrate_in_z(self, kappa, **kwargs):
+        """Perform integral in z (requires gcov in cylindrical coordinates)."""
         import coordinates
         Rg = self.Rg
-        Coords = coordinates.Coordinates(self.r / Rg, self.th, self.phi, 
-                                         self.pars, self.CONSTANTS)            
+        coord_args = {
+            'r'         : self.r / Rg,
+            'theta'     : self.th,
+            'phi'       : self.phi,
+            'pars'      : self.pars,
+            'CONSTANTS' : self.CONSTANTS
+        }
+        Coords = coordinates.Coordinates(**coord_args)
         gcov_cyl = Coords.int_to_cyl_cotnsr(self.grid['gcov'])
-
-        # Initialize Integrals class
-        r   = self.r   * np.ones_like(self.data['rho'])
-        th  = self.th  * np.ones_like(self.data['rho'])
-        phi = self.phi * np.ones_like(self.data['rho'])
-
-        Integrals = coordinates.Integrals(r / self.Rg, th, phi, 
-                                          self.pars, self.CONSTANTS)
-        
-        tau = self.Rg * Integrals.cum_integrate_z(
+ 
+        tau = self.Rg * self.Integrals.cum_integrate_z(
             (kappa * self.data['rho']), gcov_cyl[3, 3], **kwargs) 
 
         return tau
     
     def integrate_in_r(self, kappa, **kwargs):
-        import coordinates
-        Integrals = coordinates.Integrals(self.r / self.Rg, self.th, self.phi, 
-                                          self.pars, self.CONSTANTS)
-        return self.Rg * Integrals.cum_integrate_r(kappa * self.data['rho'], 
-            self.grid['gcov'][1, 1], **kwargs)
+        """Perform integral in r (really, in x1 = log(r))."""
+        return self.Rg * self.Integrals.cum_integrate_r(
+            kappa * self.data['rho'], self.grid['gcov'][1, 1], **kwargs)
     
     def integrate_in_theta(self, kappa, **kwargs):
-        import coordinates
-        Integrals = coordinates.Integrals(self.r / self.Rg, self.th, self.phi, 
-                                          self.pars, self.CONSTANTS)
-        return self.Rg * Integrals.cum_integrate_th(
+        """Perform integral in theta (really, in x2)."""
+        return self.Rg * self.Integrals.cum_integrate_th(
             kappa * self.data['rho'], self.grid['gcov'][2, 2], **kwargs)
 
     def thph_sum(self, q, **kwargs):
+        """Integrate 3D data in theta (th) and phi (ph)."""
         w          = kwargs.get('weight', ONE)
         sigma_mask = self.sigma_cut(**kwargs)
         tau_mask   = self.tau_cut(**kwargs)
+        Temp_mask  = self.temp_cut(**kwargs)
         dx2        = np.float32(self.dx2)
         dx3        = np.float32(self.dx3)
         dtype      = kwargs.get('dtype', np.float32)
-        return (q * w * sigma_mask * tau_mask * (
+        return (q * w * sigma_mask * tau_mask * Temp_mask * (
             self.gdet * dx2 * dx3)).sum(-1, dtype=dtype).sum(-1, dtype=dtype)
 
     def ph_sum(self, q, **kwargs):
+        """Integrate 3D data in phi (ph)."""
         w          = kwargs.get('weight', ONE)
         sigma_mask = self.sigma_cut(**kwargs)
         tau_mask   = self.tau_cut(**kwargs)
+        Temp_mask  = self.temp_cut(**kwargs)
         dx3        = np.float32(self.dx3)
         dtype      = kwargs.get('dtype', np.float32)
-        return (q * w * sigma_mask * tau_mask * (
+        return (q * w * sigma_mask * tau_mask * Temp_mask * (
             self.gdet * dx3)).sum(-1, dtype=dtype)
 
-    # Upscale q to 64-bit precision and apply units
     def upscale64(self, q, units):
+        """Upscale q to 64-bit precision and apply units."""
         q_dbl = hr.Tools.zeroNd(q.shape, 1, dtype=np.float64)
         np.copyto(q_dbl, q, casting='safe')
         q_dbl *= units
@@ -472,6 +636,24 @@ class AccretionBK(Accretion):
         return q
 
 class Field():
+    """
+    Field class manages quantities derived from the magnetic field 3-vector B.
+    The 4-magnetic field b^{mu}, the magnetic energy density b^2, Alfven 
+    velocity vA, the electromagnetic (EM) field-strength tensor FEM^{mu nu}, 
+    and the EM stress-energy tensor TEM^{mu nu} are handled by this class.
+
+    Functions can be called with **H.data, **H.grid if H is an object of the
+    Read class from hamr_read.py.
+    
+    Attributes
+    ----------
+    pars : dict from H-AMR read object
+        Parameters dictionary (dx1, dx2, density_scale, etc.).
+    CONSTANTS : dict
+        Constants dictionary (hr.CONSTANTS, usually).
+    **kwargs : dict
+        Optional configurations (e.g. cgs).
+    """
     def __init__(self, pars, CONSTANTS, **kwargs):
         self.cgs  = kwargs.get('cgs', False)
         self.rho0 = pars['density_scale']  if self.cgs else ONE # g/cm^3
@@ -480,10 +662,10 @@ class Field():
         self.B0   = np.float32(B0)         if self.cgs else ONE # G
 
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
+        self.pars = pars
 
-    # Compute b from B
-    # Assumes B has units and returns b with units
     def calc_b(self, B, uu, gcov, **kwargs):
+        """Compute b from B. Assumes B has units and returns b with units."""
         c, B0  = self.c, self.B0
         b      = hr.Tools.zeroNd(B.shape, 1, **kwargs) 
         # de-dimensionalize inputs
@@ -500,9 +682,8 @@ class Field():
         b  *= B0
         return b
     
-    # Compute b^2 
-    # Assumes B and uu have units
     def calc_b2(self, b, B, gcov, **kwargs):
+        """Compute b^2. Assumes B and uu have units."""
         if (kwargs.get('from_B')):
             if 'uu' in kwargs:
                 b = self.calc_b(B=B, gcov=gcov, **kwargs)
@@ -510,191 +691,224 @@ class Field():
                 raise TypeError("Must specify uu to use from_B.")
         return Tools.dot(b, b, gcov, **kwargs)
         
-    # Compute the electromagnetic stress-energy tensor
-    # Default TEM^{mu, nu}
-    # "upper_lower": TEM^{mu}_{nu} 
-    # "lower_lower": TEM_{mu, nu}
-    # If b and/or b2 arguments provided, assume they have units
     def calc_TEM(self, uu, B, gcov, gcon, **kwargs):
+        """
+        Compute the electromagnetic stress-energy tensor TEM.
+        Default TEM^{mu nu}.
+        "upper_lower": TEM^{mu}_{nu}.
+        "lower_lower": TEM_{mu nu}.
+        """
+        # If b and/or b2 arguments provided, assume they have units.
         rho0   = self.rho0
         c      = self.c
         rho0c2 = rho0 * c * c
         B0     = self.B0
         B02    = self.B0 * self.B0
-        # de-dimensionalize uu
-        uu    *= ONE / c
-        if 'uu_tnsr' not in kwargs:
-            uu_tnsr = Tools.construct_dyadic(uu, gcov, **kwargs)
-        elif 'uu_tnsr' in kwargs:
-            uu_tnsr = kwargs.get('uu_tnsr')
-        if 'b' in kwargs and 'b2' in kwargs:
-            b       = kwargs.get('b')
-            b      *= ONE / B0
-            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
-            b      *= B0
-            b2      = kwargs.get('b2') 
-        elif 'b' in kwargs and 'b2' not in kwargs:
-            b       = kwargs.get('b')
-            b      *= ONE / B0
-            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
-            b2      = self.calc_b2(b, b, gcov) * B02
-            b      *= B0
-        elif 'b' not in kwargs and 'b2' in kwargs:
-            uu     *= c   
-            b       = self.calc_b(B, uu, gcov)
-            uu     *= ONE / c   
-            b      *= ONE / B0   
-            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
-            b      *= B0
-            b2      = kwargs.get('b2')
+
+        b = kwargs.get('b')
+        if b is None:
+            # uu must be in cgs units for calc_b
+            b = self.calc_b(B, uu, gcov)
+            b *= ONE / B0
         else:
-            uu     *= c   
-            b       = self.calc_b(B, uu, gcov)
+            b *= ONE / B0
+
+        b2 = kwargs.get('b2')
+        if b2 is None:
+            b2 = self.calc_b2(b, b, gcov) * B02
+
+        # Construct bb dyadic tensor.
+        bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
+
+        # Construct uu dyadic tensor.
+        uu_tnsr = kwargs.get('uu_tnsr')
+        if uu_tnsr is None:
             uu     *= ONE / c
-            b      *= ONE / B0
-            bb_tnsr = Tools.construct_dyadic(b, gcov, **kwargs)
-            b2      = self.calc_b2(b, b, gcov) * B02
-            b      *= B0
-        # re-dimensionalize uu
-        uu *= c
-        
+            uu_tnsr = Tools.construct_dyadic(uu, gcov, **kwargs)
+            uu     *= c
+
+        # Calculate metric tensor (g^{mu nu}, delta^{mu}_{nu}, g_{mu nu})
         g_tnsr = Tools.g_metric(gcov, gcon, **kwargs)
+
+        # Restore original units to b in place.
+        b *= B0
+        
         return ( (b2 / B02) * uu_tnsr + 
             0.5 *(b2 / B02) * g_tnsr - bb_tnsr) * rho0c2
     
-    # Compute the electromagnetic field-strength tensor
-    # Referred to as the Faraday tensor in MTW
-    # Default FEM^{mu, nu}
-    # "upper_lower": FEM^{mu}_{nu} 
-    # "lower_lower": FEM_{mu, nu}
-    # Assumes uu and B have units
-    # If frame = generic, assumes B is measured in frame uu,
-    # where uu = n would be frame of normal observer, etc.
-    # If frame = generic, electric field must be supplied as kwarg.
-    # Similarly, if non-ideal MHD, electric field must be supplied.
     def calc_FEM(self, uu, B, gcov, gdet, **kwargs):
-        if (kwargs.get('frame', 'fluid') == 'fluid'):
-            if 'b' not in kwargs:
-                b = self.calc_b(B, uu, gcov, **kwargs)
-            elif 'b' in kwargs:
-                b = kwargs.get('b')
-            b  *= ONE / self.B0
-            uu *= ONE / self.c
-            uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
-            b_cov  = np.einsum('ij...,j...->i...', gcov, b)
-            levi_civita = Tools.calc_Levi_Civita(4, gdet)
-            FEM = -np.einsum(
-                'ijkl...,k...,l...->ij...', levi_civita, uu_cov, b_cov)
-            uu *= self.c
-        elif (kwargs.get('frame', 'fluid') == 'generic'):
-            if 'E' not in kwargs:
-                raise ValueError("Must supply E kwarg to use generic frame.")
-            E  *= ONE / np.sqrt(self.rho0) * self.c
-            B  *= ONE / self.B0
-            uu *= ONE / self.c
-            uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
-            b_cov  = np.einsum('ij...,j...->i...', gcov, b)
-            levi_civita = Tools.calc_Levi_Civita(4, gdet)
-            FEM = (np.einsum('i...,j...->ij...', uu, E) + 
-                   np.einsum('j...,i...->ij...', uu, E) -
-                   np.einsum('ijkl...,k...,l...->ij...', 
-                    levi_civita, uu_cov, b_cov))
-            uu *= self.c
-            B  *= self.B0
-            E  *= np.sqrt(self.rho0) * self.c
-        if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-            return FEM * (self.c * self.B0)
-        elif ('upper_lower' in kwargs and 'lower_lower' not in kwargs):
-            return (self.c * self.B0) * np.einsum(
-                'ij...,jk...->ik...', gcov, FEM) 
-        elif ('upper_lower' not in kwargs and 'lower_lower' in kwargs):
-            return (self.c * self.B0) * np.einsum(
-                'ij...,kl...,jl...->ik...', gcov, gcov, FEM)
-        else:
+        """
+        Compute the electromagnetic field-strength tensor.
+        Referred to as the Faraday tensor in MTW.
+        Default FEM^{mu nu}.
+        "upper_lower": FEM^{mu}_{nu}.
+        "lower_lower": FEM_{mu, nu}.
+        Assumes uu and B have units.
+        If frame = generic, assumes B is measured in frame uu,
+        where uu = n would be frame of normal observer, etc.
+        If frame = generic, electric field must be supplied as kwarg.
+        Similarly, if non-ideal MHD, electric field must be supplied.
+        """
+        frame = kwargs.get('frame', 'fluid')
+        if frame not in ('fluid', 'generic'):
             raise ValueError(
                 "Please select a valid frame for the Faraday tensor. " + 
                 "Options are frame=fluid or frame=generic."
             )
+        if 'E' not in kwargs and frame == 'generic':
+            raise ValueError("Must supply E kwarg to use generic frame.")
+
+        # Fetch or calculate b.
+        b = kwargs.get('b')
+        if b is None:
+            b = self.calc_b(B, uu, gcov, **kwargs)
+        
+        b  *= ONE / self.B0
+        uu *= ONE / self.c
+
+        # Require u_mu and b_mu for both frames.    
+        uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
+        b_cov  = np.einsum('ij...,j...->i...', gcov, b)
+        levi_civita = Tools.calc_Levi_Civita(4, gdet)
+        
+        if (frame == 'fluid'):
+            # Equation 6 of Porth et al. (2017).
+            FEM = -np.einsum(
+                'ijkl...,k...,l...->ij...', levi_civita, uu_cov, b_cov)
+        elif (frame == 'generic'):
+            E   = kwargs.get('E')
+            E  *= ONE / (np.sqrt(self.rho0) * self.c)
+
+            # Equation 2 of Porth et al. (2017).
+            FEM = (np.einsum('i...,j...->ij...', uu, E) - 
+                   np.einsum('j...,i...->ij...', uu, E) -
+                   np.einsum('ijkl...,k...,l...->ij...', 
+                    levi_civita, uu_cov, b_cov))
+
+            E  *= np.sqrt(self.rho0) * self.c
+
+        # Restore units in place.        
+        uu *= self.c
+        if 'b' in kwargs:
+            b  *= self.B0
+
+        # Units of electromangetic tensor are B0.
+        B0 = self.B0
+
+        if 'upper_lower' in kwargs:
+            return B0 * np.einsum('ij...,jk...->ik...', gcov, FEM)
+        elif 'lower_lower' in kwargs:
+            return B0 * np.einsum('ij...,kl...,jl...->ik...', gcov, gcov, FEM)
+        
+        return FEM * B0
     
-    # Compute the dual of the electromagnetic field-strength tensor
-    # Referred to as the Maxwell tensor in MTW
-    # Default *FEM^{mu, nu}
-    # "upper_lower": *FEM^{mu}_{nu} 
-    # "lower_lower": *FEM_{mu, nu}
-    # Assumes uu and B have units
-    # If frame = generic, assumes B is measured in frame uu,
-    # where uu = n would be frame of normal observer, etc.
-    # If frame = generic, electric field must be supplied as kwarg.
-    # Similarly, if non-ideal MHD, electric field must be supplied.
     def calc_dual_FEM(self, uu, B, gcov, gdet, **kwargs):
-        if (kwargs.get('frame', 'fluid') == 'fluid'):
-            if 'b' not in kwargs:
-                b = self.calc_b(B, uu, gcov, **kwargs)
-            elif 'b' in kwargs:
-                b = kwargs.get('b')
-            b  *= ONE / self.B0
-            uu *= ONE / self.c
-            dual_FEM = (np.einsum('i...,j...->ij...', b, uu) - 
-                        np.einsum('j...,i...->ij...', b, uu))
-            uu *= self.c
-            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-                return dual_FEM * (self.c * self.B0)
-            elif ('upper_lower' in kwargs and 'lower_lower' not in kwargs):
-                return (self.c * self.B0) * np.einsum(
-                    'ij...,jk...->ik...', gcov, dual_FEM)
-            elif ('upper_lower' not in kwargs and 'lower_lower' in kwargs):
-                return (self.c * self.B0) * np.einsum(
-                    'ij...,kl...,jl...->ik...', gcov, gcov, dual_FEM)
-        elif (kwargs.get('frame', 'fluid') == 'generic'):
-            pass
-        else:
+        """
+        Compute the dual of the electromagnetic field-strength tensor.
+        Referred to as the Maxwell tensor in MTW.
+        Default *FEM^{mu nu}.
+        "upper_lower": *FEM^{mu}_{nu}.
+        "lower_lower": *FEM_{mu nu}.
+        Assumes uu and B have units.
+        If frame = generic, assumes B is measured in frame uu,
+        where uu = n would be frame of normal observer, etc.
+        If frame = generic, electric field must be supplied as kwarg.
+        Similarly, if non-ideal MHD, electric field must be supplied.
+        """
+        frame = kwargs.get('frame', 'fluid')
+        if frame not in ('fluid', 'generic'):
             raise ValueError(
                 "Please select a valid frame for the Maxwell tensor. " + 
                 "Options are frame=fluid or frame=generic."
             )
+        if 'E' not in kwargs and frame == 'generic':
+            raise ValueError("Must supply E kwarg to use generic frame.")
+
+        # Fetch or calculate b.
+        b = kwargs.get('b')
+        if b is None:
+            b = self.calc_b(B, uu, gcov, **kwargs)
         
-    # Calculate the 4-current by taking the divergence of the 
-    # field-strength (Faraday) tensor
+        b  *= ONE / self.B0
+        uu *= ONE / self.c
+
+        if frame == 'fluid':
+            # Equation 6 of Porth et al. (2017).
+            dual_FEM = (np.einsum('i...,j...->ij...', b, uu) - 
+                        np.einsum('j...,i...->ij...', b, uu))
+        elif frame == 'generic':
+            B *= ONE / self.B0
+
+            E  = kwargs.get('E')
+            E *= ONE / (np.sqrt(self.rho0) * self.c)
+
+            uu_cov = np.einsum('ij...,j...->i...', gcov, uu)
+            E_cov  = np.einsum('ij...,j...->i...', gcov, E)
+            levi_civita = Tools.calc_Levi_Civita(4, gdet)
+
+            # Equation 3 of Porth et al. (2017).
+            dual_FEM = (np.einsum('i...,j...->ij...', uu, B) - 
+                        np.einsum('j...,i...->ij...', uu, B) -
+                   np.einsum('ijkl...,k...,l...->ij...', 
+                    levi_civita, uu_cov, E_cov))
+
+            B *= self.B0
+            E *= np.sqrt(self.rho0) * self.c
+        
+        # Restore units in place.        
+        uu *= self.c
+        if 'b' in kwargs:
+            b  *= self.B0
+
+        # Units of Hodge dual of electromangetic tensor are B0.
+        B0 = self.B0
+
+        if 'upper_lower' in kwargs:
+            return B0 * np.einsum('ij...,jk...->ik...', gcov, dual_FEM)
+        elif 'lower_lower' in kwargs:
+            return B0 * np.einsum(
+                'ij...,kl...,jl...->ik...', gcov, gcov, dual_FEM)
+        
+        return dual_FEM * B0
+        
     def calc_J(self, uu, B, gcov, gdet, **kwargs):
+        """
+        Calculate the 4-current by taking the divergence of the 
+        field-strength (Faraday) tensor.
+        """
         faraday = self.calc_FEM(uu, B, gcov, gdet, **kwargs)
         return Tools.div_tnsr(faraday, gdet, self.dx1, self.dx2, self.dx3)
     
-    # Calculate J^2 = J_mu J^mu
-    # If from_FEM = True, calculate J first
     def calc_J2(self, J, gcov, **kwargs):
+        """Calculate J^2. If from_FEM = True, calculate J first."""
         if kwargs.get('from_FEM', False):
-            if ('uu' in kwargs and 'B' in kwargs and 'gdet' in kwargs):
+            if all(k in kwargs for k in ('uu', 'B', 'gdet')):
                 J = self.calc_J(gcov=gcov, **kwargs)
             else:
                 raise ValueError("Must specify uu, B, and gdet " + 
                                  "to use from_FEM=True.")
         return Tools.dot(J, J, gcov, **kwargs)
 
-    # Relativistic Alfvén velocity (vA)
     def calc_vA(self, rho, uu, B, u_gas, gcov, **kwargs):
+        """Relativistic Alfvén velocity (vA)."""
         rho0   = self.rho0
         c      = self.c
         rho0c2 = rho0 * c * c
         B0     = self.B0
         B02    = self.B0 * self.B0
-        if 'b' not in kwargs and 'b2' not in kwargs:
-            b  = self.calc_b(B, uu, gcov, **kwargs)
-            b2 = self.calc_b2(b, b, gcov)
-        elif 'b' in kwargs and 'b2' not in kwargs:
-            b  = kwargs.get('b')
-            b2 = self.calc_b2(b, b, gcov)
-        elif 'b' not in kwargs and 'b2' in kwargs:
-            b  = self.calc_b(B, uu, gcov, **kwargs)
-            b2 = kwargs.get('b2')
-        elif 'b' in kwargs and 'b2' in kwargs:
-            b  = kwargs.get('b')
-            b2 = kwargs.get('b2')
         
-        if 'pgas' not in kwargs:
-            gamma_adi = np.float32(5./3.)
-            pgas = (gamma_adi - 1) * u_gas
-        else:
-            pgas = kwargs.get('pgas')
+        b = kwargs.get('b')
+        if b is None:
+            b = self.calc_b(B, uu, gcov)
+
+        b2 = kwargs.get('b2')
+        if b2 is None:
+            b2 = self.calc_b2(b, b, gcov)
+
+        pgas = kwargs.get('pgas') 
+        if pgas is None:
+            gamma_adi = np.float32(self.pars['gam'])
+            pgas      = (gamma_adi - 1) * u_gas
 
         u_rad = kwargs.get('u_rad', 0) 
 
@@ -704,6 +918,26 @@ class Field():
         )
 
 class Fluid():
+    """
+    Fluid class manages hydrodynamic quantities. All methods related to
+    two-temperature thermodynamics are contained in this class.
+    Calculations of the gas thermal pressure pgas, the hydrodynamic (HD)
+    stress-energy tensor THD^{mu nu}, and Coulomb-collisional timescales
+    for ion-ion momentum exchange (ii), ion-electron energy exchange (ie),
+    and electron-electron momentum exchange (ee) are handled by this class.
+
+    Functions can be called with **H.data, **H.grid if H is an object of the
+    Read class from hamr_read.py.
+    
+    Attributes
+    ----------
+    pars : dict from H-AMR read object
+        Parameters dictionary (dx1, dx2, density_scale, etc.).
+    CONSTANTS : dict
+        Constants dictionary (hr.CONSTANTS, usually).
+    **kwargs : dict
+        Optional configurations (e.g. cgs).
+    """
     def __init__(self, pars, CONSTANTS, **kwargs):
         self.cgs  = kwargs.get('cgs', False)
         self.rho0 = pars['density_scale']  if self.cgs else ONE # g/cm^3
@@ -724,11 +958,13 @@ class Fluid():
         self.CONSTANTS = CONSTANTS
         self.params    = pars
 
-    # Compute the hydrodynamic stress-energy tensor
-    # Default THD^{mu, nu} 
-    # "upper_lower": THD^{mu}_{nu} 
-    # "lower_lower": THD_{mu, nu}
     def calc_THD(self, rho, uu, u_gas, pgas, gcov, gcon, **kwargs):
+        """
+        Compute the hydrodynamic stress-energy tensor THD.
+        Default THD^{mu nu}.
+        "upper_lower": THD^{mu}_{nu}.
+        "lower_lower": THD_{mu nu}.
+        """
         if (kwargs.get('EOS', False) == '2T'):
             if 'Ti' in kwargs and 'Te' in kwargs:
                 Te   = kwargs.get('Te')
@@ -739,27 +975,30 @@ class Fluid():
         c      = self.c
         rho0   = self.rho0
         rho0c2 = rho0 * c * c
-
-        if 'uu_tnsr' not in kwargs:
+        
+        # Construct uu dyadic tensor.
+        uu_tnsr = kwargs.get('uu_tnsr')
+        if uu_tnsr is None:
             uu     *= ONE / c
             uu_tnsr = Tools.construct_dyadic(uu, gcov, **kwargs)
             uu     *= c
-        elif 'uu_tnsr' in kwargs:
-            uu_tnsr = kwargs.get('uu_tnsr')
+        
         g_tnsr  = Tools.g_metric(gcov, gcon, **kwargs)
         return (
             (((rho / rho0) + (u_gas / rho0c2) + (pgas / rho0c2)) * uu_tnsr + 
             (pgas / rho0c2) * g_tnsr) * rho0c2
         )
 
-    # Compute pgas from u_gas using gamma law EOS
-    # Equation 23 in Sadowski+ (2017)
     def calc_pgas(self, u_gas, Te, Ti, **kwargs):
+        """
+        Compute pgas from u_gas using gamma law EOS.
+        Equation 23 in Sadowski+ (2017).
+        """
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
 
-        # Calculate gamma (ratio of specific heats)
-        # Equation 28 in Sadowski+ (2017)
+        # Calculate gamma (ratio of specific heats).
+        # Equation 28 in Sadowski+ (2017).
         gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
         gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
         
@@ -770,14 +1009,16 @@ class Fluid():
                 (self.mu_i / self.mu_e) * (gam_i - 1.) ))
         return (gam_g - 1.) * u_gas # erg/cm^3
 
-    # Compute ion-electron equilibration timescale teq
-    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
     def calc_teq(self, rho, Te, Ti, **kwargs):
+        """
+        Compute ion-electron equilibration timescale teq.
+        Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3.
+        """
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
 
-        # Calculate gamma (ratio of specific heats)
-        # Equation 28 in Sadowski+ (2017)
+        # Calculate gamma (ratio of specific heats).
+        # Equation 28 in Sadowski+ (2017).
         gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
         gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
 
@@ -793,44 +1034,51 @@ class Fluid():
             rho / (self.mu_i * self.mp)) * self.kB * (Ti- Te))[
             (delta_energy < 0) & (Ti > Te)]
 
-        if 'qie' not in kwargs:
+        qie = kwargs.get('qie')
+        if qie is None:
             qie = self.calc_qie(rho, Te, Ti, **kwargs)
-        else:
-            qie = kwargs.get('qie')
         
         teq = delta_energy / qie
         teq[qie == 0.] = 0.
 
         # If temperature difference < 2% of Te, then assume negligible teq
         teq[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
+
+        # Cooling: Ti > Te. Heating: Te > Ti.
         if kwargs.get('cooling'):
             teq[Ti < Te] = 0.0
             return teq # s
         elif kwargs.get('heating'):
             teq[Ti > Te] = 0.0
             return teq # s
-        else:
-            return teq # s
+        
+        return teq # s
     
-    # Compute ion-ion momentum-exchange (collision) timescale tii
-    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
     def calc_tii(self, rho, Te, Ti, **kwargs):
+        """
+        Compute ion-ion momentum-exchange (collision) timescale tii.
+        Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3.
+        """
         ne = rho / (self.mu_e * self.mp)
         ni = rho / (self.mu_i * self.mp)
         return (Ti / Te) ** (3./2.) * np.sqrt(self.me / self.mi) * (
             (self.Coulomb_log(ne, Te) / self.Coulomb_log(ni, Ti)) * (
             self.calc_teq(rho, Te, Ti, **kwargs)))
     
-    # Compute electron-electron momentum-exchange (collision) timescale tee
-    # Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3
     def calc_tee(self, rho, Te, Ti, **kwargs):
+        """
+        Compute electron-electron momentum-exchange (collision) timescale tee.
+        Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3.
+        """
         return (self.me / self.mi) * self.calc_teq(rho, Te, Ti, **kwargs)
 
-    # Compute cooling/heating rate due to ion-electron collisions
-    # Assumes rho in g/cm^3, Te and Ti in K
-    # Equation 20 in Sadowski+ (2017)
-    # see also Stepney & Guilbert (1983) Equation 15
     def calc_qie(self, rho, Te, Ti, **kwargs):
+        """
+        Compute cooling/heating rate due to ion-electron collisions.
+        Assumes rho in g/cm^3, Te and Ti in K.
+        Equation 20 in Sadowski+ (2017).
+        See also Stepney & Guilbert (1983) Equation 15.
+        """
         if kwargs.get('cpp', False):
             return self.calc_qie_cpp(rho, Te, Ti, **kwargs)
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
@@ -848,18 +1096,22 @@ class Fluid():
         )
         # If temperature difference < 2% of Te, then assume negligible qie
         qie[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
+        
+        # Cooling: Ti > Te. Heating: Te > Ti.
         if kwargs.get('cooling'):
             qie[Ti < Te] = 0.0
             return qie # erg/cm^3 s
         elif kwargs.get('heating'):
             qie[Ti > Te] = 0.0
             return qie # erg/cm^3 s
-        else:    
-            return qie # erg/cm^3 s
+        
+        return qie # erg/cm^3 s
     
-    # H-AMR uses approximations for the Bessel functions when the
-    # electrons (E) or ions (I) are cold (Theta < Theta_min)
     def Bessel_terms(self, Theta_e, Theta_i):
+        """
+        H-AMR uses approximations for the Bessel functions when the
+        electrons (E) or ions (I) are cold (Theta < Theta_min).
+        """
         coldE = (Theta_e <  self.Theta_min)
         coldI = (Theta_i <  self.Theta_min)
         hotE  = (Theta_e >= self.Theta_min)
@@ -878,11 +1130,13 @@ class Fluid():
         )
             
     def coldE_coldI(self, Theta_e, Theta_i):
+        """Cold electrons and cold ions."""
         Theta_sum = Theta_e + Theta_i
         return ((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) / (
             np.sqrt(0.5 * np.pi * (Theta_sum ** 3))))
 
     def hotE_coldI(self, Theta_e, Theta_i):
+        """Hot electrons and cold ions."""
         Theta_sum  = Theta_e + Theta_i 
         k2e        = kn(2, (1. / Theta_e))
         return (((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) * (
@@ -890,6 +1144,7 @@ class Fluid():
             np.sqrt(Theta_sum ** 3))))
 
     def coldE_hotI(self, Theta_e, Theta_i):
+        """Cold electrons and hot ions."""
         Theta_sum = Theta_e + Theta_i 
         k2i       = kn(2, (1. / Theta_i))
         return (((2. * (Theta_sum ** 2) + 2. * Theta_sum + 1.) * (
@@ -897,6 +1152,7 @@ class Fluid():
             np.sqrt(Theta_sum ** 3))))
 
     def hotE_hotI(self, Theta_e, Theta_i):
+        """Hot electrons and hot ions."""
         return (self.k2k2_qie(Theta_e, Theta_i) * (
             self.k1_qie(Theta_e, Theta_i) + self.k0_qie(Theta_e, Theta_i)))
 
@@ -918,6 +1174,7 @@ class Fluid():
         return 35.4 + np.log((Te / 1.e7) * np.sqrt(1.e-3 / ne))
     
     def calc_qie_cpp(self, rho, Te, Ti, **kwargs):
+        """Cooling/heating rate due to ion-electron collisions (C++)."""
         if (not self.kwargs.get('cgs')):
             import warnings
             warnings.warn("""Warning: calculating Coulomb energy exchange
@@ -934,17 +1191,22 @@ class Fluid():
         Fluidc.calc_qie(qie, rho, Te, Ti, nb, nx1, nx2, nx3)
         # If temperature difference < 2% of Te, then assume negligible qie
         qie[np.abs(Ti - Te) < (self.Theta_min * Te)] = 0.0
+        
+        # Cooling: Ti > Te. Heating: Te > Ti.
         if kwargs.get('cooling'):
             qie[Ti < Te] = 0.0
             return qie # erg/cm^3 s
         elif kwargs.get('heating'):
             qie[Ti > Te] = 0.0
             return qie # erg/cm^3 s
-        else:    
-            return qie # erg/cm^3 s
+        
+        return qie # erg/cm^3 s
 
     def calc_delta_e(self, rho, u_gas, Te, Ti, B, gcov, **kwargs):
-        # Equation 13 of Chael et al. (2018)
+        """
+        Electron heating fraction.
+        Equation 13 of Chael et al. (2018).
+        """
         c = self.c
         if 'pgas' not in kwargs:
             pgas = self.calc_pgas(u_gas, Te, Ti)
@@ -966,6 +1228,26 @@ class Fluid():
         return delta_e
 
 class MRI():
+    """
+    MRI (magnetorotational instability) class handles quality factors and
+    growth rates for modes of the MRI.
+    
+    Attributes
+    ----------
+    r : arr of float
+        Coordinate radius array from grid object, grid['r'].
+    theta : arr of float
+        Coordinate theta array from grid object, grid['theta'].
+    phi : arr of float
+        Coordinate phi array from grid object, grid['phi'].
+    pars : dict from H-AMR read object
+        Parameters dictionary (dx1, dx2, density_scale, etc.).
+    CONSTANTS : dict
+        Constants dictionary (hr.CONSTANTS, usually).
+    **kwargs : dict
+        Optional configurations (e.g. cgs).
+
+    """
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
 
@@ -980,8 +1262,8 @@ class MRI():
         self.th = theta
         self.ph = phi
 
-    # MRI quality (Q) factors
     def calc_Q(self, rho, uu, B, u_gas, gcov, **kwargs):
+        """MRI quality (Q) factors."""
         Fld = Field(self.pars, self.CONSTANTS, cgs=self.cgs)
         vA  = Fld.calc_vA(rho, uu, B, u_gas, gcov, **kwargs)
         TWOPI = np.float32(2. * np.pi)
@@ -1013,195 +1295,257 @@ class MRI():
         self.upscalex3   = 2 ** (self.max_levelx3 - level_x3) / lr3
 
 class Tools():
+    _Toolsc_obj = None
+    
+    @classmethod
+    def _get_cpp_tools(cls):
+        if cls._Toolsc_obj is None:
+            import hamr_readc
+            cls._Toolsc_obj = hamr_readc.PyTools()
+        return cls._Toolsc_obj
+
+    @staticmethod
     def dot(a, b, gcov, **kwargs):
-        # contract two 4-vectors (g_ij a^j b^i)
+        """Contract two 4-vectors: g_{mu nu} a^nu b^mu."""
         if (kwargs.get('cpp', False)):
             return Tools.dot_cpp(a, b, gcov, **kwargs)
         a_cov = np.einsum('ij...,j...->i...', gcov, a)
         return np.einsum('i...,i...->...', a_cov, b)
     
+    @staticmethod
     def contract_vector(a, gcov, **kwargs):
-        # contract 4-vector with metric/a tensor g (g_ij a^j)
+        """Contract 4-vector with tensor gcov: g_{mu nu} a^nu."""
         if (kwargs.get('cpp', False)):
             return Tools.contract_vector_cpp(a, gcov, **kwargs)
         return np.einsum('ij...,j...->i...', gcov, a)
 
+    @staticmethod
     def construct_dyadic(u, gcov, **kwargs):
+        """Construct dyadic tensor uu from 4-vector u."""
         if kwargs.get('cpp', False):
             return Tools.construct_dyadic_cpp(u, gcov, **kwargs)
-        if 'index' in kwargs:
-            [mu, nu] = kwargs.get('index')
-            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-                uu_tnsr = u[mu] * u[nu]
-            elif ('upper_lower' in kwargs):
-                uu_tnsr = u[mu] * np.einsum('ij...,j...->i...', gcov, u)[nu]
-            elif ('lower_lower' in kwargs):
-                uu_tnsr = ( 
-                    np.einsum('ij...,j...->i...', gcov, u)[mu] * (
-                    np.einsum('ij...,j...->i...', gcov, u)[nu]))
-        else:
-            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-                uu_tnsr = np.einsum('i...,j...->ij...', u, u)
-            elif ('upper_lower' in kwargs):
-                uu_tnsr = np.einsum('i...,j...->ij...', u, 
-                            np.einsum('ij...,j...->i...', gcov, u))
-            elif ('lower_lower' in kwargs):
-                uu_tnsr = np.einsum('i...,j...->ij...', 
-                        np.einsum('ij...,j...->i...', gcov, u), 
-                        np.einsum('ij...,j...->i...', gcov, u))
-        return uu_tnsr
             
-    def g_metric(gcov, gcon, **kwargs):
+        upper_lower = 'upper_lower' in kwargs
+        lower_lower = 'lower_lower' in kwargs
+        
         if 'index' in kwargs:
-            [mu, nu] = kwargs.get('index')
-            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-                g_tnsr = gcon[mu, nu]
-            elif ('upper_lower' in kwargs):
-                g_tnsr = 1.0 * (mu == nu)
-            elif ('lower_lower' in kwargs):
-                g_tnsr = gcov[mu, nu]
+            mu, nu = kwargs.get('index')
+            if upper_lower:
+                return u[mu] * np.einsum('j...,j...->...', gcov[nu], u)
+            elif lower_lower:
+                return (np.einsum('j...,j...->...', gcov[mu], u) * 
+                        np.einsum('j...,j...->...', gcov[nu], u))
+            else:
+                return u[mu] * u[nu]
+                
+        if upper_lower:
+            # u^mu u_nu
+            return np.einsum('i...,jk...,k...->ij...', u, gcov, u, 
+                             optimize='greedy')
+        elif lower_lower:
+            # u_mu u_nu 
+            return np.einsum('ik...,jl...,k...,l...->ij...', 
+                             gcov, gcov, u, u, optimize='greedy')
         else:
-            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-                g_tnsr = gcon
-            elif ('upper_lower' in kwargs):
-                g_tnsr = Tools.get_identity(gcov, **kwargs)
-            elif ('lower_lower' in kwargs):
-                g_tnsr = gcov
+            # u^mu u^nu 
+            return np.einsum('i...,j...->ij...', u, u)
+
+    @staticmethod
+    def g_metric(gcov, gcon, **kwargs):
+        """Calculate metric tensor that appears in stress-energy tensors."""
+        if 'upper_lower' in kwargs:
+            # \delta^{\mu}_{\nu}
+            if 'index' in kwargs:
+                mu, nu = kwargs['index']
+                return 1.0 * (mu == nu)
+            return Tools.get_identity(gcov, **kwargs)
+        
+        elif 'lower_lower' in kwargs:
+            # Return metric.
+            g_tnsr = gcov
+        
+        else:
+            # Default to inverse metric g^{mu nu}.
+            g_tnsr = gcon
+
+        if 'index' in kwargs:
+            mu, nu = kwargs['index']
+            return g_tnsr[mu, nu]
+            
         return g_tnsr
 
+    @staticmethod
     def get_identity(gcov, **kwargs):
-        shape     = list(gcov.shape)
-        id_matrix = hr.Tools.zeroNd(shape, 1, **kwargs)
-        for mu in range(4):
-            for nu in range(4):
-                id_matrix[mu, nu] = (mu == nu) 
-        return id_matrix
-    
+        """Generate a memory-efficient identity tensor using broadcasting."""
+        id_tnsr = np.eye(4, dtype=gcov.dtype)
+
+        grid_ndim = gcov.ndim - 2
+        broadcast_shape = (4, 4) + (1,) * grid_ndim
+
+        return id_tnsr.reshape(broadcast_shape)
+
     @staticmethod
     def antisymmetric_symbol3(i, j, k):
-        if not all(n in (i, j, k) for n in range(3)):
+        """Levi-Civita permutation symbol in 3D using inversion counting."""
+        indices = (i, j, k)
+        if len(set(indices)) < 3 or any(n < 0 or n > 2 for n in indices):
             return 0
-        if ((i, j, k) == (0, 1, 2) or
-            (i, j, k) == (1, 2, 0) or 
-            (i, j, k) == (2, 0, 1)):
-            return 1
-        return -1
-    
+        inversions = (i > j) + (i > k) + (j > k)
+        return 1 if inversions % 2 == 0 else -1
+
     @staticmethod
     def antisymmetric_symbol4(i, j, k, l):
-        if not all(n in (i, j, k, l) for n in range(4)):
+        """Levi-Civita permutation symbol in 4D using inversion counting."""
+        indices = (i, j, k, l)
+        if len(set(indices)) < 4 or any(n < 0 or n > 3 for n in indices):
             return 0
-        if ((i, j, k, l) == (0, 1, 2, 3) or (i, j, k, l) == (0, 2, 3, 1) or
-            (i, j, k, l) == (0, 3, 1, 2) or (i, j, k, l) == (1, 0, 3, 2) or
-            (i, j, k, l) == (1, 3, 2, 0) or (i, j, k, l) == (1, 2, 0, 3) or
-            (i, j, k, l) == (2, 0, 1, 3) or (i, j, k, l) == (2, 3, 0, 1) or
-            (i, j, k, l) == (2, 1, 3, 0) or (i, j, k, l) == (3, 1, 0, 2) or
-            (i, j, k, l) == (3, 0, 2, 1) or (i, j, k, l) == (3, 2, 1, 0)):
-            return 1
-        return -1
-    
+        inversions = ((i > j) + (i > k) + (i > l) +
+                      (j > k) + (j > l) +
+                      (k > l))
+        return 1 if inversions % 2 == 0 else -1
+
+    @staticmethod
     def calc_Levi_Civita(n, gdet, **kwargs):
-        if (n == 3):
-            shape   = [3, 3, 3] + list(gdet.shape)
-            epsilon = hr.Tools.zeroNd(shape, 1, **kwargs)
-            for i in range(3):
-                for j in range(3):
-                    for k in range(3):
-                        epsilon[i, j, k] = Tools.antisymmetric_symbol3(i, j,k)
-        elif (n == 4):
-            shape   = [4, 4, 4, 4] + list(gdet.shape)
-            epsilon = hr.Tools.zeroNd(shape, 1, **kwargs)
-            for i in range(4):
-                for j in range(4):
-                    for k in range(4):
-                        for l in range(4):
-                            epsilon[i, j, k, l] = (
-                                Tools.antisymmetric_symbol4(i, j, k, l))
-        return (1. / gdet) * epsilon
-        
+        """
+        Compute the Levi-Civita tensor.
+        Multiply by 1/gdet if cov=False (default) or gdet if cov=True.
+        """
+        if n == 3:
+            # 1. Populate a tiny, flat 3x3x3 tensor
+            epsilon_core = np.fromiter(
+                (Tools.antisymmetric_symbol3(i, j, k)
+                 for i in range(3) for j in range(3) for k in range(3)),
+                dtype=gdet.dtype
+            ).reshape(3, 3, 3)
+
+        elif n == 4:
+            # 1. Populate a tiny, flat 4x4x4x4 tensor
+            epsilon_core = np.fromiter(
+                (Tools.antisymmetric_symbol4(i, j, k, l)
+                 for i in range(4) for j in range(4) for k in range(4) for l in range(4)),
+                dtype=gdet.dtype
+            ).reshape(4, 4, 4, 4)
+        else:
+            raise ValueError("Levi-Civita tensor calculation " + 
+                             "only supports n=3 or n=4 dimensions.")
+
+        # Match grid shape
+        grid_ndim = gdet.ndim
+        broadcast_shape = epsilon_core.shape + (1,) * grid_ndim
+        epsilon_view = epsilon_core.reshape(broadcast_shape)
+
+        cov = kwargs.get('cov', False)
+        return gdet * epsilon_view if cov else (ONE / gdet) * epsilon_view
+ 
+    @staticmethod
     def div_tnsr(tnsr, gdet, dx1, dx2, dx3, **kwargs):
+        """Calculate divergence of a tensor."""
         return (1. / gdet) * (
             np.gradient((gdet * tnsr[:, 1]), dx1, axis=2) + 
             np.gradient((gdet * tnsr[:, 2]), dx2, axis=3) + 
             np.gradient((gdet * tnsr[:, 3]), dx3, axis=4)
         )
     
+    @staticmethod
     def dot_cpp(a, b, gcov, **kwargs):
-        import hamr_readc
-        Toolsc = hamr_readc.PyTools()
-        dims   = list(a.shape)
-        dtype  = np.float32 # C++ layer expects float 
-        if (len(dims) != 5 or dims[0] != 4):
-            raise ValueError("This 4-vector with shape " +
-                             str(dims) + " cannot be passed to C++.")
-        [ndim, nb, nx1, nx2, nx3] = dims
-        axisym = 1 if (gcov.shape[-1] == 1) else 0
-        a_cov = hr.Tools.zeroNd(a.shape, 1, dtype=dtype)
-        Toolsc.lower_index(np.float32(a), a_cov, gcov, 
-            nb, nx1, nx2, nx3, axisym)
-        return np.einsum('i...,i...->...', a_cov, b)
+        """Compute dot product g_{mu nu} a^nu b^mu with C++ acceleration.""" 
+        dims = a.shape
+        if len(dims) != 5 or dims[0] != 4:
+            raise ValueError(f"This 4-vector with shape {dims} " + 
+                             "cannot be passed to C++.")
+            
+        Toolsc = Tools._get_cpp_tools()
+        
+        # Zero-allocation view/cast check
+        a_c = np.asarray(a, dtype=np.float32)
+        b_c = np.asarray(b, dtype=np.float32)
+        
+        _, nb, nx1, nx2, nx3 = dims
+        axisym = 1 if gcov.shape[-1] == 1 else 0
+        
+        # Allocate raw uninitialized buffer
+        a_cov = np.empty(dims, dtype=np.float32)
+        
+        # Lower index in C++
+        Toolsc.lower_index(a_c, a_cov, gcov, nb, nx1, nx2, nx3, axisym)
+        
+        # Dot product contraction
+        return np.einsum('i...,i...->...', a_cov, b_c, optimize='greedy')
 
+    @staticmethod
     def contract_vector_cpp(a, gcov, **kwargs):
-        import hamr_readc
-        Toolsc = hamr_readc.PyTools()
-        dims   = list(a.shape)
-        dtype  = np.float32 # C++ layer expects float 
-        if (len(dims) != 5 or dims[0] != 4):
-            raise ValueError("This 4-vector with shape " +
-                             str(dims) + " cannot be passed to C++.")
-        [ndim, nb, nx1, nx2, nx3] = dims
-        axisym = 1 if (gcov.shape[-1] == 1) else 0 
-        a_cov = hr.Tools.zeroNd(a.shape, 1, dtype=dtype)
-        Toolsc.lower_index(np.float32(a), a_cov, gcov, 
-            nb, nx1, nx2, nx3, axisym)
-        return a_cov
+        """Contract 4-vector with gcov using C++ acceleration."""
+        dims   = a.shape
+        if len(dims) != 5 or dims[0] != 4:
+            raise ValueError(f"This 4-vector with shape {dims} " + 
+                             "cannot be passed to C++.")
 
+        Toolsc = Tools._get_cpp_tools()
+        
+        # Zero-allocation view/cast check
+        a_c = np.asarray(a, dtype=np.float32)
+        
+        _, nb, nx1, nx2, nx3 = dims
+        axisym = 1 if gcov.shape[-1] == 1 else 0
+        
+        # Allocate raw uninitialized buffer
+        a_cov = np.empty(dims, dtype=np.float32)
+
+        # Lower index in C++
+        Toolsc.lower_index(a_c, a_cov, gcov, nb, nx1, nx2, nx3, axisym)
+
+        return a_cov
+        
+    @staticmethod
     def construct_dyadic_cpp(u, gcov, **kwargs):
-        import hamr_readc
-        Toolsc = hamr_readc.PyTools()
-        dims   = list(u.shape)
-        dtype  = np.float32 # C++ layer expects float 
-        if (len(dims) != 5 or dims[0] != 4):
-            raise ValueError("This 4-vector with shape " + 
-                             str(dims) + " cannot be passed to C++.")
-        [ndim, nb, nx1, nx2, nx3] = dims
-        axisym = 1 if (gcov.shape[-1] == 1) else 0
+        """Construct dyadic tensor uu with C++ acceleration."""
+        dims = u.shape
+        if len(dims) != 5 or dims[0] != 4:
+            raise ValueError(f"This 4-vector with shape {dims} " + 
+                             "cannot be passed to C++.")
+            
+        # Get our cached C++ interface safely
+        Toolsc = Tools._get_cpp_tools()
+        
+        # Zero-allocation type-check
+        u_c = np.asarray(u, dtype=np.float32)
+        
+        _, nb, nx1, nx2, nx3 = dims
+        axisym = 1 if gcov.shape[-1] == 1 else 0
+        
+        upper_lower = 'upper_lower' in kwargs
+        lower_lower = 'lower_lower' in kwargs
+        
         if 'index' in kwargs:
-            [mu, nu] = kwargs.get('index')
-            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-                uu_tnsr = u[mu] * u[nu]
-            elif ('upper_lower' in kwargs):
-                u_nu    = hr.Tools.zeroNd(u[nu].shape, 1, dtype=dtype)
-                Toolsc.lower_index_mu(np.float32(u), u_nu, gcov, nu, 
+            mu, nu = kwargs.get('index')
+            if upper_lower:
+                u_nu = np.empty(dims[1:], dtype=np.float32)
+                Toolsc.lower_index_mu(u_c, u_nu, gcov, nu, 
                                       nb, nx1, nx2, nx3, axisym)
-                uu_tnsr = u[mu] * u_nu
-            elif ('lower_lower' in kwargs):
-                u_mu = hr.Tools.zeroNd(u[mu].shape, 1, dtype=dtype)
-                u_nu = hr.Tools.zeroNd(u[nu].shape, 1, dtype=dtype)
-                Toolsc.lower_index_mu(np.float32(u), u_mu, gcov, mu, 
+                return u_c[mu] * u_nu
+            elif lower_lower:
+                u_mu = np.empty(dims[1:], dtype=np.float32)
+                u_nu = np.empty(dims[1:], dtype=np.float32)
+                Toolsc.lower_index_mu(u_c, u_mu, gcov, mu, 
                                       nb, nx1, nx2, nx3, axisym)
-                Toolsc.lower_index_mu(np.float32(u), u_nu, gcov, nu, 
+                Toolsc.lower_index_mu(u_c, u_nu, gcov, nu, 
                                       nb, nx1, nx2, nx3, axisym)
-                uu_tnsr = u_mu * u_nu
+                return u_mu * u_nu
+            else:
+                return u_c[mu] * u_c[nu]
+                
+        if upper_lower or lower_lower:
+            u_cov = np.empty(dims, dtype=np.float32)
+            Toolsc.lower_index(u_c, u_cov, gcov, nb, nx1, nx2, nx3, axisym)
+            
+            if upper_lower:
+                return np.einsum('i...,j...->ij...', u_c, u_cov, 
+                                 optimize='greedy')
+            else: # lower_lower
+                return np.einsum('i...,j...->ij...', u_cov, u_cov, 
+                                 optimize='greedy')
         else:
-            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
-                uu_tnsr = np.einsum('i...,j...->ij...', u, u, optimize=True)
-            elif ('upper_lower' in kwargs):
-                u_nu   = hr.Tools.zeroNd(u.shape, 1, dtype=dtype)
-                Toolsc.lower_index(np.float32(u), u_nu, gcov, 
-                                   nb, nx1, nx2, nx3, axisym)
-                uu_tnsr = np.einsum(
-                    'i...,j...->ij...', u, u_nu, optimize=True)
-            elif ('lower_lower' in kwargs):
-                u_mu = hr.Tools.zeroNd(u.shape, 1, dtype=dtype)
-                u_nu = hr.Tools.zeroNd(u.shape, 1, dtype=dtype)
-                Toolsc.lower_index(np.float32(u), u_mu, gcov, 
-                                   nb, nx1, nx2, nx3, axisym)
-                Toolsc.lower_index(np.float32(u), u_nu, gcov, 
-                                   nb, nx1, nx2, nx3, axisym)
-                uu_tnsr = np.einsum(
-                    'i...,j...->ij...', u_mu, u_nu, optimize=True)
-        return uu_tnsr
+            return np.einsum('i...,j...->ij...', u_c, u_c, optimize='greedy')
 
     # Smooth out function using convolution
     def smooth(y, Lsmth, Lx, **kwargs): 
@@ -1222,28 +1566,3 @@ class Tools():
 
 if __name__ == "__main__":
     print("Executing analysis.")
-
-'''
-
-# Calculate precession period
-def calc_PrecPeriod(angle_tilt):
-    gam,a,precperiod
-    uu_proj = project_vector(uu)
-    L = rho * r * uu_proj[3]
-    tilt=np.zeros((nb,bs1new,1,1),dtype=np.float32)
-    tilt[0,:,0,0]=(np.nan_to_num(angle_tilt)+0.1)/360.0*2.0*np.pi
-    Z1 = 1.0 + (1.0 - a ** 2.0) ** (1.0 / 3.0) * ((1.0 + a) ** (1.0 / 3.0) + (1.0 - a) ** (1.0 / 3.0))
-    Z2 = np.sqrt(3.0 * a ** 2.0 + Z1 ** 2.0)
-    r_isco = (3.0 + Z2 - np.sqrt((3.0 - Z1) * (3.0 + Z1 + 2.0 * Z2)))
-    L_tot = np.nan_to_num(L * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
-    vnod=1.0/(r**1.5+a)*(1.0-np.sqrt(1.0-4.0*a/r**1.5+3.0*a*a/r**2))
-    tau_tot = np.nan_to_num(L * vnod * gdet * _dx1 * _dx2 * _dx3 * np.sin(tilt)* (r > r_isco) * (r < 150)).sum(-1).sum(-1).sum(-1)
-    precperiod = 2 * np.pi * L_tot / tau_tot
-
-def calc_lum():
-    global lum
-    p = (gam - 1.0) * ug
-    lum = np.sum((rho ** 3.0 * p ** (-2.0) * np.exp(-0.2 * (rho ** 2.0 / (np.sqrt(bsq) * p ** 2.0)) ** (1.0 / 3.0)) * (h > np.pi / 3.0) * (h < 2.0 / 3.0 * np.pi) * (r < 50.) * gdet * _dx1 * _dx2 * _dx3))
-
-   
-'''
