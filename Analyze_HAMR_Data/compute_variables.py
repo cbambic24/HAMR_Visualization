@@ -494,13 +494,15 @@ def _init_averages(data_dir, file_num, keys,
 
 def init_profiles(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
-    kwargs['file_type'] = 'Profiles'
+    if not restart:
+        kwargs['file_type'] = 'Profiles'
     return _init_averages(data_dir, file_num, keys, save_dir, nslices, 
         restart, nzro, **kwargs)
 
 def init_slices(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
-    kwargs['file_type'] = 'Slices'
+    if not restart:
+        kwargs['file_type'] = 'Slices'
     return _init_averages(data_dir, file_num, keys, save_dir, nslices, 
         restart, nzro, **kwargs)
 
