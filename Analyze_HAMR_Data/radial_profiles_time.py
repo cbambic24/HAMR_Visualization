@@ -30,6 +30,7 @@ def main(**kwargs):
     lowres1   = kwargs.get('lowres1')
     lowres2   = kwargs.get('lowres2')
     lowres3   = kwargs.get('lowres3')
+    stride    = kwargs.get('stride')
     reduced   = kwargs.get('reduced')
     restart   = kwargs.get('restart')
     overwrite = kwargs.get('overwrite')
@@ -38,9 +39,9 @@ def main(**kwargs):
     radiation = kwargs.get('radiation')
     two_temp  = kwargs.get('two_temp')
     vargamma  = kwargs.get('vargamma')
+    MBH       = np.float32(kwargs.get('MBH'))
 
     # Define constants
-    MBH = np.float32(10.0)
     cgs = True if (two_temp or radiation) else False
     if (two_temp or radiation):
         Msun = np.float32(hr.CONSTANTS['Msun'])
@@ -114,7 +115,15 @@ def main(**kwargs):
     size = comm.Get_size()
     rank = comm.Get_rank()
 
-    file_list_local = cv.get_file_list_local(file_list, size, rank, data_dir)
+    file_list_args = {
+        'file_list' : file_list,
+        'size'      : size,
+        'rank'      : rank,
+        'data_dir'  : data_dir,
+        'stride'    : stride
+    }
+
+    file_list_local = cv.get_file_list_local(**file_list_args)
     if not overwrite:
         sim_title = sim if title == None else title
         averages_dir = cv.user_path + f'/Averages/{sim_title}'
@@ -142,7 +151,9 @@ def main(**kwargs):
         'save_dir' : save_dir,
         'nslices'  : nslices,
         'restart'  : restart,
-        'nzro'     : nzeros
+        'nzro'     : nzeros,
+        'two_temp' : two_temp,
+        'radiation': radiation
     }
 
     # Outermost loop over file number (each file on single core)
@@ -178,6 +189,9 @@ def main(**kwargs):
             if 'tr2' in H.data.keys(): H.data['tr2'] = None
             if 'dissipation' in H.data.keys(): H.data['dissipation'] = None
             if 'rad_src'     in H.data.keys(): H.data['rad_src']     = None
+        
+            # Deallocate coordinate transformation array
+            H.grid['dxdxp'] = None
 
             acc_class_args = {
                 'grid'      : H.grid,
@@ -220,7 +234,7 @@ def main(**kwargs):
 
             # Calculate u^mu u_nu tensor
             uu_tnsr = ana.Tools.construct_dyadic(H.data['uu'] / c, 
-                H.grid['gcov'], upper_lower=True, index=[1,0], cpp=True)
+                H.grid['gcov'], upper_lower=True, index=[1, 0], cpp=True)
             
             # Calculate gas pressure
             if (two_temp and vargamma):
@@ -266,13 +280,15 @@ def main(**kwargs):
             profiles['Edot_Fluid']+= Acc.calc_Edot(TMHD=stress_energy_HD,  
                                                    **acc_args)[0]
             if (radiation):
-                profiles['Edot_Rad'] += Acc.calc_Edot(TMHD=stress_energy_RAD, 
-                                                      **acc_args)[0]
+                profiles['Edot_Rad'] += Acc.calc_Edot(TMHD=stress_energy_RAD)[0]
             
             del stress_energy_MHD 
             del stress_energy_HD, stress_energy_EM
             if (radiation):
                 stress_energy_RAD
+
+            # Deallocate gas internal energy
+            H.data['u_gas'] = None
 
             # Magnetic fluxes
             profiles['Phi_BH']      += Acc.calc_PhiBH()[0]
@@ -371,6 +387,7 @@ def main(**kwargs):
             del ones, Dtheta, Dtheta2
 
             if (radiation):
+                H.data['u_rad'] = None
                 del prad
             
             # Deallocate temperatures and energy densities 
@@ -403,6 +420,9 @@ def main(**kwargs):
             acc_args['sigma']      = None
             jet_args['sigma']      = None
             acc_args['sigma_mask'] = None
+        
+            # Deallocate remaining grid variables
+            H.grid['gdet'] = None
             
             # Density scale
             profiles['rho0'] = H.params['density_scale']
@@ -449,6 +469,9 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
+    parser.add_argument('--stride', type=int, default=1,
+                        required=False,
+                        help = """downsampling parameter in dump number""")
     parser.add_argument('--radiation', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if radiation quantities
@@ -461,21 +484,24 @@ if __name__ == '__main__':
                         default=False, 
                         help="""boolean to determine if variable gamma 
                         should be used for ion/electron energy/pressure.""") 
+    parser.add_argument('--MBH', type=float, default=10.,
+                        required=False,
+                        help = """black hole mass in Msun. (default: 10)""")
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")
     parser.add_argument('--restart', action='store_true', required=False, 
                         help="""boolean set to determine if profile 
-                        integration should continue from last slice_num""")
+                        integration should continue from last slice_num.""")
     parser.add_argument('--overwrite', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if existing profile file 
                         should be overwritten.""")
     parser.add_argument('--shared', action='store_true', required=False, 
-                        help="""boolean set to determine if proj-shared 
-                        should be used as the location of the data directory""")
+                        help="""boolean set to determine if proj-shared should 
+                        be used as the location of the data directory.""")
     parser.add_argument('--title', type=str, required=False, default=None, 
                         help="""title of simulation used for Averages directory
-                        if different from the simulation title in proj-shared""")
+                        if different from the title in proj-shared.""")
     args = parser.parse_args()
     main(**vars(args))

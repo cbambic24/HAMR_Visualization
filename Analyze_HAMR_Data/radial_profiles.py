@@ -36,9 +36,9 @@ def main(**kwargs):
     radiation = kwargs.get('radiation')
     two_temp  = kwargs.get('two_temp')
     vargamma  = kwargs.get('vargamma')
+    MBH       = np.float32(kwargs.get('MBH'))
 
     # Define constants
-    MBH = np.float32(10.0)
     cgs = True if (two_temp or radiation) else False
     if (two_temp or radiation):
         Msun = np.float32(hr.CONSTANTS['Msun'])
@@ -126,7 +126,9 @@ def main(**kwargs):
         'save_dir' : save_dir,
         'nslices'  : nslices,
         'restart'  : restart,
-        'nzro'     : nzeros
+        'nzro'     : nzeros,
+        'two_temp' : two_temp,
+        'radiation': radiation
     }
     
     profiles, nphi, iphi_stp = cv.init_profiles(**init_args, **read_args)
@@ -146,7 +148,7 @@ def main(**kwargs):
         comm = MPI.COMM_WORLD
         size = comm.Get_size()
         rank = comm.Get_rank()
-
+        
         prof_loc = {}
 
         delta_k   = (k_max - k_min) / size
@@ -169,6 +171,9 @@ def main(**kwargs):
         if 'tr2' in H.data.keys(): H.data['tr2'] = None
         if 'dissipation' in H.data.keys(): H.data['dissipation'] = None
         if 'rad_src'     in H.data.keys(): H.data['rad_src']     = None
+
+        # Deallocate coordinate transformation array
+        H.grid['dxdxp'] = None
 
         acc_class_args = {
             'grid'      : H.grid,
@@ -208,11 +213,11 @@ def main(**kwargs):
             sigma /= (H.data['rho'] * c * c)
         else:
             sigma = b2 / H.data['rho']
-
+        
         # Calculate u^mu u_nu tensor
         uu_tnsr = ana.Tools.construct_dyadic(H.data['uu'] / c, H.grid['gcov'], 
-            upper_lower=True, index=[1,0], cpp=True)
-        
+            upper_lower=True, index=[1, 0], cpp=True)
+
         # Calculate gas pressure
         if (two_temp and vargamma):
             pgas= Fluid.calc_pgas(**H.data)
@@ -235,12 +240,16 @@ def main(**kwargs):
         stress_energy_MHD += stress_energy_EM
         if (radiation):
             stress_energy_MHD += stress_energy_RAD
+            
+        # Deallocate gas internal energy
+        H.data['u_gas'] = None
 
         acc_args = {
             'sigma_cut' : np.float32(3.),
             'sigma'     : sigma
         }
         jet_args = acc_args.copy()
+
         # Avoid recalculating sigma mask each time
         acc_args['sigma_mask']= Acc.sigma_cut(**acc_args)
 
@@ -256,8 +265,7 @@ def main(**kwargs):
         prof_loc['Edot_Fluid']= Acc.calc_Edot(TMHD=stress_energy_HD,  
                                               **acc_args)[0]
         if (radiation):
-            prof_loc['Edot_Rad']=Acc.calc_Edot(TMHD=stress_energy_RAD, 
-                                               **acc_args)[0]
+            prof_loc['Edot_Rad']=Acc.calc_Edot(TMHD=stress_energy_RAD)[0]
         
         del stress_energy_MHD 
         del stress_energy_HD, stress_energy_EM
@@ -345,8 +353,8 @@ def main(**kwargs):
                 Dtheta2        # Dtheta2
             ]
         for (key, quant) in zip(keys, quants):
-            prof_loc[f'{key}'] = Acc.thph_sum(quant, weight=H.data['rho'], 
-                                              **acc_args)[0]
+            prof_loc[key] = Acc.thph_sum(quant, weight=H.data['rho'], 
+                                         **acc_args)[0]
         
         if (two_temp and vargamma): 
             del Theta_e, Theta_i, gam_e, gam_i, pgas, b2, pmag
@@ -359,6 +367,7 @@ def main(**kwargs):
         del ones, Dtheta, Dtheta2
         
         if (radiation):
+            H.data['u_rad'] = None
             del prad
 
         # Deallocate temperatures and energy densities 
@@ -381,8 +390,8 @@ def main(**kwargs):
         ]
 
         for (key, quant) in zip(vec_keys, quants):
-            prof_loc[f'{key}'] = Acc.thph_sum(quant, weight=H.data['rho'], 
-                                              **acc_args)[0]
+            prof_loc[key] = Acc.thph_sum(quant, weight=H.data['rho'], 
+                                         **acc_args)[0]
 
         del uu_cyl, b_cyl, sigma
         del Acc, Coords, Field, Fluid
@@ -392,6 +401,9 @@ def main(**kwargs):
         jet_args['sigma']      = None
         acc_args['sigma_mask'] = None
         nr = len(H.grid['r'][0, :, 0, 0])
+
+        # Deallocate remaining grid variables
+        H.grid['gdet'] = None
         
         local_buffer = np.zeros((len(profile_keys), nr), dtype=np.float64)
         for i, key in enumerate(profile_keys):
@@ -419,7 +431,7 @@ def main(**kwargs):
 
         if (rank == 0):
             for i, key in enumerate(profile_keys):
-                profiles[f'{key}'] += global_buffer[i, :]
+                profiles[key] += global_buffer[i, :]
 
             profiles['k_max'] = k_max
             profiles['slice_num_restart'] = slice_num + 1
@@ -468,17 +480,20 @@ if __name__ == '__main__':
                         default=False, 
                         help="""boolean to determine if variable gamma 
                         should be used for ion/electron energy/pressure.""")  
+    parser.add_argument('--MBH', type=float, default=10.,
+                        required=False,
+                        help = """black hole mass in Msun. (default: 10)""")
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if profile extraction
                         should be done on reduced data.""")
     parser.add_argument('--restart', action='store_true', required=False, 
                         help="""boolean set to determine if profile 
-                        integration should continue from last slice_num""")
+                        integration should continue from last slice_num.""")
     parser.add_argument('--shared', action='store_true', required=False, 
-                        help="""boolean set to determine if proj-shared 
-                        should be used as the location of the data directory""")
+                        help="""boolean set to determine if proj-shared should
+                        be used as the location of the data directory.""")
     parser.add_argument('--title', type=str, required=False, default=None, 
                         help="""title of simulation used for Averages directory
-                        if different from the simulation title in proj-shared""")
+                        if different from the title in proj-shared.""")
     args = parser.parse_args()
     main(**vars(args))
