@@ -31,6 +31,7 @@ def main(**kwargs):
     lowres1   = kwargs.get('lowres1')
     lowres2   = kwargs.get('lowres2')
     lowres3   = kwargs.get('lowres3')
+    stride    = kwargs.get('stride')
     r_max     = kwargs.get('r_max')
     reduced   = kwargs.get('reduced')
     restart   = kwargs.get('restart')
@@ -41,14 +42,15 @@ def main(**kwargs):
     two_temp  = kwargs.get('two_temp')
     cooling   = kwargs.get('cooling')
     vargamma  = kwargs.get('vargamma')
+    MBH       = np.float32(kwargs.get('MBH'))
 
     # Define constants
     MBH = np.float32(10.0)
     cgs = True if (two_temp or radiation) else False
     if (two_temp or radiation):
-        Msun = hr.CONSTANTS['Msun']
-        c    = hr.CONSTANTS['c']
-        G    = hr.CONSTANTS['G']
+        Msun = np.float32(hr.CONSTANTS['Msun'])
+        c    = np.float32(hr.CONSTANTS['c'])
+        G    = np.float32(hr.CONSTANTS['G'])
         Rg   = G * MBH * Msun / (c * c)
     else:
         c, G, Rg = ONE, ONE, ONE
@@ -133,8 +135,16 @@ def main(**kwargs):
     comm = pkl5.Intracomm(MPI.COMM_WORLD)	
     size = comm.Get_size()
     rank = comm.Get_rank()
+    
+    file_list_args = {
+        'file_list' : file_list,
+        'size'      : size,
+        'rank'      : rank,
+        'data_dir'  : data_dir,
+        'stride'    : stride
+    }
 
-    file_list_local = cv.get_file_list_local(file_list, size, rank, data_dir)
+    file_list_local = cv.get_file_list_local(**file_list_args)
     if not overwrite:
         sim_title = sim if title == None else title
         averages_dir = cv.user_path + f'/Averages/{sim_title}'
@@ -159,10 +169,21 @@ def main(**kwargs):
 
     slice_keys = keys + flux_keys + vec_keys + rhovec_keys + ['B1']
 
+    init_args = {
+        'data_dir' : data_dir,
+        'keys'     : slice_keys,
+        'save_dir' : save_dir,
+        'nslices'  : nslices,
+        'restart'  : restart,
+        'nzro'     : nzeros,
+        'two_temp' : two_temp,
+        'radiation': radiation
+    }
+
     # Outermost loop over file number (each file on single core)
     for file_num in file_list_local:
-        slices, nphi, iphi_stp = init_slices(data_dir, file_num, slice_keys,
-            save_dir, nslices, restart, nzeros, **read_args)
+        init_args['file_num'] = file_num
+        slices, nphi, iphi_stp = cv.init_slices(**init_args, **read_args)
         slices['done'] = False
 
         # Loop over whole data slice that fits on single node.
@@ -180,6 +201,9 @@ def main(**kwargs):
             read_args['k_max'] = k_max
 
             H = hr.Read(data_dir, **read_args)
+            
+            # Staggered start to take pressure off of filesystem
+            timeit.sleep(0.05 * rank + np.random.rand())
         
             # Read grid and data
             H.read_grid(file_num, direct=True)
@@ -235,7 +259,7 @@ def main(**kwargs):
             else:
                 pgas      = hr.Tools.zeroNd(H.data['u_gas'].shape, 1)
                 gamma_adi = np.float32(5. / 3.)
-                np.multiply(H.data['u_gas'], (gamma_adi - 1.), out=pgas)
+                np.multiply(H.data['u_gas'], (gamma_adi - ONE), out=pgas)
 
             # Cut on sigma
             sigma_cut_args = {
@@ -296,29 +320,17 @@ def main(**kwargs):
                 del stress_energy_RAD_10, stress_energy_RAD_20
 
             if (radiation):
-                # Radiation stress-tensor in the fluid frame necessary
-                # for the calculation of the radiative diffusion timescale
-                uu_rad     = ana.Tools.contract_vector(
-                    H.data['uu_rad'], H.grid['gcov'], cpp=True)
-                uu_rad_fld = Coords.boost_vector(uu_rad, H.data['uu'] / c, 
-                                                 inverse=True, cpp=True)
-                uu_t_rad_fld = uu_rad_fld[0]
-                del uu_rad, uu_rad_fld
-
-                uurad_fld = Coords.boost_vector(H.data['uu_rad'], 
-                                                H.data['uu'] / c, cpp=True)
-                u_rad    = H.data['u_rad']
-                R_vec    = np.zeros_like(H.data['uu'])
-                R_vec[0] = (
-                    FOUR_THIRDS * u_rad * (uurad_fld[0]/c) * (uu_t_rad_fld/c) + 
-                    ONE_THIRD * u_rad
-                )
-                R_vec[1] = FOUR_THIRDS * u_rad * (uurad_fld[1]/c) * (uu_t_rad_fld/c)
-                R_vec[2] = FOUR_THIRDS * u_rad * (uurad_fld[2]/c) * (uu_t_rad_fld/c)
-                R_cyl    = Coords.int_to_cyl_vec(R_vec)
-                slices['R_tR_Fluid'] += Acc.ph_sum(R_cyl[1])[0]
-                slices['R_tz_Fluid'] += Acc.ph_sum(R_cyl[3])[0]
-                del R_cyl, R_vec, u_rad, uurad_fld, uu_t_rad_fld
+                # This appears to work. We need to understand why
+                # Calculate radiation flux in fluid frame via projection
+                # F_rad^mu = -h^mu_alpha R^alpha_beta u^beta
+                Gamma = -(ana.Tools.dot(H.data['uu_rad']/c, H.data['uu']/c, 
+                    H.grid['gcov'], cpp=True))
+                uurad_proj = (H.data['uu_rad']/c - Gamma * H.data['uu']/c) 
+                Rad_Flux   = -FOUR_THIRDS * H.data['u_rad'] * Gamma * uurad_proj
+                Rad_Flux_cyl = Coords.int_to_cyl_vec(Rad_Flux, cpp=True)
+                slices['R_tR_Fluid'] += Acc.ph_sum(Rad_Flux_cyl[1])[0]
+                slices['R_tz_Fluid'] += Acc.ph_sum(Rad_Flux_cyl[3])[0]
+                del Gamma, uurad_proj, Rad_Flux, Rad_Flux_cyl
                 H.data['uu_rad'] = None
 
             # Opacities
@@ -536,9 +548,10 @@ def main(**kwargs):
                 slices[f'{key}'] += Acc.ph_sum(quant, **sigma_cut_args)[0]
 
             # Deallocate memory before MPI gather
-            H.data['uu']   = None
-            H.grid['gdet'] = None
-            H.data['rho']  = None
+            H.data['uu']    = None
+            H.grid['gdet']  = None
+            H.grid['dxdxp'] = None
+            H.data['rho']   = None
             del w, uu_cov, uu_cyl, b_cyl, uu_sph, b_sph
             del uu_cov_cyl, b_cov_cyl, sigma
 
@@ -572,54 +585,15 @@ def main(**kwargs):
 
         print(f'Done with all slices for file number {file_num}.',flush=True)
 
-def init_slices(data_dir, file_num, keys, 
-    save_dir, nslices, restart, nzro, **kwargs):
-    slices = {}
-    
-    # First, determine the limits of the slices.
-    H = hr.Read(data_dir, **kwargs)
-    H.read_params(file_num)
-    slices['t'] = H.params['t']
-    slices['a'] = H.params['a']
-
-    nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
-    nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
-    nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
-    if (nphi % nslices != 0):
-        raise ValueError(f'nslices must evenly divide nphi = {nphi}')
-    iphi_stp = int(nphi / nslices)
-
-    if 'r_max' in kwargs:
-        H.gridsizex1 = int(
-            H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
-        i_min, nr = H.get_rbox_coords()
-
-    # Logic to allow restarts if profile extraction is interrupted.
-    if not restart:
-        first_call = True
-    else:
-        fnum_str = str(file_num).zfill(nzro)
-        slices = dict(np.load(f'{save_dir}/Slices_{fnum_str}.npz'))
-        first_call = False
-
-    # Initialize slices dictionary
-    if first_call:
-        for key in keys:
-            slices[f'{key}'] = np.zeros([nr, nth])
-        first_call = False
-        slices['slice_num_restart'] = 0
-
-    return slices, nphi, iphi_stp
-
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
                         description="""Calculate 2D slices for all 
                         simulation outputs.""")
     parser.add_argument('sim', type=str, help = """simulation name""")
     parser.add_argument('start_file', type=int, help = """dump number
-                        of start file in profile extraction""")
+                        of start file in slice extraction""")
     parser.add_argument('end_file', type=int, help = """dump number
-                        of end file in profile extraction""")
+                        of end file in slice extraction""")
     parser.add_argument('--nslices', type=int, required=False,
                         default=1,
                         help="""number of slices in phi 
@@ -633,6 +607,9 @@ if __name__ == '__main__':
     parser.add_argument('--lowres3', type=int, default=1,
                         required=False,
                         help = """downsampling parameter in x3""")
+    parser.add_argument('--stride', type=int, default=1,
+                        required=False,
+                        help = """downsampling parameter in dump number""")
     parser.add_argument('--r_max', type=float, default=0.,
                         required=False,
                         help = """radial extent in Rg (default: R_max)""")
@@ -649,9 +626,12 @@ if __name__ == '__main__':
                         help="""boolean to determine if cooling rates
                         (qie, qIC, qemi) should be included.""")
     parser.add_argument('--vargamma', action=argparse.BooleanOptionalAction,
-                        default=True, 
+                        default=False, 
                         help="""boolean to determine if variable gamma 
                         should be used for ion/electron energy/pressure.""")  
+    parser.add_argument('--MBH', type=float, default=10.,
+                        required=False,
+                        help = """black hole mass in Msun (default: 10)""")
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if slice extraction
                         should be done on reduced data.""")

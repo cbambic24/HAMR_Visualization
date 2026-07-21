@@ -37,11 +37,12 @@ def main(**kwargs):
     title     = kwargs.get('title')
     radiation = kwargs.get('radiation')
     two_temp  = kwargs.get('two_temp')
+    RIAF      = kwargs.get('RIAF')
     cooling   = kwargs.get('cooling')
     vargamma  = kwargs.get('vargamma')
+    MBH       = np.float32(kwargs.get('MBH'))
 
     # Define constants
-    MBH = np.float32(10.0)
     cgs = True if (two_temp or radiation) else False
     if (two_temp or radiation):
         Msun = np.float32(hr.CONSTANTS['Msun'])
@@ -126,7 +127,7 @@ def main(**kwargs):
     # Ensure that nodes don't all attempt to make directory at same time
     timeit.sleep(np.random.rand())
     os.makedirs(save_dir, exist_ok=True)
-
+    
     read_args = {
         'cgs_grid' : cgs,
         'cgs_data' : cgs,
@@ -141,9 +142,20 @@ def main(**kwargs):
         read_args['r_max'] = r_max
 
     slice_keys = keys + flux_keys + vec_keys + rhovec_keys + ['B1']
+
+    init_args = {
+        'data_dir' : data_dir,
+        'file_num' : file_num,
+        'keys'     : slice_keys,
+        'save_dir' : save_dir,
+        'nslices'  : nslices,
+        'restart'  : restart,
+        'nzro'     : nzeros,
+        'two_temp' : two_temp,
+        'radiation': radiation
+    }
     
-    slices, nphi, iphi_stp = init_slices(data_dir, file_num, slice_keys,
-        save_dir, nslices, restart, nzeros, **read_args)
+    slices, nphi, iphi_stp = cv.init_slices(**init_args, **read_args)
     slices['done'] = False
 
     # Loop over whole data slice that fits on single node.
@@ -152,7 +164,7 @@ def main(**kwargs):
         if (restart):
             if slice_num < slices['slice_num_restart']:
                 continue
-     
+
         slices['saved'] = False
         k_min = int(iphi)
         k_max = int(iphi + iphi_stp)
@@ -162,7 +174,7 @@ def main(**kwargs):
         rank = comm.Get_rank()
 
         slice_loc = {}
-
+        
         delta_k   = (k_max - k_min) / size
         k_min_loc = int(k_min + delta_k * rank)
         k_max_loc = int(k_min + delta_k * (rank + 1))
@@ -229,7 +241,7 @@ def main(**kwargs):
         else:
             pgas      = hr.Tools.zeroNd(H.data['u_gas'].shape, 1)
             gamma_adi = np.float32(5. / 3.)
-            np.multiply(H.data['u_gas'], (gamma_adi - 1.), out=pgas)
+            np.multiply(H.data['u_gas'], (gamma_adi - ONE), out=pgas)
 
         # Cut on sigma
         sigma_cut_args = {
@@ -321,9 +333,17 @@ def main(**kwargs):
             # Consider testing the C++ acceleration of this
             opacities = dict.fromkeys(['electron_scattering', 'bound_free', 
                 'CHIANTI', 'free_free', 'hydrogen', 'molecular', 'synchrotron'])
-            if (two_temp):
+            if (two_temp and not RIAF):
                 Opac = rad.Opacity(opacities, **H.data, pars=H.params, 
                     CONSTANTS=hr.CONSTANTS, b2=b2, XRB=True, cpp=True)
+            elif (two_temp and RIAF):
+                Opac = rad.RIAF_Opacity(opacities, **H.data, pars=H.params, 
+                    CONSTANTS=hr.CONSTANTS, b2=b2, XRB=True, cpp=True)
+            elif (not two_temp and RIAF):
+                Opac = rad.RIAF_Opacity(opacities, **H.data, 
+                    Te=(mu_g * mp / kB) * (pgas / H.data['rho']), 
+                    pars=H.params, CONSTANTS=hr.CONSTANTS, 
+                    b2=b2, XRB=True, cpp=True)
             else:
                 Opac = rad.Opacity(opacities, **H.data, 
                     Te=(mu_g * mp / kB) * (pgas / H.data['rho']), 
@@ -440,16 +460,16 @@ def main(**kwargs):
 
         if (radiation and two_temp):
             for (key, quant) in zip(keys[:-6], quants):
-                slice_loc[f'{key}'] = Acc.ph_sum(quant)[0]
+                slice_loc[key] = Acc.ph_sum(quant)[0]
         elif (radiation and not two_temp):
             for (key, quant) in zip(keys[:-5], quants):
-                slice_loc[f'{key}'] = Acc.ph_sum(quant)[0]
+                slice_loc[key] = Acc.ph_sum(quant)[0]
         elif (two_temp and not radiation):
             for (key, quant) in zip(keys[:-2], quants):
-                slice_loc[f'{key}'] = Acc.ph_sum(quant)[0]
+                slice_loc[key] = Acc.ph_sum(quant)[0]
         else:
             for (key, quant) in zip(keys[:-1], quants):
-                slice_loc[f'{key}'] = Acc.ph_sum(quant)[0]
+                slice_loc[key] = Acc.ph_sum(quant)[0]
 
         # Opacities
         if (radiation):
@@ -517,7 +537,7 @@ def main(**kwargs):
         ]
 
         for (key, quant) in zip(vec_keys, quants):
-            slice_loc[f'{key}'] = Acc.ph_sum(quant)[0]
+            slice_loc[key] = Acc.ph_sum(quant)[0]
 
         # Mass fluxes
         quants = [
@@ -527,12 +547,13 @@ def main(**kwargs):
             H.data['rho'] * H.data['uu'][1]
         ] 
         for (key, quant) in zip(rhovec_keys, quants):
-            slice_loc[f'{key}'] = Acc.ph_sum(quant, **sigma_cut_args)[0]
+            slice_loc[key] = Acc.ph_sum(quant, **sigma_cut_args)[0]
 
         # Deallocate memory before MPI gather
-        H.data['uu']   = None
-        H.grid['gdet'] = None
-        H.data['rho']  = None
+        H.data['uu']    = None
+        H.grid['gdet']  = None
+        H.grid['dxdxp'] = None
+        H.data['rho']   = None
         del w, uu_cov, uu_cyl, b_cyl, uu_sph, b_sph
         del uu_cov_cyl, b_cov_cyl, sigma
 
@@ -546,6 +567,9 @@ def main(**kwargs):
         global_buffer = None
         for key in slice_loc:
             slice_loc[key] = None
+
+        # Deallocate class instances
+        del Acc, Coords, Fluid, Field, Radi
 
         if (rank == 0):
             # Put spherical radius in dictionary 
@@ -564,13 +588,14 @@ def main(**kwargs):
 
         # Sum all local buffers to global buffer
         comm.Reduce(local_buffer, global_buffer, op=MPI.SUM, root=0)
+        del local_buffer
         
         print(f'Rank {rank:d} done analyzing range of k: ' + 
             f'({k_min_loc:d}, {k_max_loc:d}).', flush=True)
 
         if (rank == 0):
             for i, key in enumerate(slice_keys):
-                slices[f'{key}'] += global_buffer[i, :, :]
+                slices[key] += global_buffer[i, :, :]
 
             slices['k_max'] = k_max
             slices['slice_num_restart'] = slice_num + 1
@@ -584,47 +609,8 @@ def main(**kwargs):
             print(f'Finished with slice {snum:d} of {nslices:d}', flush=True)
         comm.Barrier()
         gc.collect()
-
+        
     print(f'Done with all slices for file number {file_num}.')
-
-def init_slices(data_dir, file_num, keys, 
-    save_dir, nslices, restart, nzro, **kwargs):
-    slices = {}
-    
-    # First, determine the limits of the slices.
-    H = hr.Read(data_dir, **kwargs)
-    H.read_params(file_num)
-    slices['t'] = H.params['t']
-    slices['a'] = H.params['a']
-
-    nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
-    nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
-    nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
-    if (nphi % nslices != 0):
-        raise ValueError(f'nslices must evenly divide nphi = {nphi}')
-    iphi_stp = int(nphi / nslices)
-
-    if 'r_max' in kwargs:
-        H.gridsizex1 = int(
-            H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
-        i_min, nr = H.get_rbox_coords()
-
-    # Logic to allow restarts if profile extraction is interrupted.
-    if not restart:
-        first_call = True
-    else:
-        fnum_str = str(file_num).zfill(nzro)
-        slices = dict(np.load(f'{save_dir}/Slices_{fnum_str}.npz'))
-        first_call = False
-
-    # Initialize slices dictionary
-    if first_call:
-        for key in keys:
-            slices[f'{key}'] = np.zeros([nr, nth])
-        first_call = False
-        slices['slice_num_restart'] = 0
-
-    return slices, nphi, iphi_stp
 
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
@@ -655,15 +641,23 @@ if __name__ == '__main__':
     parser.add_argument('--two_temp', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if two-temperature 
-                        physics should be included in slice extraction.""")    
+                        physics should be included in slice extraction.""")   
+    parser.add_argument('--RIAF', action=argparse.BooleanOptionalAction,
+                        default=False, 
+                        help="""boolean to determine if RIAF opacities
+                        should be used for synchrotron 
+                        (applies to older data sets).""")
     parser.add_argument('--cooling', action=argparse.BooleanOptionalAction,
                         default=True, 
                         help="""boolean to determine if cooling rates
                         (qie, qIC, qemi) should be included.""")    
     parser.add_argument('--vargamma', action=argparse.BooleanOptionalAction,
-                        default=True, 
+                        default=False, 
                         help="""boolean to determine if variable gamma 
                         should be used for ion/electron energy/pressure.""")  
+    parser.add_argument('--MBH', type=float, default=10.,
+                        required=False,
+                        help = """black hole mass in Msun (default: 10)""")
     parser.add_argument('--reduced', action='store_true', required=False,
                         help="""boolean to determine if slice extraction
                         should be done on reduced data.""")
