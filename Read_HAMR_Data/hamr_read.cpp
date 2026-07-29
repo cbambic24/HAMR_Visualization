@@ -710,8 +710,8 @@ void ReadIn::setLoops(int &iStrt, int &iEnd, int &iStp, int &offset,
     int export_raytracing) {
   if (by_block) {
     iStrt = 0;
-    iEnd  = bs / low_res;
-    iStp  = 1;
+    iEnd  = bs;
+    iStp  = low_res;
   } else {
     // offsets are always 0 unless low_resx1 etc. not a power of 2
     offset = (low_res - (coord * upscale * bs) % low_res) % low_res;
@@ -767,8 +767,8 @@ void ReadIn::setMetricLoops(int &iStrt, int &iEnd, int &iStp,
     int &offset, int bs, int coord, int upscale, int low_res, int by_block) {
   if (by_block) {
     iStrt = 0;
-    iEnd  = bs / low_res;
-    iStp  = 1;
+    iEnd  = bs;
+    iStp  = low_res;
   } else {
     // offsets are always 0 unless low_resx1 etc. not a power of 2
     offset = (low_res - (coord * upscale * bs) % low_res) % low_res;
@@ -787,7 +787,8 @@ void ReadIn::getIndex3D(long int &index_3D, long int &gridsize_3D,
     bsLR.x3 = read.bs3 / read.lowRes.x3;
     
     index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-      (iGlob * bsLR.x2 * bsLR.x3) + (jGlob * bsLR.x3) + kGlob);
+      ((iGlob / read.lowRes.x1) * bsLR.x2 * bsLR.x3) + 
+      ((jGlob / read.lowRes.x2) * bsLR.x3) + (kGlob / read.lowRes.x3));
       
     // gridsize is only modified if by block
     gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
@@ -814,14 +815,14 @@ void ReadIn::readGridData(FILE* fin, double* tempArray,
     bsLR.x3 = read.bs3 / read.lowRes.x3;
     
     index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-      (iGlob * bsLR.x2 * bsLR.x3) + (jGlob * bsLR.x3) + kGlob);
+      ((iGlob / read.lowRes.x1) * bsLR.x2 * bsLR.x3) + 
+      ((jGlob / read.lowRes.x2) * bsLR.x3) + (kGlob / read.lowRes.x3));
       
     // gridsize is only modified if by block
     gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
                       
-    fseek(fin, ((iGlob * read.lowRes.x1) * read.bs2 * read.bs3 + 
-                (jGlob * read.lowRes.x2) * read.bs3 + 
-                (kGlob * read.lowRes.x3)) * read.nvar * read.dbl_size, 
+    fseek(fin, (iGlob * read.bs2 * read.bs3 + 
+                jGlob * read.bs3 + kGlob) * read.nvar * read.dbl_size, 
                 SEEK_SET);
     fread(&tempArray[0], read.dbl_size, read.nvar, fin);
   } else {
@@ -850,15 +851,15 @@ void ReadIn::readMetricData2D(FILE* fin, double* tempArray,
     bsLR.x2 = read.bs2 / read.lowRes.x2;
     bsLR.x3 = read.bs3 / read.lowRes.x3;
 
-    index_2D = ((n * bsLR.x1 * bsLR.x2) + (iGlob * bsLR.x2) + jGlob);
+    index_2D = ((n * bsLR.x1 * bsLR.x2) + 
+      ((iGlob / read.lowRes.x1) * bsLR.x2) + (jGlob / read.lowRes.x2));
   
     // gridsize is only modified if by block
     gridsize_2D = read.nb * bsLR.x1 * bsLR.x2;
 
     fseek(fin, (read.nvar * read.bs1 * read.bs2 * read.bs3 + 
-      (iGlob * read.lowRes.x1) * read.bs2 * (read.nmtc * 16 + 1) + 
-      (jGlob * read.lowRes.x2) * (read.nmtc * 16+1)) * read.dbl_size, 
-      SEEK_SET);
+      iGlob * read.bs2 * (read.nmtc * 16 + 1) + 
+      jGlob * (read.nmtc * 16+1)) * read.dbl_size, SEEK_SET);
     fread(&tempArray[0], read.dbl_size, (read.nmtc * 16 + 1), fin);
   } else {
     // indices on the given block
@@ -886,16 +887,16 @@ void ReadIn::readMetricData3D(FILE* fin, double* tempArray,
     bsLR.x3 = read.bs3 / read.lowRes.x3;
 
     index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-                (iGlob * bsLR.x2 * bsLR.x3) + 
-                (jGlob * bsLR.x3) + kGlob);
+                ((iGlob / read.lowRes.x1) * bsLR.x2 * bsLR.x3) + 
+                ((jGlob / read.lowRes.x2) * bsLR.x3) + 
+                 (kGlob / read.lowRes.x3));
     // gridsize is only modified if by block
     gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
 
     fseek(fin, (read.nvar * read.bs1 * read.bs2 * read.bs3 + 
-      (iGlob * read.lowRes.x1) * read.bs2 * read.bs3 * (read.nmtc * 16 + 1) + 
-      (jGlob * read.lowRes.x2) * read.bs3 * (read.nmtc * 16 + 1) +
-      (kGlob * read.lowRes.x3) * (read.nmtc * 16+1)) * read.dbl_size, 
-      SEEK_SET);
+      iGlob * read.bs2 * read.bs3 * (read.nmtc * 16 + 1) + 
+      jGlob * read.bs3 * (read.nmtc * 16 + 1) +
+      kGlob * (read.nmtc * 16+1)) * read.dbl_size, SEEK_SET);
     fread(&tempArray[0], read.dbl_size, (read.nmtc * 16 + 1), fin);
   } else {
     // indices on the given block
@@ -925,16 +926,15 @@ void ReadIn::readPrimsData(FILE* fin, float* tempArray,
     bsLR.x3 = read.bs3 / read.lowRes.x3;
 
     index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-      (iGlob * bsLR.x2 * bsLR.x3) + (jGlob * bsLR.x3) + kGlob);
+      ((iGlob / read.lowRes.x1) * bsLR.x2 * bsLR.x3) + 
+      ((jGlob / read.lowRes.x2) * bsLR.x3) + (kGlob / read.lowRes.x3));
 
     // gridsize is only modified if by block
     gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
                 
     fseek(fin, (((n - nStrt) * read.bs1 * read.bs2 * read.bs3) +
-      (iGlob * read.lowRes.x1) * read.bs2 * read.bs3 + 
-      (jGlob * read.lowRes.x2) * read.bs3 + 
-      (kGlob * read.lowRes.x3)) * read.nvar * read.float_size, 
-      SEEK_SET);
+      (iGlob * read.bs2 * read.bs3) + 
+      (jGlob * read.bs3) + kGlob) * read.nvar * read.float_size, SEEK_SET);
     fread(tempArray, read.float_size, read.nvar, fin);
   } else {
     // indices on the given block
