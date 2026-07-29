@@ -850,15 +850,15 @@ void ReadIn::readMetricData2D(FILE* fin, double* tempArray,
     bsLR.x2 = read.bs2 / read.lowRes.x2;
     bsLR.x3 = read.bs3 / read.lowRes.x3;
 
-    index_2D = ((n * bsLR.x1 * bsLR.x2) + 
-      ((iGlob / read.lowRes.x1) * bsLR.x2) + (jGlob / read.lowRes.x2));
+    index_2D = ((n * bsLR.x1 * bsLR.x2) + (iGlob * bsLR.x2) + jGlob);
   
     // gridsize is only modified if by block
     gridsize_2D = read.nb * bsLR.x1 * bsLR.x2;
 
     fseek(fin, (read.nvar * read.bs1 * read.bs2 * read.bs3 + 
-      iGlob * read.bs2 * (read.nmtc * 16 + 1) + 
-      jGlob * (read.nmtc * 16+1)) * read.dbl_size, SEEK_SET);
+      (iGlob * read.lowRes.x1) * read.bs2 * (read.nmtc * 16 + 1) + 
+      (jGlob * read.lowRes.x2) * (read.nmtc * 16+1)) * read.dbl_size, 
+      SEEK_SET);
     fread(&tempArray[0], read.dbl_size, (read.nmtc * 16 + 1), fin);
   } else {
     // indices on the given block
