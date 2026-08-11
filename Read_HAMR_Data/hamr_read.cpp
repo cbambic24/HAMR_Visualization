@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <cstdio> // fread and fseek
 #include <numeric> // accumulate
+#include <stdexcept> // runtime_error, thrown by primPtr and the file checks
+#include <atomic>    // the deferred-failure flag shared across OpenMP threads
 #include <omp.h>
 #include "hamr_read.h"
 
@@ -56,7 +58,8 @@ Read::Read(std::string dir, int axisym, int by_block, int export_raytracing,
 
   // information needed for AMR
   n_ord       = amr_info.at("n_ord");
-      
+  blockList   = amr_info.at("block_list");
+
   // refinement level of block
   amrLevel.x1 = amr_info.at("levelx1");
   amrLevel.x2 = amr_info.at("levelx2");
@@ -104,58 +107,96 @@ Read::Read(std::string dir, int axisym, int by_block, int export_raytracing,
   DISSTRK = int(physics.at("DUMP_DISS"));
 };
 
-void Read::readGrid(float* x1, float* x2, float* x3, 
-    float* r, float* theta, float* phi, 
-    float* gcov, float* gcon, float* gdet, float* dxdxp) {
-  
-  // variables (nvar): x1, x2, x3, 
+void Read::readGrid(const GridArrays& grid) {
+  // variables (nvar): x1, x2, x3,
   // r, theta, phi, i (global), j (global), k (global)
-  // metrics (nmtc): gcov, gcon, 
+  // metrics (nmtc): gcov, gcon,
   // dxdxp (Jacobian from x1, x2, x3 -> r, theta, phi)
-  nvar = 9; 
+  nvar = 9;
   nmtc = 3;
-      
+   
+  float* x1    = grid.x1;
+  float* x2    = grid.x2;
+  float* x3    = grid.x3;
+  float* r     = grid.r;
+  float* theta = grid.theta;
+  float* phi   = grid.phi;
+  float* gcov  = grid.gcov;
+  float* gcon  = grid.gcon;
+  float* gdet  = grid.gdet;
+  float* dxdxp = grid.dxdxp;
+  
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
 
-  ReadIn readIn; 
+  ReadIn readIn;
   
+  const long int shared_gridsize_2D = (i_max - i_min) * (j_max - j_min);
+  int* levelArray = new int[shared_gridsize_2D](); // initialize to 0
+
   std::cout << "Loading grid" << std::endl;
+
+  // First failure seen by any thread. The checks below throw, but an
+  // exception escaping an OpenMP region calls std::terminate() (SIGABRT,
+  // uncatchable from Python), so the throw is deferred until the region
+  // closes. atomic<bool> because every thread reads it each iteration to
+  // wind down early; failMsg is only touched inside the critical section.
+  std::atomic<bool> failed(false);
+  std::string failMsg;
 
   #pragma omp parallel firstprivate(readIn)
   {
     long int gridsize_2D, gridsize_3D, index_2D, index_3D;
-    int n; // index over blocks
+    int n; // Local Block ID
+    int idx; // position within blockList
     int iGlob, jGlob, kGlob; // global indices
     int ii; // index over metric components
     AMRVar iStrt, iEnd, iStp; // loop variables
     bool iInRange, jInRange, kInRange;
+    BoolVar iNotInBlock; // is data in selection box/on block?
     FILE* fin;
     int read_data, read_file;
     std::string filename;
+    int nSel = (int)blockList.size();
 
     gridsize_2D = (i_max - i_min) * (j_max - j_min);
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
 
     double* tempArray = new double[58];
-    int* levelArray = new int[gridsize_2D];
     #pragma omp for
-    for (n = 0; n < nb; n++) {
+    for (idx = 0; idx < nSel; idx++) {
+      if (failed) continue; // another thread already failed; wind down
+      n = blockList[idx];
       iInRange = false;
       jInRange = false;
       kInRange = false;
-    
+
+      readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+
+      if (!by_block && checkNotInBlock(iStrt, iEnd, iNotInBlock)) {
+        continue;
+      }
+
       filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
 
-      checkFileExists(filename);
-      checkGridFileSize(filename);
-      fin = fopen(filename.c_str(), "rb");
-    
+      // openGridFile opens and length-checks in one step and throws on
+      // either failure. The catch keeps the exception from escaping the
+      // OpenMP region (which would call std::terminate); the rethrow
+      // happens after the region closes. Nothing leaks: openGridFile either
+      // returns a valid handle or has already closed it.
+      try {
+        fin = openGridFile(filename);
+      } catch (const std::exception& e) {
+        #pragma omp critical (hamrReadFail)
+        {
+          if (!failed) { failed = true; failMsg = e.what(); }
+        }
+        continue;
+      }
+
       read_file = 0;
       read_data = 0;
-   
-      readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
-    
+
       for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
         for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
           for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
@@ -254,55 +295,85 @@ void Read::readGrid(float* x1, float* x2, float* x3,
         } // else axisymmetric
       } // if read_file
       fclose(fin);
-    } // loop over n
-    delete[] tempArray;
-    delete[] levelArray;
+    } // loop over blockList
+    delete[] tempArray; // per-thread, so freed per-thread
+  }
+  // levelArray is allocated ONCE outside the parallel region so all threads
+  // share one refinement-level map; freeing it inside would delete the same
+  // pointer once per thread.
+  delete[] levelArray;
+
+  // Single-threaded again: safe to throw, and with `except +` on the Cython
+  // declaration this surfaces in Python as a catchable RuntimeError.
+  if (failed) {
+    throw std::runtime_error(failMsg);
   }
 }
 
-void Read::readGridCoords(float* x1, float* x2, float* x3, 
-  float* r, float* theta, float* phi) {
-
-  // variables (nvar): x1, x2, x3, 
+void Read::readGridCoords(const GridCoords& coords) {
+  // variables (nvar): x1, x2, x3,
   // r, theta, phi, i (global), j (global), k (global)
-  // metrics (nmtc): gcov, gcon, 
+  // metrics (nmtc): gcov, gcon,
   // dxdxp (Jacobian from x1, x2, x3 -> r, theta, phi)
-  nvar = 9; 
+  nvar = 9;
   nmtc = 3;
-    
+   
+  float* x1    = coords.x1;
+  float* x2    = coords.x2;
+  float* x3    = coords.x3;
+  float* r     = coords.r;
+  float* theta = coords.theta;
+  float* phi   = coords.phi;
+
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
 
-  ReadIn readIn; 
-  
+  ReadIn readIn;
+
   std::cout << "Loading grid coordinates" << std::endl;
+
+  // Deferred failure, same pattern as readGrid: the file checks throw, and
+  // an exception escaping an OpenMP region calls std::terminate().
+  std::atomic<bool> failed(false);
+  std::string failMsg;
 
   #pragma omp parallel firstprivate(readIn)
   {
     long int gridsize_3D, index_3D;
     int n; // index over blocks
+    int idx; // position within blockList
     int iGlob, jGlob, kGlob; // global indices
     AMRVar iStrt, iEnd, iStp; // loop variables
     bool iInRange, jInRange, kInRange;
     FILE* fin;
     int read_data;
     std::string filename;
-
+    int nSel = (int)blockList.size();
+    
     gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
 
     double* tempArray = new double[58];
-
     #pragma omp for
-    for (n = 0; n < nb; n++) {
+    for (idx = 0; idx < nSel; idx++) {
+      if (failed) continue; // another thread already failed; wind down
+      n = blockList[idx];
       iInRange = false;
       jInRange = false;
       kInRange = false;
-  
+
       filename = dir + "/gdumps/gdump" + std::to_string(n_ord[n]);
 
-      checkFileExists(filename);
-      checkGridFileSize(filename);
-      fin = fopen(filename.c_str(), "rb");
+      // Nothing leaks: openGridFile either returns a valid handle or has
+      // already closed it before throwing.
+      try {
+        fin = openGridFile(filename);
+      } catch (const std::exception& e) {
+        #pragma omp critical (hamrReadFail)
+        {
+          if (!failed) { failed = true; failMsg = e.what(); }
+        }
+        continue;
+      }
   
       read_data = 0;
  
@@ -344,67 +415,116 @@ void Read::readGridCoords(float* x1, float* x2, float* x3,
         } // jGlob
       } // iGlob
       fclose(fin);
-    } // loop over n
+    } // loop over blockList
     delete[] tempArray;
+  }
+
+  // Single-threaded again: safe to throw.
+  if (failed) {
+    throw std::runtime_error(failMsg);
   }
 }
 
-void Read::readGridResolution(int* res_level_x1, int* res_level_x2, 
-    int* res_level_x3) {
-    
+void Read::readGridResolution(const GridResolution& res_level) {
+  int* res_level_x1 = res_level.x1;
+  int* res_level_x2 = res_level.x2;
+  int* res_level_x3 = res_level.x3;
+   
   isize = (k_max - k_min) * (j_max - j_min);
   jsize = (k_max - k_min);
-
-  long int gridsize_3D, index_3D;
-  int n; // index over blocks
-  int iGlob, jGlob, kGlob; // global indices
-  AMRVar iStrt, iEnd, iStp; // loop variables
-  bool iInRange, jInRange, kInRange;
-  int read_data;
-  ReadIn readIn; 
-
-  #pragma omp parallel for private(n, iGlob, jGlob, kGlob, \
-    iStrt, iEnd, iStp, index_3D, gridsize_3D, iInRange, jInRange, kInRange, \
-    read_data) firstprivate(readIn)
-  for (n = 0; n < nb; n++) {
-    gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
-
-    iInRange = false;
-    jInRange = false;
-    kInRange = false;
-  
-    read_data = 0;
  
-    readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+  ReadIn readIn; 
   
-    for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
-      for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
-        for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
-          read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
-            iInRange, jInRange, kInRange);
-          if (read_data) {
-            readIn.getIndex3D(index_3D, gridsize_3D, n, 
-              iGlob, jGlob, kGlob, *this);
-            res_level_x1[index_3D] = amrLevel.x1[n_ord[n]];
-            res_level_x2[index_3D] = amrLevel.x2[n_ord[n]];
-            res_level_x3[index_3D] = amrLevel.x3[n_ord[n]];
-          }
-          read_data = 0;
-        } // kGlob
-      } // jGlob
-    } // iGlob
-  } // loop over n
+  #pragma omp parallel firstprivate(readIn)
+  {
+    long int gridsize_3D, index_3D;
+    int n; // index over blocks
+    int idx; // position within blockList
+    int iGlob, jGlob, kGlob; // global indices
+    AMRVar iStrt, iEnd, iStp; // loop variables
+    bool iInRange, jInRange, kInRange;
+    int read_data;
+    int nSel = (int)blockList.size();
+    
+    gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
+     
+    #pragma omp for
+    for (idx = 0; idx < nSel; idx++) {
+      n = blockList[idx];
+      iInRange = false;
+      jInRange = false;
+      kInRange = false;
+    
+      read_data = 0;
+      readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
+    
+      for (iGlob = iStrt.x1; iGlob < iEnd.x1; iGlob += iStp.x1) {
+        for (jGlob = iStrt.x2; jGlob < iEnd.x2; jGlob += iStp.x2) {
+          for (kGlob = iStrt.x3; kGlob < iEnd.x3; kGlob += iStp.x3) {
+            read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
+              iInRange, jInRange, kInRange);
+            if (read_data) {
+              readIn.getIndex3D(index_3D, gridsize_3D, n, 
+                iGlob, jGlob, kGlob, *this);
+              res_level_x1[index_3D] = amrLevel.x1[n_ord[n]];
+              res_level_x2[index_3D] = amrLevel.x2[n_ord[n]];
+              res_level_x3[index_3D] = amrLevel.x3[n_ord[n]];
+            }
+            read_data = 0;
+          } // kGlob
+        } // jGlob
+      } // iGlob
+    } // loop over n
+  }
 }
 
-void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B, 
-    float* E, float* uRad, float* uuRad, 
-    float* Te, float* Ti, float* phNum,
-    float* Ye, float* xAlpha, float* xAtm, 
-    float* uNu1, float* uNu2, float* uNu3, 
-    float* uuNu1, float* uuNu2, float* uuNu3,
-    float* nuNum1, float* nuNum2, float* nuNum3, 
-    float* tr1, float* tr2, float* diss, float* radSrc) {
-  
+float* Read::primPtr(const std::unordered_map<std::string, float*>& prims,
+    const std::string& key, bool required) const {
+  auto iter = prims.find(key);
+  if (iter != prims.end()) {
+    return iter->second;
+  }
+  if (required) {
+    throw std::runtime_error(
+      "readPrims: array '" + key + "' was not supplied, but the physics "
+      "flags for this dump say it should be.");
+  }
+  return nullptr;
+}
+
+void Read::readPrims(int fnum,
+    const std::unordered_map<std::string, float*>& prims) {
+
+  // Unpack data from prims unordered map (dictionary).
+  // Note not to loop over map keys assuming order (they are unordered).
+  float* rho    = primPtr(prims, "rho");
+  float* uGas   = primPtr(prims, "u_gas");
+  float* uu     = primPtr(prims, "uu");
+  float* B      = primPtr(prims, "B");
+
+  float* uRad   = RADM1 ? primPtr(prims, "u_rad")   : nullptr;
+  float* uuRad  = RADM1 ? primPtr(prims, "uu_rad")  : nullptr;
+  float* E      = RES   ? primPtr(prims, "E")       : nullptr;
+  float* Te     = TWOT  ? primPtr(prims, "Te")      : nullptr;
+  float* Ti     = TWOT  ? primPtr(prims, "Ti")      : nullptr;
+  float* phNum  = PNUM  ? primPtr(prims, "p_num")   : nullptr;
+  float* Ye     = DOYE  ? primPtr(prims, "Ye")      : nullptr;
+  float* xAlpha = DONUC ? primPtr(prims, "X_alpha") : nullptr;
+  float* xAtm   = DONUC ? primPtr(prims, "X_atm")   : nullptr;
+  float* uNu1   = NUM1  ? primPtr(prims, "u_nu1")   : nullptr;
+  float* uNu2   = NUM1  ? primPtr(prims, "u_nu2")   : nullptr;
+  float* uNu3   = NUM1  ? primPtr(prims, "u_nu3")   : nullptr;
+  float* uuNu1  = NUM1  ? primPtr(prims, "uu_nu1")  : nullptr;
+  float* uuNu2  = NUM1  ? primPtr(prims, "uu_nu2")  : nullptr;
+  float* uuNu3  = NUM1  ? primPtr(prims, "uu_nu3")  : nullptr;
+  float* nuNum1 = NUM1  ? primPtr(prims, "n_nu1")   : nullptr;
+  float* nuNum2 = NUM1  ? primPtr(prims, "n_nu2")   : nullptr;
+  float* nuNum3 = NUM1  ? primPtr(prims, "n_nu3")   : nullptr;
+  float* tr1    = DOTR  ? primPtr(prims, "tr1")     : nullptr;
+  float* tr2    = DOTR  ? primPtr(prims, "tr2")     : nullptr;
+  float* diss   = DISSTRK      ? primPtr(prims, "dissipation") : nullptr;
+  float* radSrc = (DISSTRK == 2) ? primPtr(prims, "rad_src")   : nullptr;
+
   nvar = nPrim + RADM1 * nRadM1 + RES * nRes + TWOT * nTwoT + 
     PNUM * nPnum + DOYE * nYe + DONUC * nNUC + NUM1 * nNuM1 + 
     DOTR * nTr   + DISSTRK * nDiss;
@@ -422,19 +542,16 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
   // this corresponds to the number of GPUs used in computation
   blocksInFile.push_back(0.0);
   fileCount = 0;
-  filename = dir + "/dumps" + std::to_string(fnum) + 
-  "/new_dump" + std::to_string(fileCount);
+  filename = dir + "/dumps" + std::to_string(fnum) + "/new_dump" + std::to_string(fileCount);
   while (std::filesystem::exists(filename)) {
     filesize = std::filesystem::file_size(filename);
     if ((filesize % (nvar * bs1 * bs2 * bs3 * float_size)) != 0) {
       std::cout << "Error: Possible data size error in file " << 
       filename << std::endl;
     }
-    blocksInFile.push_back(filesize / (
-      nvar * bs1 * bs2 * bs3 * float_size));
+    blocksInFile.push_back(filesize / (nvar * bs1 * bs2 * bs3 * float_size));
     fileCount += 1;
-    filename = dir + "/dumps" + std::to_string(fnum) + 
-    "/new_dump" + std::to_string(fileCount);
+    filename = dir + "/dumps" + std::to_string(fnum) + "/new_dump" + std::to_string(fileCount);
   }
 
   // check if the number of blocks in all files equals nb
@@ -446,10 +563,17 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     std::cout << "Expected number of blocks: " << nb << std::endl;
   }
 
+  // Deferred failure, same pattern as readGrid: a failed open throws, and
+  // an exception escaping an OpenMP region calls std::terminate().
+  std::atomic<bool> failed(false);
+  std::string failMsg;
+
   #pragma omp parallel firstprivate(readIn)
   {
     long int gridsize_3D, index_3D;
-    int n, nStrt, nEnd; // variables for looping over blocks
+    int n; // Local Block ID
+    int idx; // position within blockList == destination slot
+    int fileStart, fileEnd; // block range held by the open file
     int iFile, vStrt, ii; // file index and variable start index (vStrt)
     int iGlob, jGlob, kGlob; // global indices
     AMRVar iStrt, iEnd, iStp; // loop variables
@@ -461,28 +585,50 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     float* tempArray = new float[nvar];
     #pragma omp for
     for (iFile = 0; iFile < fileCount; iFile++) {
+      if (failed) continue; // another thread already failed; wind down
       gridsize_3D = (i_max - i_min) * (j_max - j_min) * (k_max - k_min);
 
       iInRange = false;
       jInRange = false;
       kInRange = false;
 
-      local_filename = dir + "/dumps" + std::to_string(fnum) + 
-      "/new_dump" + std::to_string(iFile);
-      
-      checkFileExists(local_filename);
+      local_filename = dir + "/dumps" + std::to_string(fnum) + "/new_dump" + std::to_string(iFile);
+
+      // fopen failing is the existence check. No size check here: the
+      // counting loop above already validated every dump file's size while
+      // building blocksInFile, so repeating it would be a second stat.
       fin = fopen(local_filename.c_str(), "rb");
+      if (fin == nullptr) {
+        #pragma omp critical (hamrReadFail)
+        {
+          if (!failed) {
+            failed = true;
+            failMsg = "hamr_read: cannot open " + local_filename;
+          }
+        }
+        continue;
+      }
 
       read_data = 0;
         
-      nStrt = std::accumulate(blocksInFile.begin(), 
+      // fileStart/fileEnd bound the blocks stored in this file 
+      fileStart = std::accumulate(blocksInFile.begin(),
         blocksInFile.begin() + iFile + 1, 0);
-      nEnd  = nStrt + blocksInFile[iFile + 1];
+      fileEnd   = fileStart + blocksInFile[iFile + 1];
 
-      nStrt = std::max(nStrt, blkStrt);
-      nEnd  = std::min(nEnd,  blkEnd);
+      // Walk the selection, not a contiguous range, and keep only the
+      // blocks this file actually holds. blockList is ascending, so this
+      // could binary-search instead; the scan is a handful of integer
+      // compares against a per-block fread, so it is not worth the
+      // assumption. idx doubles as the destination slot, which is why it
+      // has to come from the list rather than from n - blkStrt: with a box
+      // selection the chosen Local Block IDs are scattered.
+      for (idx = 0; idx < (int)blockList.size(); idx++) {
+        n = blockList[idx];
+        if (n < fileStart || n >= fileEnd) {
+          continue;
+        }
 
-      for (n = nStrt; n < nEnd; n++) {
         readIn.setLoops3D(n, iStrt, iEnd, iStp, *this);
 
         // do not loop through block if block not in data set
@@ -497,8 +643,8 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
               read_data = checkIndexInRange(iGlob, jGlob, kGlob, 
                 iInRange, jInRange, kInRange);
               if (read_data) {
-                readIn.readPrimsData(fin, tempArray, index_3D, gridsize_3D, 
-                  n, nStrt, iGlob, jGlob, kGlob, *this);
+                readIn.readPrimsData(fin, tempArray, index_3D, gridsize_3D,
+                  n, fileStart, idx, iGlob, jGlob, kGlob, *this);
 
                 if (export_raytracing) {
                   std::cout << "Raytracing not implemented." << std::endl;
@@ -515,8 +661,7 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
                   if (RADM1) {
                     uRad[index_3D] = tempArray[nPrim];
                     for(ii = 0; ii < 4; ii++) {
-                      uuRad[ii * gridsize_3D + index_3D] = 
-                        tempArray[nPrim + 1 + ii];
+                      uuRad[ii * gridsize_3D + index_3D] = tempArray[nPrim + 1 + ii];
                     }
                   }
                     
@@ -558,22 +703,19 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
                       
                     uNu1[index_3D] = tempArray[vStrt];
                     for (ii = 0; ii < 4; ii++) {
-                      uuNu1[ii * gridsize_3D + index_3D] = 
-                      tempArray[vStrt + 1 + ii];
+                      uuNu1[ii * gridsize_3D + index_3D] = tempArray[vStrt + 1 + ii];
                     }
                     nuNum1[index_3D] = tempArray[vStrt + 5];
                       
                     uNu2[index_3D] = tempArray[vStrt + 6];
                     for (ii = 0; ii < 4; ii++) {
-                      uuNu2[ii * gridsize_3D + index_3D] = 
-                      tempArray[vStrt + 7 + ii];
+                      uuNu2[ii * gridsize_3D + index_3D] = tempArray[vStrt + 7 + ii];
                     }
                     nuNum2[index_3D] = tempArray[vStrt + 11];
                       
                     uNu3[index_3D] = tempArray[vStrt + 12];
                     for (ii = 0; ii < 4; ii++) {
-                      uuNu3[ii * gridsize_3D + index_3D] = 
-                      tempArray[vStrt + 13 + ii];
+                      uuNu3[ii * gridsize_3D + index_3D] = tempArray[vStrt + 13 + ii];
                     }
                     nuNum3[index_3D] = tempArray[vStrt + 17];
                   }
@@ -606,25 +748,53 @@ void Read::readPrims(int fnum, float* rho, float* uGas, float* uu, float* B,
     } // parallel loop over number of files (GPUs)
     delete[] tempArray;
   }
-}
 
-void Read::checkFileExists(std::string filename) {
-  if (!std::filesystem::exists(filename)) {
-    std::runtime_error(filename + " does not exist.");
+  // Single-threaded again: safe to throw.
+  if (failed) {
+    throw std::runtime_error(failMsg);
   }
 }
 
-void Read::checkGridFileSize(std::string filename) {
-  int expected_filesize;
-  expected_filesize = (nvar * bs1 * bs2 * bs3 + 
-    (bs1 * bs2 * (nmtc * 16 + 1)) * (axisym)  + 
-    (bs1 * bs2 * bs3 * (nmtc * 16 + 1)) * (!axisym)) * dbl_size;
-
-  filesize = std::filesystem::file_size(filename);
-  if (filesize < expected_filesize) {
-    std::runtime_error(filename + " does not exist."); 
+// Both checks used to CONSTRUCT a std::runtime_error and drop it on the
+// floor: `std::runtime_error(msg);` is a discarded temporary, not a throw.
+// A missing or short file therefore fell straight through to fopen/fread.
+//
+// Every caller is inside a #pragma omp parallel region, and an exception
+// that escapes one calls std::terminate() -- which kills the process with
+// SIGABRT and cannot be caught from Python. So the call sites catch these,
+// record the first failure under a critical section, and rethrow after the
+// region closes. See the failed/failMsg pattern in readGrid.
+FILE* Read::openGridFile(const std::string& filename) {
+  // fopen failing IS the existence check -- a separate exists() would be a
+  // second path lookup to learn what this call already reports.
+  FILE* fin = fopen(filename.c_str(), "rb");
+  if (fin == nullptr) {
+    throw std::runtime_error("hamr_read: cannot open " + filename);
   }
+
+  // Size from the open descriptor: two cheap seeks, versus a path-based
+  // stat that has to resolve the name again over the network.
+  std::fseek(fin, 0L, SEEK_END);
+  long int actual = std::ftell(fin);
+  std::fseek(fin, 0L, SEEK_SET);   // hand it back rewound
+
+  // long int, not int: the member `filesize` this used to assign into was
+  // an int, so any gdump over 2 GB truncated and the comparison became
+  // meaningless.
+  long int expected =
+    (long int)(nvar * bs1 * bs2 * bs3 +
+    (bs1 * bs2 * (nmtc * 16 + 1)) * (axisym) +
+    (bs1 * bs2 * bs3 * (nmtc * 16 + 1)) * (!axisym)) * (long int)dbl_size;
+
+  if (actual < expected) {
+    fclose(fin);   // we own the handle here, so close before unwinding
+    throw std::runtime_error("hamr_read: " + filename + " is short: got "
+      + std::to_string(actual) + " bytes, expected at least "
+      + std::to_string(expected) + ".");
+  }
+  return fin;
 }
+
 
 bool Read::checkNotInBlock(AMRVar iStrt, AMRVar iEnd, BoolVar iNotInBlock) {
   // do not loop through block if block not in data set
@@ -917,22 +1087,30 @@ void ReadIn::readMetricData3D(FILE* fin, double* tempArray,
 }
 
 void ReadIn::readPrimsData(FILE* fin, float* tempArray,
-    long int &index_3D, long int &gridsize_3D, int n, int nStrt, 
-    int iGlob, int jGlob, int kGlob, const Read &read) {
+    long int &index_3D, long int &gridsize_3D, int n, int fileStart,
+    int dest, int iGlob, int jGlob, int kGlob, const Read &read) {
   if (read.by_block) {
     // convert to 1D index to read in binary data
     bsLR.x1 = read.bs1 / read.lowRes.x1;
     bsLR.x2 = read.bs2 / read.lowRes.x2;
     bsLR.x3 = read.bs3 / read.lowRes.x3;
 
-    index_3D = ((n * bsLR.x1 * bsLR.x2 * bsLR.x3) + 
-      ((iGlob / read.lowRes.x1) * bsLR.x2 * bsLR.x3) + 
+    // Destination is `dest`, the block's position in blockList, because the
+    // caller allocates exactly the selected blocks in that order. The source
+    // offset below is indexed from the start of the FILE. These are
+    // different numbers whenever the selection starts partway into a file,
+    // and once a box selection makes blockList non-contiguous the
+    // destination can no longer be recovered from n at all.
+    index_3D = (((long int)dest * bsLR.x1 * bsLR.x2 * bsLR.x3) +
+      ((iGlob / read.lowRes.x1) * bsLR.x2 * bsLR.x3) +
       ((jGlob / read.lowRes.x2) * bsLR.x3) + (kGlob / read.lowRes.x3));
 
-    // gridsize is only modified if by block
-    gridsize_3D = read.nb * bsLR.x1 * bsLR.x2 * bsLR.x3;
-                
-    fseek(fin, (((n - nStrt) * read.bs1 * read.bs2 * read.bs3) +
+    // gridsize is only modified if by block; it is the stride between
+    // components of a vector field, so it spans the selection, not the dump
+    gridsize_3D = (long int)read.blockList.size()
+                  * bsLR.x1 * bsLR.x2 * bsLR.x3;
+
+    fseek(fin, (((n - fileStart) * read.bs1 * read.bs2 * read.bs3) +
       (iGlob * read.bs2 * read.bs3) + 
       (jGlob * read.bs3) + kGlob) * read.nvar * read.float_size, SEEK_SET);
     fread(tempArray, read.float_size, read.nvar, fin);
@@ -946,7 +1124,7 @@ void ReadIn::readPrimsData(FILE* fin, float* tempArray,
     index_3D = (((iGlob / read.lowRes.x1) - read.i_min) * read.isize +
                 ((jGlob / read.lowRes.x2) - read.j_min) * read.jsize +
                 ((kGlob / read.lowRes.x3) - read.k_min));                
-    fseek(fin, ((n - nStrt) * read.bs1 * read.bs2 * read.bs3 + 
+    fseek(fin, ((n - fileStart) * read.bs1 * read.bs2 * read.bs3 +
       (iLoc * read.bs2 * read.bs3) + (jLoc * read.bs3) + kLoc) * (
       read.nvar * read.float_size), SEEK_SET);
     fread(tempArray, read.float_size, read.nvar, fin);  
@@ -1036,7 +1214,7 @@ void Tools::invert4x4(float* A, float* B, int nb, int nx1, int nx2, int nx3) {
     std::array<double, 16> a_tmp, b_tmp;
 
     #pragma omp for
-    for (int n = 0; n < nb; n++) {
+    for (int n = 0; n < gridsize_3D; n++) {
       // First get flattened 4x4 matrix from A at this (n,i,j,k) cell
       for (int i1 = 0; i1 < 4; i1++) {
         for (int j1 = 0; j1 < 4; j1++) {
@@ -1227,13 +1405,86 @@ void Tools::calcLorentzBoostVec(const std::array<float, 4>& uu,
   vsq  = v[1] * v[1] + v[2] * v[2] + v[3] * v[3];
   lambda[0] = uu[0];
   for (int i = 0; i < 3; i++) {
-    lambda[4 * (i + 1)] = -uu[i+1];
-    lambda[i + 1]       = -uu[i+1];
+    lambda[4 * (i + 1)] = -pm * uu[i+1];
+    lambda[i + 1]       = -pm * uu[i+1];
   }
   for (int i = 0 ; i < 3; i++) {
     for (int j = 0; j < 3; j++) {
       lambda[4 * (i + 1) + (j + 1)] = ((uu[0] - 1.0) / vsq) * (
-       v[i + 1] * v[j + 1] + (i == j) * 1.0);
+       v[i + 1] * v[j + 1]) + (i == j) * 1.0;
+    }
+  }
+}
+
+template<bool AxisymTnsr, bool AxisymM>
+void Tools::contractTensorImpl(float* tnsr, float* tnsr_out, float* M,
+    int nb, int nx1, int nx2, int nx3) {
+  // compute tnsr_out_ij = M_ik M_jl tnsr_kl for all i,j
+  // computes (4, 4, nb, nx1, nx2, nx3) dimensional array, where nb, nx1,
+  // nx2, nx3 are the *output* (broadcast) grid size.
+  long int gridsize_3D = nb * nx1 * nx2 * nx3;
+  long int gridsize_2D = nb * nx1 * nx2;
+
+  // Resolved at compile time (AxisymTnsr/AxisymM are template params),
+  // so these are loop-invariant constants, not runtime branches.
+  long int tnsr_stride = AxisymTnsr ? gridsize_2D : gridsize_3D;
+  long int M_stride    = AxisymM    ? gridsize_2D : gridsize_3D;
+
+  #pragma omp parallel
+  {
+    std::array<float, 16> Tloc, TpLoc, Mloc;
+    #pragma omp for
+    for (int n = 0; n < gridsize_3D; n++) {
+      long int n_tnsr = AxisymTnsr ? (n / nx3) : n;
+      long int n_M    = AxisymM    ? (n / nx3) : n;
+      for (int k = 0; k < 4; k++) {
+        for (int l = 0; l < 4; l++) {
+          Tloc[4 * k + l] = tnsr[(4 * k + l) * tnsr_stride + n_tnsr];
+          Mloc[4 * k + l] = M[(4 * k + l) * M_stride + n_M];
+        }
+      }
+      contractTnsr(Tloc, TpLoc, Mloc);
+      for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+          tnsr_out[(4 * i + j) * gridsize_3D + n] = TpLoc[4 * i + j];
+        }
+      }
+    }
+  }
+}
+
+void Tools::contractTensor(float* tnsr, float* tnsr_out, float* M,
+    int nb, int nx1, int nx2, int nx3, int axisym_tnsr, int axisym_M) {
+  // Dispatch once per call -- not per grid cell -- to the instantiation
+  // matching these flags, so the hot loop itself is branch-free.
+  if (axisym_tnsr) {
+    if (axisym_M) contractTensorImpl<true,  true >(tnsr, tnsr_out, M, nb, nx1, nx2, nx3);
+    else          contractTensorImpl<true,  false>(tnsr, tnsr_out, M, nb, nx1, nx2, nx3);
+  } else {
+    if (axisym_M) contractTensorImpl<false, true >(tnsr, tnsr_out, M, nb, nx1, nx2, nx3);
+    else          contractTensorImpl<false, false>(tnsr, tnsr_out, M, nb, nx1, nx2, nx3);
+  }
+}
+
+void Tools::contractTnsr(const std::array<float, 16>& T,
+    std::array<float, 16>& Tp, const std::array<float, 16>& M) {
+  // Tp_ij = M_ik M_jl T_kl, done as two matrix multiplies (S = M T,
+  // then Tp = S M^T) instead of expanding all 4^4 terms directly.
+  std::array<float, 16> S;
+  for (int i = 0; i < 4; i++) {
+    for (int l = 0; l < 4; l++) {
+      S[4 * i + l] = 0.0;
+      for (int k = 0; k < 4; k++) {
+        S[4 * i + l] += M[4 * i + k] * T[4 * k + l];
+      }
+    }
+  }
+  for (int i = 0; i < 4; i++) {
+    for (int j = 0; j < 4; j++) {
+      Tp[4 * i + j] = 0.0;
+      for (int l = 0; l < 4; l++) {
+        Tp[4 * i + j] += S[4 * i + l] * M[4 * j + l];
+      }
     }
   }
 }
