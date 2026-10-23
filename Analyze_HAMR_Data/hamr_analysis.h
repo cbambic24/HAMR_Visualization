@@ -35,7 +35,10 @@ class TwoTemperature {
     
     TwoTemperature(double ThetaMin);
     
-    TwoTemperature(TwoTemperature& twoT);
+    // '= default' asks the compiler to generate the copy constructor:
+    // it copies EVERY member, and stays correct when members are added.
+    // (Required by OpenMP firstprivate(); '= delete' would remove it.)
+    TwoTemperature(const TwoTemperature& twoT) = default;
     
     double CoulombLog(double ne, float Te);
     double BesselTerms(double Thetae, double Thetai);
@@ -60,7 +63,9 @@ class Opacity {
     Opacity(const std::unordered_map<std::string, double>& params,
         const std::unordered_map<std::string, double>& CONSTANTS);
     
-    Opacity (Opacity& opac);
+    // Compiler-generated: copies every member, including the params /
+    // CONSTANTS maps that the hand-written version silently dropped.
+    Opacity(const Opacity& opac) = default;
     
     virtual double kappaAbsTotal(float rho, float Te, float Tr, float b2, int XRB); 
     
@@ -118,7 +123,7 @@ class RIAF_Opacity : public Opacity {
     RIAF_Opacity(const std::unordered_map<std::string, double>& params,
         const std::unordered_map<std::string, double>& CONSTANTS);
     
-    RIAF_Opacity (RIAF_Opacity& opac);
+    RIAF_Opacity(const RIAF_Opacity& opac) = default;
    
     double kappaAbsTotal(float rho, float Te, float Tr, float b2, int XRB); 
     
