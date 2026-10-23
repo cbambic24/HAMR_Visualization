@@ -1,19 +1,22 @@
 import numpy as np
 from analysis import Tools
 
+# Numerical constants for performance
+ONE = np.float32(1.)
+
 class Radiation():
     def __init__(self, pars, CONSTANTS, **kwargs):
         self.cgs  = kwargs.get('cgs', False)
-        self.rho0 = pars['density_scale']  if self.cgs else 1. # g/cm^3
-        self.c    = CONSTANTS['c']         if self.cgs else 1. # cm/s
-        self.kB   = CONSTANTS['kB']        if self.cgs else 1. # erg/K
-        self.me   = CONSTANTS['me']        if self.cgs else 1. # g
-        self.sigT = CONSTANTS['sigmaT']    if self.cgs else 1. # cm^2
+        self.rho0 = pars['density_scale']  if self.cgs else ONE # g/cm^3
+        self.c    = CONSTANTS['c']         if self.cgs else ONE # cm/s
+        self.kB   = CONSTANTS['kB']        if self.cgs else ONE # erg/K
+        self.mp   = CONSTANTS['mp']        if self.cgs else ONE # g
+        self.me   = CONSTANTS['me']        if self.cgs else ONE # g
+        self.sigT = CONSTANTS['sigmaT']    if self.cgs else ONE # cm^2
         # Equation 10 in Sadowski+ (2017)
-        self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB']) if self.cgs else 1.
-        self.aRAD = CONSTANTS['aRAD']      if self.cgs else 1. # erg/cm^3/K^4
+        self.mu_e = 2.0 / (1.0 + CONSTANTS['X_AB']) if self.cgs else ONE
+        self.aRAD = CONSTANTS['aRAD']      if self.cgs else ONE # erg/cm^3/K^4
 
-        self.kwargs    = kwargs
         self.CONSTANTS = CONSTANTS
         self.params    = pars
 
@@ -29,14 +32,18 @@ class Radiation():
         return ((4./3.) * (u_rad / rho0c2) * uu_tnsr + 
                 (1./3.) * (u_rad / rho0c2) * g_tnsr) * rho0c2
 
-    # Compton cooling/heating time
-    def calc_tIC(self, rho, Te, u_rad, **kwargs):
-        # Calculate gamma (ratio of specific heats)
-        # Equation 28 in Sadowski+ (2017)
+    # Electron internal energy density, erg/cm^3.
+    # gam_e is Equation 28 in Sadowski+ (2017); the electron number density
+    # is n_e = rho / (mu_e m_p), with mu_e = 2/(1+X) the mean molecular
+    # weight per electron in units of the *proton* mass.
+    def calc_u_e(self, rho, Te):
         Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
         gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-        # Electron internal energy
-        u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
+        return (1./(gam_e-1.)) * (rho / (self.mu_e * self.mp)) * self.kB * Te
+
+    # Compton cooling/heating time
+    def calc_tIC(self, rho, Te, u_rad, **kwargs):
+        u_e = self.calc_u_e(rho, Te)
         # In instances where qIC = 0, set tIC to 0.
         qIC = self.calc_qIC(rho, Te, u_rad, **kwargs)
         tIC = np.zeros(qIC.shape)
@@ -54,10 +61,7 @@ class Radiation():
     # Equation 35 in Sadowski+ (2017)
     def calc_qIC(self, rho, Te, u_rad, **kwargs):
         rho0, rho0c2 = self.rho0, self.rho0 * self.c * self.c 
-        opacities = dict.fromkeys(['electron_scattering'])
-        Opac      = Opacity(opacities, rho, Te, u_rad, 
-                            self.params, self.CONSTANTS)
-        kappa_es  = Opac.opacities['electron_scattering']
+        kappa_es  = Opacity.calc_kappa_es(self.CONSTANTS['X_AB'])
         Theta_e   = (self.kB * Te) / (self.me * self.c * self.c)
         Trad      = (u_rad / self.aRAD) ** (1./4.)
         mc2       = self.me * self.c * self.c
@@ -80,40 +84,39 @@ class Radiation():
     # electron-radiation temperature equilibration timescale
     # t_rad^eq = (1 / kappa rho) * u_e / (a Te^4 c + q_IC) if Compton = True
     def calc_trad_emi(self, rho, Te, u_rad, **kwargs):
-        # Calculate gamma (ratio of specific heats)
-        # Equation 28 in Sadowski+ (2017)
-        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
-        gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-        # Electron internal energy
-        u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
+        u_e = self.calc_u_e(rho, Te)
         if kwargs.get('Compton'):
             return (u_e / (self.calc_q_emi(rho, Te, u_rad, **kwargs) + 
-                self.q_IC(rho, Te, u_rad)))
+                self.calc_qIC(rho, Te, u_rad)))
         else:
             return u_e / self.calc_q_emi(rho, Te, u_rad, **kwargs)
 
-    # Emission rate assuming that radiation is blackbody spectrum
-    # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
-    def calc_q_emi(self, rho, Te, u_rad, **kwargs):
-        if (kwargs.get('cpp', False)):
-            return self.calc_q_emi_cpp(rho, Te, u_rad, **kwargs)
-        # Calculate total emission opacity
+    # Build the opacity model and return the total for one mechanism.
+    # Shared by calc_q_emi / calc_q_abs.
+    def calc_kappa_total(self, process, rho, Te, u_rad, **kwargs):
         if 'opacities' in kwargs:
             opacities = kwargs.get('opacities')
             kwargs.pop('opacities') # do not pass opacities as kwarg
         else:
             opacities = dict.fromkeys(['electron_scattering',
                 'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
-                'molecular', 'synchrotron']) # 'iron_line' not used
+                'molecular', 'synchrotron']) # 'iron_line' is opt-in
         if not kwargs.get('RIAF', False):
-            Opac = Opacity(opacities, rho, Te, u_rad, 
-                           self.params, self.CONSTANTS, 
-                           mechansim='emission', **kwargs)
+            Opac = Opacity(opacities, rho, Te, u_rad,
+                           self.params, self.CONSTANTS,
+                           mechanism=process, **kwargs)
         else:
-            Opac = RIAF_Opacity(opacities, rho, Te, u_rad, 
-                                self.params, self.CONSTANTS, 
-                                mechansim='emission', **kwargs)
-        kappa_em = Opac.opacities['emission_total']
+            Opac = RIAF_Opacity(opacities, rho, Te, u_rad,
+                                self.params, self.CONSTANTS,
+                                mechanism=process, **kwargs)
+        return Opac.opacities['%s_total' %process]
+
+    # Emission rate assuming that radiation is blackbody spectrum
+    # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
+    def calc_q_emi(self, rho, Te, u_rad, **kwargs):
+        if (kwargs.get('cpp', False)):
+            return self.calc_q_emi_cpp(rho, Te, u_rad, **kwargs)
+        kappa_em = self.calc_kappa_total('emission', rho, Te, u_rad, **kwargs)
         Te_dbl   = np.float64(Te.copy())
         return kappa_em * rho * self.aRAD * (Te_dbl ** 4) * self.c
 
@@ -121,12 +124,7 @@ class Radiation():
     # electron-radiation temperature equilibration timescale
     # t_rad^eq = (1 / kappa rho) * u_e / (a T_rad^4 c)
     def calc_trad_abs(self, rho, Te, u_rad, **kwargs):
-        # Calculate gamma (ratio of specific heats)
-        # Equation 28 in Sadowski+ (2017)
-        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
-        gam_e   = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-        # Electron internal energy
-        u_e   = (1./(gam_e-1.)) * (rho / (self.mu_e * self.me)) * self.kB * Te
+        u_e = self.calc_u_e(rho, Te)
         return u_e / self.calc_q_abs(rho, Te, u_rad, **kwargs)
 
     # Absorption rate assuming that radiation is blackbody spectrum
@@ -134,84 +132,50 @@ class Radiation():
     def calc_q_abs(self, rho, Te, u_rad, **kwargs):
         if (kwargs.get('cpp', False)):
             return self.calc_q_abs_cpp(rho, Te, u_rad, **kwargs)
-        # Calculate total absorption opacity
-        if 'opacities' in kwargs:
-            opacities = kwargs.get('opacities')
-            kwargs.pop('opacities') # do not pass opacities as kwarg
-        else:
-            opacities = dict.fromkeys(['electron_scattering',
-                'bound_free', 'CHIANTI', 'free_free', 'hydrogen',
-                'molecular', 'synchrotron']) # 'iron_line' not used
-        if not kwargs.get('RIAF', False):
-            Opac = Opacity(opacities, rho, Te, u_rad, 
-                           self.params, self.CONSTANTS, 
-                           mechansim='absorption', **kwargs)
-        else:
-            Opac = RIAF_Opacity(opacities, rho, Te, u_rad, 
-                                self.params, self.CONSTANTS, 
-                                mechansim='absorption', **kwargs)
-        kappa_abs = Opac.opacities['absorption_total']
+        kappa_abs = self.calc_kappa_total('absorption', rho, Te, u_rad,
+                                          **kwargs)
         return kappa_abs * rho * u_rad * self.c
     
-    # C++ accelerated
-    # Emission rate assuming that radiation is blackbody spectrum
-    # Sink term in Sadowski+ (2017) Equation 31 (term with Bhat)
+    # C++ accelerated emission/absorption rate, assuming the radiation is
+    # a blackbody spectrum. Source and sink terms in Sadowski+ (2017)
+    # Equation 31 (the terms with Bhat).
+    def calc_q_cpp(self, process, rho, Te, u_rad, **kwargs):
+        if 'b2' in kwargs:
+            b2 = np.float32(kwargs.get('b2'))
+        else:
+            raise ValueError("""Missing keyword argument b2
+                              for calculating synchrotron opacity.""")
+        Tr = (u_rad / self.aRAD) ** (1./4.)
+        import hamr_readc
+        Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
+        dtype    = np.float64 # C++ layer expects double
+        [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
+
+        XRB  = 1 if kwargs.get('XRB') else 0
+        RIAF = 1 if kwargs.get('RIAF', False) else 0
+        q    = np.zeros(rho.shape, dtype=dtype)
+        calc = (Radiationc.calc_q_emi_tot if process == 'emission'
+                else Radiationc.calc_q_abs_tot)
+        calc(q, rho, Te, Tr, b2, XRB, RIAF, nb, nx1, nx2, nx3)
+        return q
+
     def calc_q_emi_cpp(self, rho, Te, u_rad, **kwargs):
-        if 'b2' in kwargs:
-            b2 = np.float32(kwargs.get('b2'))
-        else:
-            raise ValueError("""Missing keyword argument b2
-                              for calculating synchrotron opacity.""") 
-        Tr = (u_rad / self.aRAD) ** (1./4.)
-        import hamr_readc
-        Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
-        dtype    = np.float64 # C++ layer expects double
-        [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
-        
-        XRB  = 1 if kwargs.get('XRB') else 0
-        RIAF = 1 if kwargs.get('RIAF', False) else 0 
-        qemi = np.zeros(rho.shape, dtype=dtype)
-        Radiationc.calc_q_emi_tot(qemi, rho, Te, Tr, b2, 
-            XRB, RIAF, nb, nx1, nx2, nx3)
-        return qemi
-            
-    # C++ accelerated 
-    # Absorption rate assuming that radiation is blackbody spectrum
-    # Source term in Sadowski+ (2017) Equation 31 (term with Bhat)
+        return self.calc_q_cpp('emission', rho, Te, u_rad, **kwargs)
+
     def calc_q_abs_cpp(self, rho, Te, u_rad, **kwargs):
-        if 'b2' in kwargs:
-            b2 = np.float32(kwargs.get('b2'))
-        else:
-            raise ValueError("""Missing keyword argument b2
-                              for calculating synchrotron opacity.""") 
-        Tr = (u_rad / self.aRAD) ** (1./4.)
-        import hamr_readc
-        Radiationc = hamr_readc.PyRadiation(self.params, self.CONSTANTS)
-        dtype    = np.float64 # C++ layer expects double
-        [nb, nx1, nx2, nx3] = self.check_dims(rho, Te, Tr, b2)
-        XRB  = 1 if kwargs.get('XRB') else 0
-        RIAF = 1 if kwargs.get('RIAF', False) else 0 
-        qabs = np.zeros(rho.shape, dtype=dtype)
-        Radiationc.calc_q_abs_tot(qabs, rho, Te, Tr, b2, 
-            XRB, RIAF, nb, nx1, nx2, nx3)
-        return qabs
+        return self.calc_q_cpp('absorption', rho, Te, u_rad, **kwargs)
     
     # Necessary for C++ acceleration
     def check_dims(self, rho, Te, Tr, b2):
-        rho_dims = list(rho.shape)
-        Te_dims  = list(Te.shape)
-        Tr_dims  = list(Tr.shape)
-        b2_dims  = list(b2.shape)
-
-        if (len(rho_dims) != len(Te_dims) != len(Tr_dims) != len(b2_dims)):
-            raise ValueError("""Your arrays must have the same dimensions 
-                                to be passed to C++.""")
-        if (len(rho_dims) != 4):
-            raise ValueError("""Your arrays must have dimension 4
-                                to be passed to C++""")
-        return rho_dims
+        return check_dims_4d(rho=rho, Te=Te, Tr=Tr, b2=b2)
 
 class Opacity():
+    # Cython wrapper holding this class's C++ implementation. Subclasses
+    # override it so calc_kappa_total_cpp dispatches to their own C++ class
+    # instead of always using the base one. Must be a class attribute:
+    # __init__ calls calc_opacities() before a subclass __init__ body runs.
+    cpp_class = 'PyOpacity'
+
     def __init__(self, opacities, rho, Te, u_rad, pars, CONSTANTS, **kwargs):
         self.X_ab = CONSTANTS['X_AB']
         self.Y_ab = CONSTANTS['Y_AB']
@@ -235,12 +199,9 @@ class Opacity():
         self.CONSTANTS = CONSTANTS
         self.opacities = opacities.copy()
 
-        # Electron-scattering (Thomson) opacity
-        kappa_es = 0.2 * (1 + self.X_ab) # cm^2/g
-
         # All opacities are "kappa" (units of cm^2/g)
         if 'electron_scattering' in opacities:
-            self.opacities['electron_scattering'] = kappa_es
+            self.opacities['electron_scattering'] = self.calc_kappa_es(self.X_ab)
         
         if kwargs.get('mechanism') == 'absorption':
             self.calc_opacities('absorption', **kwargs)
@@ -249,11 +210,25 @@ class Opacity():
         else:
             self.calc_opacities('both', **kwargs)
 
+    # Electron-scattering (Thomson) opacity, cm^2/g.
+    # A constant given composition: no density or temperature dependence,
+    # and neither absorption nor emission, so it never enters calc_kappa's
+    # totals -- callers combine it themselves (e.g. the effective opacity
+    # sqrt(kappa_abs (kappa_abs + kappa_es)) in poloidal_slices.py).
+    @staticmethod
+    def calc_kappa_es(X_ab):
+        return 0.2 * (1.0 + X_ab)
+
     def calc_opacities(self, process, **kwargs):
+        # The C++ total implements bound-free + free-free + CHIANTI +
+        # hydrogen + molecular + synchrotron only. Iron-line is opt-in and has
+        # no C++ counterpart, so requesting it falls through to the Python
+        # path below rather than being silently dropped.
         if (kwargs.get('cpp', False) and 'bound_free' in self.opacities and
             'CHIANTI' in self.opacities and 'free_free' in self.opacities and
             'hydrogen' in self.opacities and 'molecular' in self.opacities and
-            'synchrotron' in self.opacities):
+            'synchrotron' in self.opacities and
+            'iron_line' not in self.opacities):
             return self.calc_kappa_total_cpp(process, **kwargs)
         if 'bound_free' in self.opacities:
             self.bound_free_opacity(process)
@@ -276,7 +251,8 @@ class Opacity():
             self.synchrotron_opacity(process, **kwargs)
         if ('bound_free' in self.opacities or 'CHIANTI'  in self.opacities or 
             'hydrogen'  in self.opacities or 'free_free' in self.opacities or
-            'molecular' in self.opacities or 'synchrotron' in self.opacities):
+            'molecular' in self.opacities or 'synchrotron' in self.opacities or
+            'iron_line' in self.opacities):
             if process == 'absorption' or process == 'both':
                 self.calc_kappa('absorption')
             if process == 'emission' or process == 'both':
@@ -434,51 +410,40 @@ class Opacity():
     #     (1 / (hydrogen + molecular)) + 
     #     (1 / (bound_free + ff + CHIANT)) ) + synchrotron
     def calc_kappa(self, process):
-        if process == 'absorption':
-            proc = 'abs'
-        if process == 'emission':
-            proc = 'emi'
+        proc = 'abs' if process == 'absorption' else 'emi'
 
-        synchrotron           = 0
-        hydrogen_or_molecular = 0
-        bf_or_CHI_or_ff       = 0
-        # Initiaize opacities
-        kappa_synchrotron     = 0.
-        kappa_H_Mol           = 1.
-        kappa_bf_CHI_ff       = 1.
-        if 'synchrotron' in self.opacities:
-            synchrotron = 1.0
-            kappa_synchrotron = self.opacities['synchrotron_%s' %proc]
-        if 'hydrogen' in self.opacities or 'molecular' in self.opacities:
-            hydrogen_or_molecular = 1.0
-            sum_keys = []
-            if 'hydrogen' in self.opacities:
-                sum_keys.append('hydrogen_%s' %proc)
-            if 'molecular' in self.opacities:
-                sum_keys.append('molecular_%s' %proc)
-            kappa_H_Mol = self.sum_opacities(sum_keys)
-        if ('bound_free' in self.opacities or 
-            'CHIANTI'    in self.opacities or
-            'free_free'  in self.opacities):
-            bf_or_CHI_or_ff = 1.0
-            sum_keys = []
-            if 'bound_free' in self.opacities:
-                sum_keys.append('bound_free_%s' %proc)
-            if 'CHIANTI' in self.opacities:
-                sum_keys.append('CHIANTI_%s' %proc)
-            if 'free_free' in self.opacities:
-                sum_keys.append('free_free_%s' %proc)
-            kappa_bf_CHI_ff = self.sum_opacities(sum_keys)
+        # Low-temperature channel: rises steeply with T (kappa_H ~ T^7.7)
+        # and carries no radiation-temperature dependence.
+        lowT_keys  = [k for k in ('hydrogen', 'molecular')
+                      if k in self.opacities]
+        # High-temperature channel: falls with T and scales as Tr^-3.
+        # 'iron_line' is opt-in (a bound-bound line opacity, like CHIANTI).
+        highT_keys = [k for k in ('bound_free', 'CHIANTI', 'free_free',
+                                  'iron_line') if k in self.opacities]
 
-        if ('bound_free' in self.opacities or 'CHIANTI'   in self.opacities or 
-            'hydrogen'   in self.opacities or 'free_free' in self.opacities or
-            'molecular'  in self.opacities):
-            self.opacities['%s_total' %process] = (
-                    (1. / (hydrogen_or_molecular * (1. / kappa_H_Mol) + (
-                    bf_or_CHI_or_ff * (1. / kappa_bf_CHI_ff)))) + (
-                    synchrotron * kappa_synchrotron))
-        else:
-            self.opacities['%s_total' %process] = kappa_synchrotron
+        kappa_sync = (self.opacities['synchrotron_%s' %proc]
+                      if 'synchrotron' in self.opacities else 0.)
+
+        if not lowT_keys and not highT_keys:
+            self.opacities['%s_total' %process] = kappa_sync
+            return None
+
+        # Harmonic sum: 1/(1/a + 1/b) ~ min(a, b), so whichever channel is
+        # smaller dominates. That is what bridges the low-T and high-T
+        # opacity regimes. A channel with no requested contributors is
+        # omitted rather than treated as zero opacity. Mirrors
+        # Opacity::kappaAbsTotal in hamr_analysis.cpp.
+        inv_kappa = 0.
+        if lowT_keys:
+            kappa_lowT  = self.sum_opacities(['%s_%s' %(k, proc)
+                                              for k in lowT_keys])
+            inv_kappa   = inv_kappa + 1. / kappa_lowT
+        if highT_keys:
+            kappa_highT = self.sum_opacities(['%s_%s' %(k, proc)
+                                              for k in highT_keys])
+            inv_kappa   = inv_kappa + 1. / kappa_highT
+
+        self.opacities['%s_total' %process] = 1. / inv_kappa + kappa_sync
         return None
             
     def calc_kappa_total_cpp(self, process, **kwargs):
@@ -488,7 +453,8 @@ class Opacity():
             raise ValueError("""Missing keyword argument b2
                               for calculating synchrotron opacity.""") 
         import hamr_readc
-        Opacityc = hamr_readc.PyOpacity(self.params, self.CONSTANTS)
+        Opacityc = getattr(hamr_readc, self.cpp_class)(self.params,
+                                                      self.CONSTANTS)
         dtype    = np.float64 # C++ layer expects double
         [nb, nx1, nx2, nx3] = self.check_dims()
 
@@ -507,27 +473,26 @@ class Opacity():
             self.opacities['%s_total' %proc] = kappa_emi
 
     def sum_opacities(self, keys):
-        summed_opacity = self.opacities['%s' %keys[0]]
-        if len(keys) > 1:
-            for key in keys[1:]:
-                summed_opacity += self.opacities['%s' %key]
-        return summed_opacity
+        total = self.opacities['%s' %keys[0]]
+        if len(keys) == 1:
+            return total
+        # Copy before accumulating -- never mutate the stored per-channel
+        # entry. hydrogen_abs and hydrogen_emi are the *same* array object,
+        # so an in-place sum corrupted both and made the emission pass
+        # double-count kappa_mol. One allocation; accumulation stays
+        # in-place from here.
+        total = np.array(total, copy=True)
+        for key in keys[1:]:
+            total += self.opacities['%s' %key]
+        return total
 
     def check_dims(self):
-        rho_dims = list(self.rho.shape)
-        Te_dims  = list(self.Te.shape)
-        Tr_dims  = list(self.Tr.shape)
-        b2_dims  = list(self.b2.shape)
-
-        if (len(rho_dims) != len(Te_dims) != len(Tr_dims) != len(b2_dims)):
-            raise ValueError("""Your arrays must have the same dimensions 
-                                to be passed to C++.""")
-        if (len(rho_dims) != 4):
-            raise ValueError("""Your arrays must have dimension 4
-                                to be passed to C++""")
-        return rho_dims
+        return check_dims_4d(rho=self.rho, Te=self.Te,
+                             Tr=self.Tr,   b2=self.b2)
 
 class RIAF_Opacity(Opacity):
+    cpp_class = 'PyRIAF_Opacity'
+
     def __init__(self, opacities, rho, Te, u_rad, pars, CONSTANTS, **kwargs):
         super().__init__(opacities, rho, Te, u_rad, pars, CONSTANTS, **kwargs)
     
@@ -572,3 +537,17 @@ class RIAF_Opacity(Opacity):
             Opacityc.calc_kappa_sync(kappa_sync, self.rho, self.Te, self.Tr, 
                                      self.b2, 1, XRB, nb, nx1, nx2, nx3)
             self.opacities['synchrotron_emi'] = kappa_sync
+
+
+# The C++ layer walks every array with a single linear index, so the shapes
+# must match exactly -- not merely share a number of axes.
+def check_dims_4d(**arrays):
+    shapes = {name: np.shape(a) for name, a in arrays.items()}
+    if len(set(shapes.values())) != 1:
+        raise ValueError("Arrays passed to C++ must all have the same "
+                         f"shape; got {shapes}.")
+    dims = list(next(iter(shapes.values())))
+    if len(dims) != 4:
+        raise ValueError("Arrays passed to C++ must be 4-dimensional; "
+                         f"got {len(dims)} ({tuple(dims)}).")
+    return dims
