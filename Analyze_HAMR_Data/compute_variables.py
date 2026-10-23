@@ -199,10 +199,24 @@ def check_images_exist(path_to_images, file_list, title, subtype, **kwargs):
     return check_files_exist(path_to_images, file_list, **image_args, **kwargs)
 
 # LaTeX formatting for figures 
+def get_time_coeff_expon(time):
+    """
+    Split a simulation time into (coefficient, exponent) for 10^exponent
+    notation, handling the rounding edge case (e.g., 9.999999 -> 10.0).
+    """
+    expon = math.floor(math.log10(time))
+    coeff = time / (10 ** expon)
+
+    # Handle rounding up edge cases (e.g., 9.999999 -> 10.0)
+    if round(coeff, 5) == 10.0:
+        coeff = 1.0
+        expon += 1
+    return coeff, expon
+
 def get_nice_time(time, **kwargs):
     """
     Format simulation time into a LaTeX string.
-    
+
     Parameters
     ----------
     **kwargs : dict
@@ -210,14 +224,8 @@ def get_nice_time(time, **kwargs):
     """
     if time == 0:
         return r"$0.00000$"
-        
-    expon = math.floor(math.log10(time))
-    coeff = time / (10 ** expon)
-    
-    # Handle rounding up edge cases (e.g., 9.999999 -> 10.0)
-    if round(coeff, 5) == 10.0:
-        coeff = 1.0
-        expon += 1    
+
+    coeff, expon = get_time_coeff_expon(time)
     prec = kwargs.get('prec', 5)
     return rf"${coeff:.{prec}f} \times 10^{{{expon}}}$"
 
@@ -271,6 +279,41 @@ def grid(ax, **kwargs):
             linewidth=0.5, alpha=kwargs.get('alpha', 0.3))
     ax.grid(which='minor', color=kwargs.get('color', 'white'), linestyle='-',
             linewidth=0.5, alpha=kwargs.get('alpha', 0.3))
+
+def get_sym_log_lims(pos_data, neg_data):
+    """
+    Symmetric log-scale y-limits spanning both signs of a key's data.
+    """
+    log_pos = np.log10(np.amax(pos_data)) if len(pos_data) > 0 else -6
+    log_neg = np.log10(np.abs(np.amin(neg_data))) if len(neg_data) > 0 else -6
+    sym_log = np.floor(max(log_pos, log_neg)) + 1
+    return [-10 ** sym_log, 10 ** sym_log]
+
+def get_limits(key, user_limits, quants, plot_info):
+    """
+    Determine y-axis limits for a plotted key, unless the user supplied
+    explicit limits. `quants` is the list of arrays already selected for
+    `key` (as accumulated by the caller over curves/files/keys).
+    """
+    if user_limits[key] is not None:
+        return user_limits[key]
+
+    all_data = np.concatenate(quants)
+    if not plot_info[key]['log']:
+        return [np.amin(all_data), np.amax(all_data)]
+
+    pos_data = all_data[all_data > 0]
+    if plot_info[key].get('linthresh'):
+        neg_data = all_data[all_data < 0]
+        return get_sym_log_lims(pos_data, neg_data)
+
+    if pos_data.size == 0:
+        raise ValueError(f"No positive data for log-scaled key '{key}'; "
+                          "check the input or set an explicit user limit.")
+
+    log_min = np.floor(np.amin(np.log10(pos_data)))
+    log_max = np.floor(np.amax(np.log10(pos_data)))
+    return [10 ** log_min, 10 ** (log_max + 1)]
 
 # Specific to X-Z (poloidal) plots
 def get_contours(plt_args, PS_r, PS_l, contour_colors, sigma_contour, photospheres, **kwargs):
@@ -376,16 +419,33 @@ def get_Aphi_contours(plt_args, PS_r, PS_l, contour_colors, **kwargs):
     quantities['l'], levels['l'], colors['l'], linewidths['l'], linestyles['l'] = ([] for i in range(5))
     
     Aphi = PS_r.calc_Aphi()
+    normalize = kwargs.get('normalize', False)
+    if normalize:
+        # Normalize relative to flux on the horizon separately for each
+        # hemisphere. Magenta curve shows separatrix between horizon-threading
+        # and disk-threading field lines.
+        ds1 = 2 ** PS_r.H.amr['max_levelx1']
+        r   = PS_r.r[0, ::ds1, 0, 0][:Aphi.shape[0]]
+        a   = PS_r.H.params['a']
+        iH  = int(np.argmin(np.abs(r - (1. + np.sqrt(1. - a * a)))))
+        nth = Aphi.shape[1]
+        Aphi[:, :nth//2] /= Aphi[iH, nth//2 - 1]
+        Aphi[:, nth//2:] /= Aphi[iH, nth//2]
     for key in ['r', 'l']:
         quantities[f'{key}'].append(Aphi)
-        aphi_levels = np.delete(np.linspace(-100, 100, 21), 15)
-        levels[    f'{key}'].append(aphi_levels)
-        colors[    f'{key}'].append(contour_colors[0])
-        # Dashed for negative, solid for positive
-        linestyles[f'{key}'].append(10 * ['--'] + 10 * ['-'])
-        # Use special color for Phi = 50 
+        if normalize:
+            levels[    f'{key}'].append(np.linspace(0.1, 0.9, 9))
+            colors[    f'{key}'].append(contour_colors[0])
+            linestyles[f'{key}'].append(9 * ['-'])
+        else:
+            aphi_levels = np.delete(np.linspace(-100, 100, 21), 15)
+            levels[    f'{key}'].append(aphi_levels)
+            colors[    f'{key}'].append(contour_colors[0])
+            # Dashed for negative, solid for positive
+            linestyles[f'{key}'].append(10 * ['--'] + 10 * ['-'])
+        # Use special color for Phi = 50 (Phi = Phi_BH if normalized)
         quantities[f'{key}'].append(Aphi)
-        levels[    f'{key}'].append(50.)
+        levels[    f'{key}'].append(1. if normalize else 50.)
         colors[    f'{key}'].append(contour_colors[2])
         linestyles[f'{key}'].append(['-'])
 
@@ -457,6 +517,13 @@ def _init_averages(data_dir, file_num, keys,
         if (radiation and not H.physics['RAD_M1']):
             raise ValueError("radiation is True and was not used in this simulation.", flush=True)
 
+    # Number of ACTIVE blocks in this dump. Carried in the averages dict
+    # rather than returned separately, so the signature is unchanged and it
+    # lands in the restart .npz automatically. run_parallel_in_time needs it
+    # to plan block batches, and H already exists here -- deriving it later
+    # would mean a second Read() and another nmax-sized block array.
+    averages['nb'] = int(H.params['n_active_total'])
+
     nr   = int(H.params['nb1'] * H.params['bs1'] * H.upscalex1 / H.lowres1)
     nth  = int(H.params['nb2'] * H.params['bs2'] * H.upscalex2 / H.lowres2)
     nphi = int(H.params['nb3'] * H.params['bs3'] * H.upscalex3 / H.lowres3)
@@ -478,12 +545,14 @@ def _init_averages(data_dir, file_num, keys,
         averages = dict(np.load(f'{save_dir}/{file_type}_{fnum_str}.npz'))
         first_call = False
 
+    averages['file_type'] = file_type
+
     # Initialize profiles dictionary
     if first_call:
         if file_type == 'Profiles':
             for key in keys:
                 averages[f'{key}'] = np.zeros(nr, dtype=np.float64)
-        elif file_type == 'Slices':
+        else:
             for key in keys:
                 averages[f'{key}'] = np.zeros([nr, nth])
 
@@ -494,17 +563,67 @@ def _init_averages(data_dir, file_num, keys,
 
 def init_profiles(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
-    if not restart:
-        kwargs['file_type'] = 'Profiles'
+    kwargs['file_type'] = 'Profiles'
     return _init_averages(data_dir, file_num, keys, save_dir, nslices, 
         restart, nzro, **kwargs)
 
 def init_slices(data_dir, file_num, keys, 
     save_dir, nslices, restart, nzro, **kwargs):
-    if not restart:
-        kwargs['file_type'] = 'Slices'
-    return _init_averages(data_dir, file_num, keys, save_dir, nslices, 
+    kwargs.setdefault('file_type', 'Slices')
+    return _init_averages(data_dir, file_num, keys, save_dir, nslices,
         restart, nzro, **kwargs)
+
+def iter_phi_batches(nphi, iphi_stp, start=0):
+    """Yield (batch_num, selection) for each phi slice within one file."""
+    for i, k in enumerate(range(int(start), int(nphi), int(iphi_stp))):
+        yield i, {'k_min': int(k), 'k_max': int(min(k + iphi_stp, nphi))}
+
+def iter_block_batches(nb, blk_stp, start=0):
+    """Yield (batch_num, selection) for each block batch within one file."""
+    for i, b in enumerate(range(int(start), int(nb), int(blk_stp))):
+        yield i, {'start_block': int(b),
+                  'end_block'  : int(min(b + blk_stp, nb))}
+
+def split_batch(selection, rank, size):
+    """This rank's share of one batch. Same keys in as out."""
+    lo_key, hi_key = (('start_block', 'end_block') if 'start_block' in selection
+                      else ('k_min', 'k_max'))
+    lo, hi     = int(selection[lo_key]), int(selection[hi_key])
+    base, rem  = divmod(hi - lo, size) # quotient and remainder
+    start      = lo + rank * base + min(rank, rem)
+    end        = start + base + (1 if rank < rem else 0)
+    return {lo_key: int(start), hi_key: int(end)}
+
+def resume_offset(averages, by_block=False):
+    """Where a restart should pick up, as a position in the data."""
+    was_by_block = bool(averages.get('by_block', False))
+    if was_by_block != bool(by_block):
+        raise ValueError(
+            f"checkpoint was written by "
+            f"{'--by_block' if was_by_block else 'phi-slice'} mode but this "
+            f"run is {'--by_block' if by_block else 'phi-slice'} mode.")
+    return int(averages.get('end_block' if by_block else 'k_max', 0))
+
+def record_progress(averages, selection, by_block, limit, blk_stp=None):
+    """Move the checkpoint's resume position to the end of this batch."""
+    if by_block:
+        averages['end_block'] = int(selection['end_block'])
+        averages['blk_stp']   = blk_stp
+        averages['done']      = (averages['end_block'] == limit)
+    else:
+        averages['k_max'] = int(selection['k_max'])
+        averages['done']  = (averages['k_max'] == limit)
+    averages['by_block'] = bool(by_block)
+    averages['saved']    = True
+
+def save_checkpoint(save_dir, file_num, nzro, averages, file_type=None):
+    """Write the checkpoint atomically, so a kill cannot truncate it."""
+    file_type = file_type or str(averages.get('file_type', 'Profiles'))
+    fnum_str  = str(file_num).zfill(nzro)
+    final     = os.path.join(save_dir, f'{file_type}_{fnum_str}.npz')
+    tmp       = os.path.join(save_dir, f'.{file_type}_{fnum_str}.tmp.npz')
+    np.savez(tmp, **averages)
+    os.replace(tmp, final)
 
 # Compute quantities at constant phi
 class Phi_Slice():
@@ -565,6 +684,15 @@ class Phi_Slice():
             'CONSTANTS' : hr.CONSTANTS,
             'cgs'       : self.cgs
         }
+        mri_args = {
+            'r'         : self.H.grid['r'],
+            'theta'     : self.H.grid['theta'],
+            'phi'       : self.H.grid['phi'],
+            'pars'      : self.H.params,
+            'CONSTANTS' : hr.CONSTANTS,
+            'cgs'       : self.cgs,
+            'MBH'       : self.MBH
+        }
 
         # Initialize Accretion class
         self.Acc   = ana.Accretion(**acc_args)
@@ -576,6 +704,8 @@ class Phi_Slice():
         self.Rad   = rad.Radiation(**class_args)
         # Initialize Analytic class
         self.Analytic = theory.Analytic(hr.CONSTANTS, cgs=self.cgs)
+        # Initialize MRI class
+        self.MRI   = ana.MRI(**mri_args)
 
     def calc_gridsize(self):
         """
@@ -936,13 +1066,27 @@ class Phi_Slice():
         v2    = (uusph[1]/uusph[0]) * (uu_sph[1]/uu_sph[0])
         rhov2 = rho * v2
         return rhov2 / (b2/(4. * np.pi))
-    
+
+    def calc_J2(self, iphi):
+        c    = self.c
+        uu   = self.H.data['uu']
+        B    = self.H.data['B']
+        gcov = self.H.grid['gcov']
+        gdet = self.H.grid['gdet']
+        J    = self.Field.calc_J(uu, B, gcov, gdet, Rg=self.Rg)
+        uu_cov = ana.Tools.contract_vector(uu, gcov, cpp=True)
+        delta  = np.eye(4, dtype=uu.dtype).reshape(4, 4, *([1] * (uu.ndim - 1)))
+        h      = delta + np.einsum('i...,j...->ij...', uu/c, uu_cov/c)
+        J_perp = ana.Tools.contract_vector(J, h, cpp=True)
+        return ana.Tools.dot(J_perp, J_perp, gcov)[0, :, :, iphi]
+
     def calc_J_cross_B(self, iphi): 
         Coords = coords.Coordinates(
             self.H.grid['r'] / self.Rg, self.H.grid['theta'], self.H.grid['phi'], 
             self.H.params, hr.CONSTANTS)
-        J = self.Field.calc_J(self.H.data['uu'], self.H.data['B'], 
-                              self.H.grid['gcov'], self.H.grid['gdet'], frame='fluid') / self.Field.B0
+        J = self.Field.calc_J(self.H.data['uu'], self.H.data['B'],
+                              self.H.grid['gcov'], self.H.grid['gdet'],
+                              frame='fluid', Rg=self.Rg) / self.Field.B0
         b = self.Field.calc_b(self.H.data['B'], self.H.data['uu'], self.H.grid['gcov'])/ self.Field.B0
         J_cart = Coords.int_to_cart_vec(J)
         b_cart = Coords.int_to_cart_vec(b)
@@ -1592,7 +1736,7 @@ class Phi_Slice():
         if 'tr1' not in self.H.data.keys() or 'tr2' not in self.H.data.keys():
             raise ValueError("tr1 and tr2 is required to calculate ion fraction")
         tr1, tr2 = self.get_vars2D(['tr1', 'tr2'], iphi)
-        return (tr1 > tr2) * (tr1 > 0.) * (1. - (tr2 / tr1))
+        return (tr1 > tr2) * (tr1 > 0.) * (1. - np.nan_to_num(tr2 / tr1))
 
     # Volume
     def calc_Vol(self, iphi):
@@ -1767,7 +1911,7 @@ class Phi_Slice():
     def calc_tau(self, opacities, iphi, **kwargs):
         tau = self.Acc.calc_tau(opacities=opacities, sigma_cut=3., **kwargs)
         return tau[0, :, :, iphi]
-    
+
     # Opacities
     def calc_kappa_es(self, iphi, **kwargs):
         rho, Te, u_rad = self.get_vars2D(['rho', 'Te', 'u_rad'], iphi)
@@ -1904,6 +2048,18 @@ class Phi_Slice():
         uu_sph = self.Coords2D.int_to_ortho_sph_vec(uu)
         vphi   = c * (uu_sph[3] / uu_sph[0])
         return vtot/vphi
+
+    def calc_Q(self, iphi):
+        """MRI Quality Factors"""
+        keys = ['rho', 'uu', 'B', 'u_gas', 'gcov', 
+                'level_x1', 'level_x2', 'level_x3']
+        rho, uu, B, u_gas, gcov, level_x1, level_x2, level_x3 = (
+            self.get_vars2D(keys, iphi))
+
+        return self.MRI.calc_Q(rho, uu, B, u_gas, gcov,
+            amr=self.H.amr, 
+            level_x1=level_x1, level_x2=level_x2, level_x3=level_x3,
+            lowres1=self.H.lowres1, lowres2=self.H.lowres2, lowres3=self.H.lowres3)
 
 # Compute quantities at constant theta
 class Theta_Slice(Phi_Slice):
@@ -2096,7 +2252,10 @@ class Midplane_Slice(Phi_Slice):
 
     # Magnetic Fields
     def calc_Bphi(self):
-        return self.mid_val(super().calc_Bphi(0))
+        B = self.get_vars3D(['B'])
+        self.set_Coords3D()
+        B_cyl = self.Coords3D.int_to_cyl_vec(B)
+        return self.mid_val(B_cyl[2])
 
     def calc_Bz(self):
         return self.mid_val(super().calc_Bz(0))
@@ -2166,7 +2325,20 @@ class Midplane_Slice(Phi_Slice):
         b2tor   = self.Field.calc_b2(btor, btor, gcov)
         bpol_btor = sgn * np.sqrt(b2pol / b2tor)
         return 0.5 * (bpol_btor[:, 0, :] + bpol_btor[:, 1, :])
-
+    
+    def calc_J2(self):
+        c    = self.c
+        uu   = self.H.data['uu']
+        B    = self.H.data['B']
+        gcov = self.H.grid['gcov']
+        gdet = self.H.grid['gdet']
+        J    = self.Field.calc_J(uu, B, gcov, gdet, Rg=self.Rg)
+        uu_cov = ana.Tools.contract_vector(uu, gcov, cpp=True)
+        delta  = np.eye(4, dtype=uu.dtype).reshape(4, 4, *([1] * (uu.ndim - 1)))
+        h      = delta + np.einsum('i...,j...->ij...', uu/c, uu_cov/c)
+        J_perp = ana.Tools.contract_vector(J, h, cpp=True)
+        return self.mid_val(ana.Tools.dot(J_perp, J_perp, gcov)[0])
+    
     # Fluid velocities
     def calc_vr(self):
         return self.mid_val(super().calc_vr(0))
@@ -2229,7 +2401,20 @@ class Midplane_Slice(Phi_Slice):
                 return uux, uuy, in_out
 
     def calc_vpol_vtor(self):
-        return self.mid_val(super().calc_vpol_vtor(0)) 
+        uu, gcov = self.get_vars3D(['uu', 'gcov'])
+        self.set_Coords3D()
+
+        uucyl = self.Coords3D.int_to_cyl_vec(uu, dtype=np.float64) 
+        uupol = np.copy(uu)
+        uutor = np.copy(uu)
+        uupol[0], uupol[3]  = 0., 0.
+        uutor[0], uutor[1], uutor[2] = 0., 0., 0.
+
+        sgn     = np.sign(uucyl[3])
+        v2pol   = ana.Tools.dot(uupol, uupol, gcov)
+        v2tor   = ana.Tools.dot(uutor, uutor, gcov)
+        vratio  = sgn * np.sqrt(v2pol / v2tor)
+        return (vratio[:, 0, :] + vratio[:, 1, :]) / 2.
     
     # Radiation 4-velocity
     def calc_uu_rad_cart(self, **kwargs):
@@ -2265,6 +2450,11 @@ class Midplane_Slice(Phi_Slice):
     def calc_qsync(self, **kwargs):
         return self.mid_val(super().calc_qsync(0, **kwargs)) 
     
+    # Radiation source term in the coordinate frame (G_t)
+    # Note that the radiation is sourced by -G_t
+    def calc_qrad(self):
+        return self.mid_val(super().calc_qrad(0))
+ 
     # Cooling timescales
     def calc_teq(self, **kwargs):  
         return self.mid_val(super().calc_teq(0, midplane=True, **kwargs))
@@ -2544,9 +2734,11 @@ class Slices(Load_Data):
         file_type = kwargs.pop('file_type', 'Slices')
         
         # Pull coordinate/time/spin information for all file numbers
-        coords = self.load_slices(averages_dir, fnums, 
-            keys=['t', 'r', 'theta', 'phi', 'a', 'dx1', 'dx2'], 
+        coords = self.load_slices(averages_dir, fnums,
+            keys=['t', 'r', 'theta', 'phi', 'a', 'dx1', 'dx2'],
             reduced=reduced, show_loading=False)
+        # Stash per-file times
+        self.t = np.array([coords[str(fnum)]['t'] for fnum in fnums])
         # Determine if resolution changes between any file numbers
         self.check_AMR(fnums, coords)
         
@@ -2573,7 +2765,7 @@ class Slices(Load_Data):
         skeys = list(requested_keys)
         if 'r' not in skeys and 'theta' not in skeys:
             skeys.extend(['r', 'theta'])
-        if 'Vol' not in skeys:
+        if 'Vol' not in skeys and any(vols.values()):
             skeys.append('Vol')
 
         # Clean up kwargs so keys doesn't conflict during underlying file loads
@@ -2585,6 +2777,11 @@ class Slices(Load_Data):
             single_slice = self.load_slices(averages_dir, [fnum], keys=skeys, 
                                             reduced=reduced, **kwargs_clean)
             
+            dimensionless = kwargs.get('dedim')
+            if dimensionless is not None:
+                single_slice = self.remove_units(single_slice, [fnum], 
+                                                 reduced, averages_dir) 
+
             for key in requested_keys:
                 # "Time average" takes care of upscaling for single file number
                 slices[key] += (dt[i] / dT) * self.time_avg(
@@ -2592,24 +2789,77 @@ class Slices(Load_Data):
                     run_check_AMR=False
                 )
 
-        # Store coordinate information from file at maximum refinement level
+        # Store coordinate information from file at maximum refinement level.
+        # 'r' clipped at r_trim if --r_max cuts at odd number of zones.
+        r_trim = self.r_trim.get(self.fnums0, 0)
         for coord_key in ['r', 'theta', 'phi', 'a', 'dx1', 'dx2']:
-            slices[coord_key] = coords[str(self.fnums0)][coord_key]
+            coord = coords[str(self.fnums0)][coord_key]
+            if coord_key == 'r' and r_trim:
+                coord = coord[:coord.shape[0] - r_trim]
+            slices[coord_key] = coord
             
         # Store dt's for time update
         slices['dt'] = dt
+
+        # Downsample for speed if requested (will not work with update_slices)
+        lr1 = kwargs.get('lowres1')
+        lr2 = kwargs.get('lowres2')
+        if lr1 or lr2:
+            for key in requested_keys:
+                slices[key] = slices[key][::lr1, ::lr2]
+            slices['r']     = slices['r'][::lr1]
+            slices['theta'] = slices['theta'][::lr2]
+
+        if kwargs.get('dedim') is not None:
+            slices['dedim'] = True
         return slices
+
+    def remove_units(self, slice, fnums, reduced, averages_dir):
+        ONE    = np.float32(1.)
+        FOURPI = np.float32(4. * np.pi)
+        for fnum in fnums:
+            rho0_info = self.load_slices(averages_dir, [fnum], keys=['rho0'], 
+                                        reduced=reduced, show_loading=False)
+            fnum = str(fnum)
+            rho0 = rho0_info[fnum]['rho0']
+            c    = hr.CONSTANTS['c']
+            B0   = np.sqrt(FOURPI) * np.sqrt(rho0) * c 
+            keys = [
+                'wuR',  'wuz', 'wu_phi', 'wur', 'wuth',
+                'bR',   'bz',  'b_phi',  'br',  'bth', 'w'
+            ]
+            slice_keys = slice[fnum].keys()
+            valid_keys = [key for key in keys if key in slice_keys]
+            for key in valid_keys:
+                if 'wu' in key:
+                    slice[fnum][key] *= ONE / (rho0 * c * c * c)
+                if 'b' in key:
+                    slice[fnum][key] *= ONE / B0
+            if 'w' in valid_keys:
+                slice[fnum]['w'] *= ONE / (rho0 * c * c)
+        return slice
 
     def check_AMR(self, fnums, slices):
         """Check if refinement levels changed between slices."""
         self.nums = list(fnums)
         self.nr   = [len(slices[str(fnum)]['r'])     for fnum in fnums]
         self.nth  = [len(slices[str(fnum)]['theta']) for fnum in fnums]
-        
+
+        # When --r_max is used, radial cell counts aren't always exact
+        # powers of 2. In that instance, clip off the end radial zones
+        # that prevent AMR upscaling. 
+        n_min = min(self.nr)
+        self.r_trim = {}
+        for fnum, nr in zip(self.nums, self.nr):
+            level  = round(math.log2(nr / n_min)) if nr > n_min else 0
+            target = n_min * (2 ** level)
+            self.r_trim[fnum] = max(nr - target, 0)
+        self.nr = [nr - self.r_trim[fnum] for fnum, nr in zip(self.nums, self.nr)]
+
         # Check if grid resolutions vary across file numbers
         self.AMRx1 = len(set(self.nr))  > 1
         self.AMRx2 = len(set(self.nth)) > 1
-        
+
         if self.AMRx1 or self.AMRx2:
             # Find file number matching the maximum spatial dimensions
             target_sizes = np.array(self.nr if self.AMRx1 else self.nth)
@@ -2652,7 +2902,13 @@ class Slices(Load_Data):
             
             q   = slices[fnum_str][quant]
             vol = slices[fnum_str]['Vol'] if use_vol else 1.0
-            
+
+            trim = self.r_trim.get(fnum, 0)
+            if trim:
+                q = q[:q.shape[0] - trim]
+                if use_vol:
+                    vol = vol[:vol.shape[0] - trim]
+
             if has_amr:
                 q = self.upscale(q)
                 if use_vol:
@@ -2664,8 +2920,11 @@ class Slices(Load_Data):
 
     def upscale(self, q, **kwargs):
         """Upscale 2D array using vectorized block replication."""
-        max_nr  = kwargs.get('max_nr',  max(self.nr))
-        max_nth = kwargs.get('max_nth', max(self.nth))
+        max_nr  = kwargs.get('max_nr')
+        max_nth = kwargs.get('max_nth')
+        
+        if max_nr  is None: max_nr  = max(self.nr)
+        if max_nth is None: max_nth = max(self.nth)
         
         # Determine upscale scaling factors
         scale_x1 = int(max_nr  / q.shape[0])
@@ -2682,8 +2941,11 @@ class Slices(Load_Data):
         Downscale a 2D array using vectorized local block averaging 
         (AMR Restriction).
         """
-        min_nr  = kwargs.get('min_nr',  min(self.nr))
-        min_nth = kwargs.get('min_nth', min(self.nth))
+        min_nr  = kwargs.get('min_nr')
+        min_nth = kwargs.get('min_nth')
+        if min_nr  is None: min_nr  = min(self.nr)
+        if min_nth is None: min_nth = min(self.nth)
+
         current_nr, current_nth = q.shape
         
         # Calculate scaling factors
@@ -2730,16 +2992,24 @@ class Slices(Load_Data):
             if kwargs.get('dt_weight', True):
                 last_file = self.get_last_file_num(
                     averages_dir, file_type, reduced=reduced)
-                t_fnums = (fnums + [int(fnums[-1] + 1)] 
-                           if fnums[-1] != last_file else fnums)
                 
-                coords = self.load_slices(averages_dir, t_fnums, keys=['t'], 
-                                          reduced=reduced, show_loading=False)
+                next_fnum = int(fnums[-1] + 1)
+                exist_args = {
+                    'path_to_averages' : averages_dir, 
+                    'file_list'        : [next_fnum],
+                    'file_type'        : file_type,
+                    'reduced'          : reduced
+                }
+                has_next = fnums[-1] != last_file and check_files_exist(**exist_args)
+                t_fnums  = fnums + [next_fnum] if has_next else fnums
+                coords   = self.load_slices(averages_dir, t_fnums, keys=['t'], 
+                                            reduced=reduced, show_loading=False)
+                
                 TS = Time_Series()
                 _, time = TS.calc_time_series('t', coords)
                 
                 dt_new = np.diff(time)
-                if fnums[-1] == last_file:
+                if not has_next:
                     dt_new = np.insert(dt_new, -1, dt_new[-1])
             else:
                 dt_new = dt_old
@@ -2752,8 +3022,12 @@ class Slices(Load_Data):
             if 'r' not in skeys and 'theta' not in skeys:
                 skeys.extend(['r', 'theta'])
 
-            switch_slices  = self.load_slices(averages_dir, load_fnums, 
-                                              keys=skeys)
+            switch_slices = self.load_slices(averages_dir, load_fnums, keys=skeys)
+            
+            dimensionless = kwargs.get('dedim')
+            if dimensionless is not None:
+                switch_slices = self.remove_units(switch_slices, load_fnums, 
+                                                  reduced, averages_dir)
             
             # Determine maximum resolution among current, sub, and add slices
             self.check_AMR(load_fnums, switch_slices)
@@ -2839,16 +3113,24 @@ class Load_Vertical_Data():
         Yields tuple of (fnum, data_dict). fnum=None means time-averaged.
         """
         time_avg = kwargs.get('time_average', False)
-        
-        if time_avg:
-            slices = self.load_slices_time_averaged(averages_dir, fnums, **kwargs)
-            # Yield a single item with a None key to signify time-averaged.
+        slices   = kwargs.get('slices', None)
+
+        if slices:
+            self.fnums0 = 0
+            keys = kwargs.get('keys', None)
+            if keys is not None:
+                slices = {k: slices[k] for k in (*keys, 'r', 'theta', 'a')}
             yield None, slices
         else:
-            slices = self.load_slices(averages_dir, fnums, **kwargs)
-            for fnum in slices.keys():
-                # Pauses after each fnum.
-                yield str(fnum), slices[str(fnum)]
+            if time_avg:
+                slices = self.load_slices_time_averaged(averages_dir, fnums, **kwargs)
+                # Yield a single item with a None key to signify time-averaged.
+                yield None, slices
+            else:
+                slices = self.load_slices(averages_dir, fnums, **kwargs)
+                for fnum in slices.keys():
+                    # Pauses after each fnum.
+                    yield str(fnum), slices[str(fnum)]
 
     def load_theta_profiles(self, averages_dir, fnums, r0, **kwargs):
         """Load theta profiles at a given target radius r0."""
@@ -3012,7 +3294,8 @@ class Profiles(Load_Data):
     
     def upscale(self, q, **kwargs):
         """Upscale 1D array using vectorized replication."""
-        max_nr  = kwargs.get('max_nr',  max(self.nr))
+        max_nr = kwargs.get('max_nr')
+        if max_nr is None: max_nr = max(self.nr)
         
         # Determine upscale scaling factors
         scale_x1 = int(max_nr  / q.shape[0])
@@ -3028,9 +3311,10 @@ class Profiles(Load_Data):
         Downscale a 1D array using vectorized local averaging 
         (AMR Restriction).
         """
-        min_nr  = kwargs.get('min_nr',  min(self.nr))
+        min_nr  = kwargs.get('min_nr')
+        if min_nr is None: min_nr = min(self.nr)
         current_nr = q.shape
-        
+         
         # Calculate scaling factors
         scale_x1 = int(current_nr / min_nr)
         
