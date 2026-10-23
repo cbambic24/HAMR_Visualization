@@ -1,6 +1,4 @@
 import numpy as np
-from numba import jit
-from numba import prange
 from scipy.special import kn
 import hamr_read as hr
 
@@ -13,7 +11,7 @@ EIGHTPI   = np.float32(8. * np.pi)
 PI_2      = np.float32(np.pi / 2.)
 
 class Accretion():
-    """
+    """Accretion physics.
     Accretion class manages all mass, energy, and angular momentum 
     accretion and outflow rates. Designed to be aware of the global grid and 
     perform integrals in phi (ph_sum) and theta and phi (thph_sum). 
@@ -58,12 +56,11 @@ class Accretion():
     def calc_Mtot(self, **kwargs):
         """Calculate disk mass."""
         rho, uu = self.data['rho'], self.data['uu']
-        Mtot =  np.sum((rho * uu[0]) * self.sigma_cut(**kwargs) * (
-                        self.gdet * self.dx1 * self.dx2 * self.dx3))
+        Mtot = self.thph_sum(rho * uu[0], **kwargs)
         return self.upscale64(Mtot, self.Rg * self.Rg * self.Rg)
 
     def calc_Mdot(self, **kwargs):
-        """
+        """Mass-accretion rate.
         Calculate inward mass-accretion rate as function of radius.
         Inward: positive Mdot. Outward: negative Mdot.
 
@@ -73,35 +70,35 @@ class Accretion():
             Optional configurations. Accepted keys include:
 
             sigma_cut : float
-                Mask all values with sigma > sigma_cut if jet=False (default).
-                If jet=True, mask all values with sigma < sigma_cut.
-                If sigma_mask is in kwargs, that mask will be used.
-                If sigma is in kwargs, that sigma will be used to make mask.
+                Keep all values with sigma < sigma_cut if jet=False (default).
+                If jet=True, keep all values with sigma > sigma_cut.
+                If sigma_selection is in kwargs, that selection will be used.
+                If sigma is in kwargs, that sigma will be used for selection.
                 Otherwise, sigma will be recalculated.
             Temp_cut : float
-                Mask all values with Temperature (Ti) < Temp_cut 
-                if cold=True (default). If hot=True, then masks values
+                Keep all values with Temperature (Ti) < Temp_cut 
+                if cold=True (default). If hot=True, then keep values
                 with Temperature > Temp_cut. If 'Temp' is in kwargs,
                 then Temperature=Temp. Otherwise, Temperature=data['Ti'].
             HoR_cut : float
-                Mask all values where local disk thickness H/R > HoR_cut
+                Keep all values where local disk thickness H/R < HoR_cut
                 unless the "above" keyword is passed. Then, only keep
                 data above HoR = 1.
             inward : bool
-                Mask all values where u1 > 0.
+                Keep all values where u1 < 0.
             outward : bool
-                Mask all values where u1 < 0.
+                Keep all values where u1 > 0.
             unbound : bool
-                Mask all values where Bernoulli parameter (Be) < 0.
+                Keep all values where Bernoulli parameter (Be) > 0.
             bound : bool
-                Mask all values where Bernoulli parameter (Be) > 0.
+                Keep all values where Bernoulli parameter (Be) < 0.
                 If Be is provided, then the provided Be will be used
                 for the Bernoulli paramter. Otherwise, Be will be 
                 calculated.
             tau_cut : float
-                Mask all values with optical depth tau > tau_cut if
+                Keep all values with optical depth tau < tau_cut if
                 optically_thin=True (default). If optically_thin=False,
-                then mask out values where tau < tau_cut. 
+                then keep all values where tau > tau_cut. 
                 If tau is in kwargs, that optical depth will be used.
                 Otherwise, tau will be recalculated. If tau is not provided,
                 then an opacities dict must be passed.
@@ -112,14 +109,11 @@ class Accretion():
             Mdot (r).
         """
         rho, uu = self.data['rho'], self.data['uu']
-        Mdot = (-rho * uu[1] * self.sigma_cut(**kwargs) * (
-            self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.in_or_out(**kwargs) * self.Bernoulli_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3)))).sum(-1).sum(-1)
+        Mdot = self.thph_sum(-rho * uu[1], **kwargs)
         return self.upscale64(Mdot, self.Rg * self.Rg)
     
     def calc_PhiBH(self, **kwargs):
-        """
+        """Horizon-penetrating magnetic flux.
         Calculate unsigned radial magnetic flux (Phi_BH) as function of radius.
         Factor of sqrt(4 pi) accounts for conversion to Gaussian units in 
         Tchekhovskoy et al. (2011).
@@ -127,7 +121,7 @@ class Accretion():
         B = self.data['B']
         norm = np.sqrt(FOURPI) if not self.cgs else ONE
         return (0.5 * norm * np.abs(B[1]) * (self.Rg * self.Rg) * (
-            self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+            self.gdet * self.dx2 * self.dx3)).sum(axis=(-2, -1))
     
     def calc_PhiSph(self, **kwargs):
         """Calculate Phi_sph (Equation 1 in Begelman, Scepi & Dexter 2022)."""
@@ -136,21 +130,32 @@ class Accretion():
         if (kwargs.get('hemisphere', 'upper') == 'upper'):
             norm = (self.th < PI_2) * norm
             return (norm * B[1] * (self.Rg * self.Rg) * (
-                self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+                self.gdet * self.dx2 * self.dx3)).sum(axis=(-2, -1))
         else:
             norm = (self.th > PI_2) * norm
             return -(norm * B[1] * (self.Rg * self.Rg) * (
-                self.gdet * self.dx2 * self.dx3)).sum(-1).sum(-1)
+                self.gdet * self.dx2 * self.dx3)).sum(axis=(-2, -1))
         
+    def select_midplane(self):
+        """Cells bracketing theta = pi/2, below and above, by theta value."""
+        th   = self.th
+        dth  = np.abs(np.diff(th, axis=-2))
+        dth  = np.concatenate((dth[..., :1, :], dth), axis=-2)
+        near = np.abs(th - PI_2) < np.float32(0.75) * dth
+        return (near & (th < PI_2)), (near & (th > PI_2))
+
     def calc_PhiMid(self, **kwargs):
         """Calculate Phi_mid (Equation 2 in Begelman, Scepi & Dexter 2022)."""
-        B    = self.data['B']
-        norm = np.sqrt(FOURPI) if not self.cgs else ONE
-        ith0 = int(len(self.th[0, 0, :, 0])/2 - 1)
+        B      = self.data['B']
+        norm   = np.sqrt(FOURPI) if not self.cgs else ONE
+        lo, hi = self.select_midplane()
+        Bth    = B[2] * self.gdet
+        # Allows by_block analysis.
+        dx3 = self.dx3[:, :, 0, :] if np.ndim(self.dx3) == 4 else self.dx3
         return (0.5 * norm * (
-            (B[2] * self.gdet)[:, :, ith0, :] + 
-            (B[2] * self.gdet)[:, :, ith0+1, :]) * (
-            (self.Rg * self.Rg) * self.dx3)).sum(-1)
+            (Bth * lo).sum(axis=-2) +
+            (Bth * hi).sum(axis=-2)) * (
+            (self.Rg * self.Rg) * dx3)).sum(-1)
 
     def calc_PhiMax(self, **kwargs):
         """Calculate Phi_max (Equation 8 in Liska et al. 2019)."""
@@ -161,15 +166,15 @@ class Accretion():
             norm = ((self.th < PI_2) * norm * len_2)
             return (norm * np.amax(
                 np.abs(B[1] * self.gdet), axis=2, keepdims=True) * (
-                (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(-1).sum(-1)
+                (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(axis=(-2, -1))
         else:
             norm = ((self.th > PI_2) * norm * len_2)
             return -(norm * np.amax(
                 np.abs(B[1] * self.gdet), axis=2, keepdims=True) * (
-                (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(-1).sum(-1)
+                (self.Rg * self.Rg) * self.dx2 * self.dx3)).sum(axis=(-2, -1))
     
     def calc_Edot(self, **kwargs):
-        """
+        """Energy-accretion rate.
         Calculate energy-accretion rate as a function of radius.
         Note that T^{mu}_{nu} > 0 implies inward accretion. To calculate
         Edot from individual components of the stress-energy tensor (i.e.
@@ -180,7 +185,7 @@ class Accretion():
         ----------
         **kwargs : dict
             Optional configurations. See 'calc_Mdot' for a full description 
-            of accepted keys (e.g., sigma_cut, Temp_cut, in, out, bound, etc.).
+            of accepted keys (e.g., sigma_cut, Temp_cut, inward, bound, etc.).
         
         Returns
         -------
@@ -189,20 +194,20 @@ class Accretion():
         """
         rho0c2 = self.rho0 * self.c * self.c
         if 'TMHD' not in kwargs:
-            stress_energy_MHD = self.calc_TMHD(upper_lower=True, index=[1,0], 
-                                               **kwargs)
+            stress_energy_args = {
+                'upper_lower' : True,
+                'index'       : [1, 0]
+            }
+            stress_energy_MHD = self.calc_TMHD(**stress_energy_args, **kwargs)
         else:
             stress_energy_MHD = kwargs.get('TMHD')
         stress_energy_MHD *= (ONE / rho0c2)
-        Edot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
-            self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.in_or_out(**kwargs) * self.Bernoulli_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3)))).sum(-1).sum(-1)
+        Edot = self.thph_sum(stress_energy_MHD, **kwargs)
         stress_energy_MHD *= rho0c2
         return self.upscale64(Edot, self.Rg * self.Rg * self.c * rho0c2)
 
     def calc_Ldot(self, **kwargs):
-        """
+        """Angular-momentum accretion rate.
         Calculate angular momentum-accretion rate as a function of radius.
         
         Parameters
@@ -218,20 +223,20 @@ class Accretion():
         """
         rho0c2 = self.rho0 * self.c * self.c
         if 'TMHD' not in kwargs:
-            stress_energy_MHD = self.calc_TMHD(upper_lower=True, index=[1,3], 
-                                               **kwargs)
+            stress_energy_args = {
+                'upper_lower' : True,
+                'index'       : [1, 3]
+            }
+            stress_energy_MHD = self.calc_TMHD(**stress_energy_args, **kwargs)
         else:
             stress_energy_MHD = kwargs.get('TMHD')
         stress_energy_MHD *= (ONE / rho0c2)
-        Ldot = (stress_energy_MHD * self.sigma_cut(**kwargs) * (
-            self.temp_cut(**kwargs) * self.height_cut(**kwargs) * (
-            self.in_or_out(**kwargs) * self.Bernoulli_cut(**kwargs) * (
-            self.gdet * self.dx2 * self.dx3)))).sum(-1).sum(-1)
+        Ldot = self.thph_sum(stress_energy_MHD, **kwargs)
         stress_energy_MHD *= rho0c2
         return self.upscale64(Ldot, self.Rg * self.Rg * rho0c2)
 
     def calc_TMHD(self, **kwargs):
-        """
+        """Stress-energy tensor.
         Calculate full MHD (+ Radiation) stress-energy tensor.
         If pgas is supplied, that thermal pressure is used. Otherwise,
         pgas = (5/3 - 1) u_gas. If EOS='2T' is used, then pgas is calculated
@@ -265,14 +270,33 @@ class Accretion():
             stress_energy += Rad.calc_TRAD(**self.data, **self.grid, **kwargs)
             
         return stress_energy
-    
+
+    def apply_selection(self, **kwargs):
+        """Applies selections based on sigma, temperature, Bernoulli, etc."""
+        selection_funcs = {
+            ('sigma_cut', 'sigma_selection') : self.sigma_cut,
+            ('Temp_cut', 'Temp_selection')   : self.temp_cut,
+            ('HoR_cut',)                     : self.height_cut,
+            ('inward', 'outward')            : self.in_or_out,
+            ('bound', 'unbound')             : self.Bernoulli_cut,
+            ('tau_cut', 'tau_selection')     : self.tau_cut,
+        }
+
+        keep = None
+        for trigger_keys, sel_func in selection_funcs.items():
+            if any(key in kwargs for key in trigger_keys):
+                sel  = sel_func(**kwargs)
+                keep = sel if keep is None else (keep & sel)
+
+        return ONE if keep is None else keep
+ 
     def sigma_cut(self, **kwargs):
-        """
+        """Cut on sigma parameter.
         Returns where sigma < sigma_cut if jet = False.
         Returns where sigma > sigma_cut if jet = True.
         """
-        if 'sigma_mask' in kwargs:
-            return kwargs.get('sigma_mask', ONE)
+        if 'sigma_selection' in kwargs:
+            return kwargs.get('sigma_selection', ONE)
             
         if 'sigma_cut' not in kwargs:
             return ONE
@@ -300,12 +324,12 @@ class Accretion():
         return sigma
 
     def temp_cut(self, **kwargs):
-        """
+        """Cut on ion/gas temperature.
         Return where T < Temp_cut if cold = True (default).
         Return where T > Temp_cut if cold = False.
         """
-        if 'Temp_mask' in kwargs:
-            return kwargs.get('Temp_mask', ONE)
+        if 'Temp_selection' in kwargs:
+            return kwargs.get('Temp_selection', ONE)
         
         if 'Temp_cut' not in kwargs:
             return ONE
@@ -320,7 +344,7 @@ class Accretion():
         return (T < T_cut) if cold else (T > T_cut)
 
     def height_cut(self, **kwargs):
-        """
+        """Cut on scaleheight.
         Return where |z| < H if above = False (default).
         Return where |z| > H if above = True.
         """
@@ -335,7 +359,7 @@ class Accretion():
         return (cos_th_abs > hor_cut) if above else (cos_th_abs < hor_cut)
         
     def in_or_out(self, **kwargs):
-        """Select material either moving "in" or "out" based on u1."""
+        """Select material either moving "inward" or "outward" based on u1."""
         inward  = kwargs.get('inward',  False)
         outward = kwargs.get('outward', False)
         
@@ -348,7 +372,7 @@ class Accretion():
         return (self.data['uu'][1] > 0) if outward else (self.data['uu'][1] < 0)
 
     def Bernoulli_cut(self, **kwargs):
-        """
+        """Cut on Bernoulli parameter.
         Select material based on Bernoulli parameter Be.
         If Be is not provided as a kwarg, Be is recalculated.
         Note that this Be does not include radiation contributions.
@@ -362,8 +386,8 @@ class Accretion():
             
         # Grab Be if provided, otherwise calculate it
         Be = kwargs.get('Be', self.calc_Bernoulli(**kwargs))
-        
-        return (Be < ONE) if bound else (Be > ONE)
+
+        return (Be < 0) if bound else (Be > 0)
 
     def calc_Bernoulli(self, **kwargs):
         """Calculate Bernoulli parameter without radiation contribution."""
@@ -394,13 +418,13 @@ class Accretion():
         return -w * (u_t / c) / (self.data['rho'] * c * c) - ONE
 
     def tau_cut(self, **kwargs):
-        """
+        """Cut on optical depth.
         If optically_thin = True, return where tau < tau_cut.
         Otherwise, return where tau > tau_cut. If tau is not provided,
         then tau is recalculated from opacities dictionary.
         """
-        if 'tau_mask' in kwargs:
-            return kwargs.get('tau_mask', ONE)
+        if 'tau_selection' in kwargs:
+            return kwargs.get('tau_selection', ONE)
 
         if 'tau_cut' not in kwargs:
             return ONE
@@ -422,16 +446,19 @@ class Accretion():
             return tau >= tau_cut_val
 
     def calc_tau(self, **kwargs):
-        """
+        """Optical depth.
         Calculate optical depth if required for tau_cut. 
         Returns optical depth to electron scattering 
         if opacities = ['electron_scattering'].
         Otherwise, returns effective (absorption + scattering) optical depth.
         """
         c     = self.c
-        kappa = self.calc_kappa(**kwargs)
-        
-        if 'sigma_cut' in kwargs and 'sigma' not in kwargs:
+        kappa = kwargs.get('kappa')
+        if kappa is None:
+            kappa = self.calc_kappa(**kwargs)
+
+        has_sigma_cut = ('sigma_cut' in kwargs) or ('sigma_selection' in kwargs)
+        if has_sigma_cut and 'sigma' not in kwargs:
             # Save memory and computation time by using b^2
             if 'synchrotron' in kwargs.get('opacities'):
                 sigma = self.b2 / (4. * np.pi * self.data['rho'] * c * c)
@@ -444,7 +471,7 @@ class Accretion():
         return self.integrate_kappa(kappa, **kwargs)
 
     def calc_kappa(self, **kwargs):
-        """
+        """Opacity.
         Returns opacity used for optical depth integration 
         if opacities = ['electron_scattering']. 
         Otherwise, returns sqrt(kappa_a * (kappa_a + kappa_es)).
@@ -539,31 +566,39 @@ class Accretion():
             kappa * self.data['rho'], self.grid['gcov'][1, 1], **kwargs)
     
     def integrate_in_theta(self, kappa, **kwargs):
-        """Perform integral in theta (really, in x2)."""
-        return self.Rg * self.Integrals.cum_integrate_th(
-            kappa * self.data['rho'], self.grid['gcov'][2, 2], **kwargs)
+        """Perform integral in theta (really, in x2).
+        through_midplane=True integrates from each pole across the full
+        theta range and takes the smaller of the two (continuous at the
+        midplane) instead of stopping each integral at the midplane.
+        """
+        if not kwargs.get('through_midplane', False):
+            return self.Rg * self.Integrals.cum_integrate_th(
+                kappa * self.data['rho'], self.grid['gcov'][2, 2], **kwargs)
+
+        Integ = self.Integrals
+        qdth  = (kappa * self.data['rho'] * np.sqrt(self.grid['gcov'][2, 2])
+                 * Integ.dx2 * Integ.apply_selection(**kwargs))
+        th_axis = {2: -1, 3: 1, 4: 2}[qdth.ndim]
+        int_N = np.cumsum(qdth, axis=th_axis)
+        int_S = np.flip(np.cumsum(np.flip(qdth, axis=th_axis), axis=th_axis),
+                        axis=th_axis)
+        return self.Rg * np.minimum(int_N, int_S)
 
     def thph_sum(self, q, **kwargs):
         """Integrate 3D data in theta (th) and phi (ph)."""
         w          = kwargs.get('weight', ONE)
-        sigma_mask = self.sigma_cut(**kwargs)
-        tau_mask   = self.tau_cut(**kwargs)
-        Temp_mask  = self.temp_cut(**kwargs)
         dx2        = np.float32(self.dx2)
         dx3        = np.float32(self.dx3)
         dtype      = kwargs.get('dtype', np.float32)
-        return (q * w * sigma_mask * tau_mask * Temp_mask * (
-            self.gdet * dx2 * dx3)).sum(-1, dtype=dtype).sum(-1, dtype=dtype)
+        return (q * w * self.apply_selection(**kwargs) * (
+            self.gdet * dx2 * dx3)).sum(axis=(-2, -1), dtype=dtype)
 
     def ph_sum(self, q, **kwargs):
         """Integrate 3D data in phi (ph)."""
         w          = kwargs.get('weight', ONE)
-        sigma_mask = self.sigma_cut(**kwargs)
-        tau_mask   = self.tau_cut(**kwargs)
-        Temp_mask  = self.temp_cut(**kwargs)
         dx3        = np.float32(self.dx3)
         dtype      = kwargs.get('dtype', np.float32)
-        return (q * w * sigma_mask * tau_mask * Temp_mask * (
+        return (q * w * self.apply_selection(**kwargs) * (
             self.gdet * dx3)).sum(-1, dtype=dtype)
 
     def upscale64(self, q, units):
@@ -585,6 +620,14 @@ class AccretionBK(Accretion):
         self.amr         = amr
         self.amr_info    = amr_info
         self.pars        = pars
+        self.do_unfold   = kwargs.get('unfold', False)
+
+        self.lowres1 = int(kwargs.get('lowres1', 1))
+        self.lowres2 = int(kwargs.get('lowres2', 1))
+        self.lowres3 = int(kwargs.get('lowres3', 1))
+        
+        # Radial extent of the unfolded output. 
+        self.nr_out  = kwargs.get('nr_out', None)
 
         self.calc_dx()
 
@@ -595,48 +638,142 @@ class AccretionBK(Accretion):
 
         super().__init__(grid, data, self.params, CONSTANTS, **kwargs)
 
-    def calc_Mtot(self, **kwargs):
-        if kwargs.get('unfold', False):
-            return self.unfold(super().calc_Mtot(**kwargs))
+    def calc_PhiBH(self, **kwargs):
+        if self.do_unfold:
+            return self.unfold(super().calc_PhiBH(**kwargs))
         else:
-            return super().calc_Mtot(**kwargs)
+            return super().calc_PhiBH(**kwargs)
 
-    def calc_Mdot(self, **kwargs):
-        if kwargs.get('unfold', False):
-            return self.unfold(super().calc_Mdot(**kwargs))
+    def calc_PhiSph(self, **kwargs):
+        if self.do_unfold:
+            return self.unfold(super().calc_PhiSph(**kwargs))
         else:
-            return super().calc_Mdot(**kwargs)
-    
-    def calc_PhiBHBK(self, **kwargs):
-        PhiBH = super().calc_PhiBH(**kwargs)
-        return self.fold(PhiBH)
-    
-    def calc_Edot(self, **kwargs):
-        if kwargs.get('unfold', False):
-            return self.unfold(super().calc_Edot(**kwargs))
-        else:
-            return super().calc_Edot(**kwargs)
+            return super().calc_PhiSph(**kwargs)
 
-    def calc_LdotBK(self, **kwargs):
-        Ldot = super().calc_Ldot(**kwargs)
-        return self.fold(Ldot)
+    def calc_PhiMid(self, **kwargs):
+        if self.do_unfold:
+            return self.unfold(super().calc_PhiMid(**kwargs))
+        else:
+            return super().calc_PhiMid(**kwargs)
+
+    def calc_PhiMax(self, **kwargs):
+        """Not decomposable by block: see the error message."""
+        if self.do_unfold:
+            raise NotImplementedError(
+                "calc_PhiMax takes np.amax over theta before summing, and a "
+                "block spans only part of the theta extent.")
+        return super().calc_PhiMax(**kwargs)
+
+    def thph_sum(self, q, **kwargs):
+        if self.do_unfold:
+            return self.unfold(super().thph_sum(q, **kwargs))
+        else:
+            return super().thph_sum(q, **kwargs)
+
+    def ph_sum(self, q, **kwargs):
+        if self.do_unfold:
+            return self.unfold2D(super().ph_sum(q, **kwargs))
+        else:
+            return super().ph_sum(q, **kwargs)
 
     def calc_dx(self):
-        n = np.arange(0, self.pars['n_active_total'])
-        self.upscalex1 = 2**(self.max_levelx1 - self.levelx1[self.n_ord[n]])
-        self.upscalex2 = 2**(self.max_levelx2 - self.levelx2[self.n_ord[n]])
-        self.upscalex3 = 2**(self.max_levelx3 - self.levelx3[self.n_ord[n]])
+        local     = np.asarray(self.amr_info['block_list'])
+        self.glob = self.n_ord[local]
+        self.upscalex1 = 2**(self.max_levelx1 - self.levelx1[self.glob])
+        self.upscalex2 = 2**(self.max_levelx2 - self.levelx2[self.glob])
+        self.upscalex3 = 2**(self.max_levelx3 - self.levelx3[self.glob])
 
         self.dx1 = self.pars['dx1'] * self.upscalex1
         self.dx2 = self.pars['dx2'] * self.upscalex2
         self.dx3 = self.pars['dx3'] * self.upscalex3
         return None
     
-    def fold(self, q):
-        return q
+    def unfold(self, q, **kwargs):
+        """Place th-phi integrated block values at their radial indices."""
+        bs1_lr    = int(self.pars['bs1']) // self.lowres1
+        nr_global = int(self.pars['nb1'] * bs1_lr * 2**self.max_levelx1)
+        if self.nr_out is not None:
+            nr_global = min(nr_global, int(self.nr_out))
+
+        result = np.zeros(nr_global, dtype=q.dtype)
+        for i in range(q.shape[0]):
+            n       = self.glob[i]
+            upscale = int(self.upscalex1[i])
+            i_strt  = int(self.amr_info['coordx1'][n]) * upscale * bs1_lr
+            i_end   = i_strt + upscale * bs1_lr
+            if i_strt >= nr_global:
+                continue
+            row = np.repeat(q[i], upscale)
+            if i_end > nr_global:
+                row, i_end = row[:nr_global - i_strt], nr_global
+            result[i_strt:i_end] += row
+
+        return result[None, :]
+
+    def fold2D(self, q, **kwargs):
+        """Sample a global (r, theta) field onto each block's own cells.
+
+        Inverse of unfold2D. Blocks running past the input are edge-padded. 
+        """
+        bs1_lr = int(self.pars['bs1']) // self.lowres1
+        bs2_lr = int(self.pars['bs2']) // self.lowres2
+        n1, n2 = q.shape[-2], q.shape[-1]
+
+        out = np.zeros((len(self.glob), bs1_lr, bs2_lr), dtype=q.dtype)
+        for i in range(len(self.glob)):
+            n         = self.glob[i]
+            upscale_1 = int(self.upscalex1[i])
+            upscale_2 = int(self.upscalex2[i])
+            i_strt    = int(self.amr_info['coordx1'][n]) * upscale_1 * bs1_lr
+            i_end     = i_strt + upscale_1 * bs1_lr
+            j_strt    = int(self.amr_info['coordx2'][n]) * upscale_2 * bs2_lr
+            j_end     = j_strt + upscale_2 * bs2_lr
+
+            sub = q[min(i_strt, n1):min(i_end, n1),
+                    min(j_strt, n2):min(j_end, n2)]
+            if sub.size == 0:
+                continue
+            if sub.shape != (upscale_1 * bs1_lr, upscale_2 * bs2_lr):
+                sub = np.pad(sub,
+                             ((0, upscale_1 * bs1_lr - sub.shape[0]),
+                              (0, upscale_2 * bs2_lr - sub.shape[1])),
+                             mode='edge')
+            out[i] = sub.reshape(bs1_lr, upscale_1,
+                                 bs2_lr, upscale_2).mean(axis=(1, 3))
+
+        return out[..., None]
+
+    def unfold2D(self, q, **kwargs):
+        """Place th-phi integrated block value into correct r-th indices."""
+        bs1_lr     = int(self.pars['bs1']) // self.lowres1
+        bs2_lr     = int(self.pars['bs2']) // self.lowres2
+        nr1_global = int(self.pars['nb1'] * bs1_lr * 2**self.max_levelx1)
+        nr2_global = int(self.pars['nb2'] * bs2_lr * 2**self.max_levelx2)
+        if self.nr_out is not None:
+            nr1_global = min(nr1_global, int(self.nr_out))
+
+        result = np.zeros((nr1_global, nr2_global), dtype=q.dtype)
+        for i in range(q.shape[0]):
+            n         = self.glob[i]
+            upscale_1 = int(self.upscalex1[i])
+            upscale_2 = int(self.upscalex2[i])
+            i_strt    = int(self.amr_info['coordx1'][n]) * upscale_1 * bs1_lr
+            i_end     = i_strt + upscale_1 * bs1_lr
+            j_strt    = int(self.amr_info['coordx2'][n]) * upscale_2 * bs2_lr
+            j_end     = j_strt + upscale_2 * bs2_lr
+
+            if i_strt >= nr1_global:
+                continue
+            expanded = np.repeat(q[i], upscale_1, axis=0)
+            expanded = np.repeat(expanded, upscale_2, axis=1)
+            if i_end > nr1_global:
+                expanded, i_end = expanded[:nr1_global - i_strt], nr1_global
+            result[i_strt:i_end, j_strt:j_end] += expanded
+
+        return result[None, :, :]
 
 class Field():
-    """
+    """Magnetic-field physics.
     Field class manages quantities derived from the magnetic field 3-vector B.
     The 4-magnetic field b^{mu}, the magnetic energy density b^2, Alfven 
     velocity vA, the electromagnetic (EM) field-strength tensor FEM^{mu nu}, 
@@ -692,7 +829,7 @@ class Field():
         return Tools.dot(b, b, gcov, **kwargs)
         
     def calc_TEM(self, uu, B, gcov, gcon, **kwargs):
-        """
+        """Electromagnetic stress-energy tensor.
         Compute the electromagnetic stress-energy tensor TEM.
         Default TEM^{mu nu}.
         "upper_lower": TEM^{mu}_{nu}.
@@ -737,7 +874,7 @@ class Field():
             0.5 *(b2 / B02) * g_tnsr - bb_tnsr) * rho0c2
     
     def calc_FEM(self, uu, B, gcov, gdet, **kwargs):
-        """
+        """Electromagnetic field-strength tensor.
         Compute the electromagnetic field-strength tensor.
         Referred to as the Faraday tensor in MTW.
         Default FEM^{mu nu}.
@@ -803,7 +940,7 @@ class Field():
         return FEM * B0
     
     def calc_dual_FEM(self, uu, B, gcov, gdet, **kwargs):
-        """
+        """Dual of the electromagnetic field-strength tensor.
         Compute the dual of the electromagnetic field-strength tensor.
         Referred to as the Maxwell tensor in MTW.
         Default *FEM^{mu nu}.
@@ -872,12 +1009,51 @@ class Field():
         return dual_FEM * B0
         
     def calc_J(self, uu, B, gcov, gdet, **kwargs):
-        """
-        Calculate the 4-current by taking the divergence of the 
+        """Current density.
+        Calculate the 4-current by taking the divergence of the
         field-strength (Faraday) tensor.
+        Optional AMR-aware derivatives: supply the amr dictionary and
+        level_x1, level_x2 and/or level_x3 (grid['level_x*'], available when
+        the data is read with resolution=1), plus lowres1/2/3 if the data was
+        read downsampled, exactly as for MRI.calc_Q. Derivatives along each
+        axis with a level array then use the true AMR cell spacing instead of
+        the uniform upscaled grid spacing, so replicated coarse cells do not
+        produce zero gradients inside a block and spikes at its edges.
+        Axes without a level array use np.gradient as before.
+        AMR blocks are aligned to multiples of their size in the global grid
+        index, so if the array does not start at global index 0 along an axis
+        (e.g. k_min or i_min in the read), pass that index as offset_x1,
+        offset_x2 or offset_x3 (default 0). A cell whose neighbouring true
+        cell lies outside the array gets a one-sided derivative, so the array
+        should extend at least one true cell beyond the cells of interest.
         """
+        amr    = kwargs.pop('amr', None)
+        levels = {n : kwargs.pop(f'level_x{n}', None) for n in (1, 2, 3)}
+        lowres = {n : kwargs.pop(f'lowres{n}', 1)     for n in (1, 2, 3)}
+        offset = {n : kwargs.pop(f'offset_x{n}', 0)   for n in (1, 2, 3)}
+        upscale = {}
+        for n in (1, 2, 3):
+            if levels[n] is None:
+                continue
+            if amr is None:
+                raise ValueError("Must supply amr dictionary to use level_x" +
+                                 f"{n} in calc_J.")
+            if levels[n].shape != uu.shape[1:]:
+                raise ValueError(f"level_x{n} has shape {levels[n].shape} " +
+                                 f"but the data has shape {uu.shape[1:]}.")
+            upscale[f'upscale_x{n}'] = Tools.calc_upscale_from_level(
+                levels[n], amr[f'max_levelx{n}'], lowres[n])
+            upscale[f'offset_x{n}']  = offset[n]
+
         faraday = self.calc_FEM(uu, B, gcov, gdet, **kwargs)
-        return Tools.div_tnsr(faraday, gdet, self.dx1, self.dx2, self.dx3)
+        J = Tools.div_tnsr(faraday, gdet, self.dx1, self.dx2, self.dx3,
+                           **upscale)
+        if self.cgs:
+            Rg = kwargs.get('Rg')
+            if Rg is None:
+                raise ValueError("Must supply Rg kwarg to calc_J when cgs=True.")
+            J /= Rg
+        return J
     
     def calc_J2(self, J, gcov, **kwargs):
         """Calculate J^2. If from_FEM = True, calculate J first."""
@@ -918,7 +1094,7 @@ class Field():
         )
 
 class Fluid():
-    """
+    """Hydrodynamic physics.
     Fluid class manages hydrodynamic quantities. All methods related to
     two-temperature thermodynamics are contained in this class.
     Calculations of the gas thermal pressure pgas, the hydrodynamic (HD)
@@ -959,7 +1135,7 @@ class Fluid():
         self.params    = pars
 
     def calc_THD(self, rho, uu, u_gas, pgas, gcov, gcon, **kwargs):
-        """
+        """Hydrodynamic stress-energy tensor.
         Compute the hydrodynamic stress-energy tensor THD.
         Default THD^{mu nu}.
         "upper_lower": THD^{mu}_{nu}.
@@ -990,7 +1166,7 @@ class Fluid():
         )
 
     def calc_pgas(self, u_gas, Te, Ti, **kwargs):
-        """
+        """Gas thermal pressure.
         Compute pgas from u_gas using gamma law EOS.
         Equation 23 in Sadowski+ (2017).
         """
@@ -1010,7 +1186,7 @@ class Fluid():
         return (gam_g - 1.) * u_gas # erg/cm^3
 
     def calc_teq(self, rho, Te, Ti, **kwargs):
-        """
+        """Ion-electron equilibration timescale.
         Compute ion-electron equilibration timescale teq.
         Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3.
         """
@@ -1019,8 +1195,12 @@ class Fluid():
 
         # Calculate gamma (ratio of specific heats).
         # Equation 28 in Sadowski+ (2017).
-        gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
-        gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
+        if kwargs.get('vargamma', False):
+            gam_e = (10. + 20. * Theta_e) / (6. + 15. * Theta_e)
+            gam_i = (10. + 20. * Theta_i) / (6. + 15. * Theta_i)
+        else:
+            gam_e = 5. / 3.
+            gam_i = 5. / 3.
 
         u_i = (1./(gam_i-1.)) * (rho / (self.mu_i * self.mp)) * self.kB * Ti
         u_e = (1./(gam_e-1.)) * (rho / (self.mu_e * self.mp)) * self.kB * Te
@@ -1055,7 +1235,7 @@ class Fluid():
         return teq # s
     
     def calc_tii(self, rho, Te, Ti, **kwargs):
-        """
+        """Ion-ion momentum-exchange timescale.
         Compute ion-ion momentum-exchange (collision) timescale tii.
         Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3.
         """
@@ -1066,14 +1246,14 @@ class Fluid():
             self.calc_teq(rho, Te, Ti, **kwargs)))
     
     def calc_tee(self, rho, Te, Ti, **kwargs):
-        """
+        """Electron-electron momentum-exchange timescale.
         Compute electron-electron momentum-exchange (collision) timescale tee.
         Assumes rho in g/cm^3, Te and Ti in K, u_gas in erg/cm^3.
         """
         return (self.me / self.mi) * self.calc_teq(rho, Te, Ti, **kwargs)
 
     def calc_qie(self, rho, Te, Ti, **kwargs):
-        """
+        """Coulomb-collisional energy exchange rate.
         Compute cooling/heating rate due to ion-electron collisions.
         Assumes rho in g/cm^3, Te and Ti in K.
         Equation 20 in Sadowski+ (2017).
@@ -1104,6 +1284,29 @@ class Fluid():
         elif kwargs.get('heating'):
             qie[Ti > Te] = 0.0
             return qie # erg/cm^3 s
+        
+        return qie # erg/cm^3 s
+    
+    def calc_qie_approx(self, rho, Te, Ti, **kwargs):
+        """
+        Compute cooling/heating rate due to ion-electron collisions.
+        Assumes rho in g/cm^3, Te and Ti in K.
+        Equation 20 in Sadowski+ (2017).
+        See also Stepney & Guilbert (1983) Equation 15.
+        """
+        Theta_e = (self.kB * Te) / (self.me * self.c * self.c)
+        Theta_i = (self.kB * Ti) / (self.mi * self.c * self.c)
+        ne      = rho / (self.mu_e * self.mp)
+        X_ab, Y_ab = self.CONSTANTS['X_AB'], self.CONSTANTS['Y_AB'] 
+        n_avg   = ((X_ab + Y_ab) * rho) / self.mp
+        cksigmaT= self.c * self.kB * self.sigT
+        me_mi   = self.me / self.mi
+        # Note that ne * n_avg will cause overflow errors in the disk
+        qie = (
+            (3./2.) * me_mi * cksigmaT * ne * Ti * n_avg * ( 
+            self.Coulomb_log(ne, Te) * (
+            self.Bessel_terms(Theta_e, Theta_i)))
+        )
         
         return qie # erg/cm^3 s
     
@@ -1203,8 +1406,7 @@ class Fluid():
         return qie # erg/cm^3 s
 
     def calc_delta_e(self, rho, u_gas, Te, Ti, B, gcov, **kwargs):
-        """
-        Electron heating fraction.
+        """Electron heating fraction.
         Equation 13 of Chael et al. (2018).
         """
         c = self.c
@@ -1228,7 +1430,7 @@ class Fluid():
         return delta_e
 
 class MRI():
-    """
+    """Magnetorotational instability physics.
     MRI (magnetorotational instability) class handles quality factors and
     growth rates for modes of the MRI.
     
@@ -1250,22 +1452,23 @@ class MRI():
     """
     def __init__(self, r, theta, phi, pars, CONSTANTS, **kwargs):
         self.dx1, self.dx2, self.dx3 = pars['dx1'], pars['dx2'], pars['dx3']
+        self.pars, self.CONSTANTS    = pars, CONSTANTS
 
         self.cgs  = kwargs.get('cgs', False)
         self.MBH  = kwargs.get('MBH', ONE) if self.cgs else ONE # g
         self.c    = CONSTANTS['c']         if self.cgs else ONE # cm/s
         self.G    = CONSTANTS['G']         if self.cgs else ONE # cm^3/g s^2
         self.Msun = CONSTANTS['Msun']      if self.cgs else ONE # g
-        Rg        = (self.G * self.MBH * self.Msun) / (self.c * self.c)
+        self.Rg   = (self.G * self.MBH * self.Msun) / (self.c * self.c)
 
-        self.r  = r / Rg
+        self.r  = r / self.Rg
         self.th = theta
         self.ph = phi
 
     def calc_Q(self, rho, uu, B, u_gas, gcov, **kwargs):
         """MRI quality (Q) factors."""
         Fld = Field(self.pars, self.CONSTANTS, cgs=self.cgs)
-        vA  = Fld.calc_vA(rho, uu, B, u_gas, gcov, **kwargs)
+        vA  = np.abs(Fld.calc_vA(rho, uu, B, u_gas, gcov, **kwargs))
         TWOPI = np.float32(2. * np.pi)
         if 'amr' in kwargs:
             self.calc_upscale(**kwargs)
@@ -1275,12 +1478,14 @@ class MRI():
         dx1   = self.dx1 * np.sqrt(gcov[1, 1]) * self.upscalex1
         dx2   = self.dx2 * np.sqrt(gcov[2, 2]) * self.upscalex2
         dx3   = self.dx3 * np.sqrt(gcov[3, 3]) * self.upscalex3
-        vrot       = uu[3] / uu[0]
-        lambda_MRI = TWOPI * (vA / vrot) * self.r
+        u_hat = Tools.to_orthonormal(uu, gcov)
+        vA_hat= Tools.to_orthonormal(vA, gcov)
+        Omega = self.c * (u_hat[3] / u_hat[0]) / (np.sqrt(gcov[1, 1]) * self.Rg)
+        lambda_MRI = TWOPI * (vA_hat / Omega)
         Q       = hr.Tools.zeroNd(uu.shape, 1, dtype=np.float32)
-        Q[1]    = lambda_MRI / dx1  
-        Q[2]    = lambda_MRI / dx2
-        Q[3]    = lambda_MRI / dx3
+        Q[1]    = (lambda_MRI[1] / self.Rg) / dx1  
+        Q[2]    = (lambda_MRI[2] / self.Rg) / dx2
+        Q[3]    = (lambda_MRI[3] / self.Rg) / dx3
         return Q
 
     def calc_upscale(self, amr, level_x1, level_x2, level_x3, **kwargs):
@@ -1303,7 +1508,7 @@ class Tools():
             import hamr_readc
             cls._Toolsc_obj = hamr_readc.PyTools()
         return cls._Toolsc_obj
-
+    
     @staticmethod
     def dot(a, b, gcov, **kwargs):
         """Contract two 4-vectors: g_{mu nu} a^nu b^mu."""
@@ -1320,35 +1525,43 @@ class Tools():
         return np.einsum('ij...,j...->i...', gcov, a)
 
     @staticmethod
+    def to_orthonormal(u, gcov, **kwargs):
+        """
+        Convert the spatial (x1, x2, x3) components of a contravariant
+        4-vector from coordinate basis to the local spherical orthonormal
+        basis: u^{hat i} = u^i * sqrt(g_{ii}).
+        """
+        u_hat = np.copy(u)
+        for i in range(1, 4):
+            u_hat[i] = u[i] * np.sqrt(gcov[i, i])
+        return u_hat
+
+    @staticmethod
     def construct_dyadic(u, gcov, **kwargs):
         """Construct dyadic tensor uu from 4-vector u."""
         if kwargs.get('cpp', False):
             return Tools.construct_dyadic_cpp(u, gcov, **kwargs)
-            
-        upper_lower = 'upper_lower' in kwargs
-        lower_lower = 'lower_lower' in kwargs
-        
         if 'index' in kwargs:
-            mu, nu = kwargs.get('index')
-            if upper_lower:
-                return u[mu] * np.einsum('j...,j...->...', gcov[nu], u)
-            elif lower_lower:
-                return (np.einsum('j...,j...->...', gcov[mu], u) * 
-                        np.einsum('j...,j...->...', gcov[nu], u))
-            else:
-                return u[mu] * u[nu]
-                
-        if upper_lower:
-            # u^mu u_nu
-            return np.einsum('i...,jk...,k...->ij...', u, gcov, u, 
-                             optimize='greedy')
-        elif lower_lower:
-            # u_mu u_nu 
-            return np.einsum('ik...,jl...,k...,l...->ij...', 
-                             gcov, gcov, u, u, optimize='greedy')
+            [mu, nu] = kwargs.get('index')
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                uu_tnsr = u[mu] * u[nu]
+            elif ('upper_lower' in kwargs):
+                uu_tnsr = u[mu] * np.einsum('ij...,j...->i...', gcov, u)[nu]
+            elif ('lower_lower' in kwargs):
+                uu_tnsr = (
+                    np.einsum('ij...,j...->i...', gcov, u)[mu] * (
+                    np.einsum('ij...,j...->i...', gcov, u)[nu]))
         else:
-            # u^mu u^nu 
-            return np.einsum('i...,j...->ij...', u, u)
+            if ('upper_lower' not in kwargs and 'lower_lower' not in kwargs):
+                uu_tnsr = np.einsum('i...,j...->ij...', u, u)
+            elif ('upper_lower' in kwargs):
+                uu_tnsr = np.einsum('i...,j...->ij...', u,
+                            np.einsum('ij...,j...->i...', gcov, u))
+            elif ('lower_lower' in kwargs):
+                uu_tnsr = np.einsum('i...,j...->ij...',
+                        np.einsum('ij...,j...->i...', gcov, u),
+                        np.einsum('ij...,j...->i...', gcov, u))
+        return uu_tnsr
 
     @staticmethod
     def g_metric(gcov, gcon, **kwargs):
@@ -1406,7 +1619,7 @@ class Tools():
 
     @staticmethod
     def calc_Levi_Civita(n, gdet, **kwargs):
-        """
+        """Levi-Civita tensor.
         Compute the Levi-Civita tensor.
         Multiply by 1/gdet if cov=False (default) or gdet if cov=True.
         """
@@ -1439,17 +1652,119 @@ class Tools():
  
     @staticmethod
     def div_tnsr(tnsr, gdet, dx1, dx2, dx3, **kwargs):
-        """Calculate divergence of a tensor."""
-        return (1. / gdet) * (
-            np.gradient((gdet * tnsr[:, 1]), dx1, axis=2) + 
-            np.gradient((gdet * tnsr[:, 2]), dx2, axis=3) + 
-            np.gradient((gdet * tnsr[:, 3]), dx3, axis=4)
-        )
+        """Calculate divergence of a tensor.
+        If upscale_x1, upscale_x2 and/or upscale_x3 are supplied (from
+        Tools.calc_upscale_from_level), that derivative respects the AMR cell
+        size via Tools.gradient_amr, with offset_x1/2/3 the global grid index
+        of the first cell along that axis (default 0). Otherwise np.gradient
+        on the uniform grid.
+        """
+        div = 0.
+        for n, dx in zip((1, 2, 3), (dx1, dx2, dx3)):
+            flux    = gdet * tnsr[:, n]
+            upscale = kwargs.get(f'upscale_x{n}')
+            if upscale is None:
+                div = div + np.gradient(flux, dx, axis=n + 1)
+            else:
+                div = div + Tools.gradient_amr(
+                    flux, dx, n + 1, upscale,
+                    offset=kwargs.get(f'offset_x{n}', 0))
+        return (1. / gdet) * div
+
+    @staticmethod
+    def calc_upscale_from_level(level, max_level, lowres=1):
+        """Number of grid cells spanned by one true AMR cell along an axis.
+        The grid is upscaled to the finest level (2 ** (max_level - level))
+        and then divided by lowres, as in MRI.calc_upscale. A value below one
+        means the grid cell is already coarser than the AMR cell, so one grid
+        cell is one true cell.
+        """
+        up = 2.0 ** (max_level - np.asarray(level)) / lowres
+        return np.maximum(np.rint(up), 1).astype(np.int64)
+
+    @staticmethod
+    def gradient_amr(q, dx, axis, upscale, offset=0):
+        """Derivative along axis that uses the true AMR cell spacing.
+        On the upscaled uniform grid a coarse cell is replicated over
+        upscale grid cells, so np.gradient returns zero inside a block and a
+        spike at its edges. Here every grid cell takes the value of its own
+        true cell and of the true cells on either side, with the actual
+        center-to-center distance (u_i + u_nbr) / 2 in grid cells, and the
+        non-uniform central difference
+          q' = (dL^2 qR - dR^2 qL + (dR^2 - dL^2) q0) / (dL dR (dL + dR)).
+        The result is constant across each true cell. With uniform upscale it
+        reduces to np.gradient, including its first-order one-sided edges.
+        AMR blocks are aligned to multiples of their size in the global grid
+        index, so a cell at global index g = i + offset lies in the true cell
+        starting at g - (g mod upscale). That fixes the true center of every
+        cell, including cells whose block is cut by the array edge. A cell
+        whose neighbouring true cell is outside the array gets a one-sided
+        derivative toward the neighbour that is present.
+
+        Parameters
+        ----------
+        q : array
+            Quantity to differentiate, any number of leading axes.
+        dx : float
+            Grid spacing between uniform (upscaled, lowres) cells.
+        axis : int
+            Axis of q to differentiate along.
+        upscale : int array
+            Grid cells per true cell, e.g. from calc_upscale_from_level,
+            with the trailing shape of q (the leading component axes of q
+            are not included).
+        offset : int
+            Global grid index of the first cell of q along axis, e.g. k_min
+            of the read. Default 0 (array starts at the grid origin).
+        """
+        q = np.asarray(q)
+        n = q.shape[axis]
+        if n < 2:
+            return np.zeros_like(q)
+
+        u = np.asarray(upscale)
+        u = u.reshape((1,) * (q.ndim - u.ndim) + u.shape)
+
+        qm = np.moveaxis(q, axis, -1)
+        um = np.moveaxis(u, axis % q.ndim, -1)
+
+        # First and last grid cell (local index) of the true cell containing
+        # each cell. These can lie outside the array for a cut block.
+        i      = np.arange(n)
+        start  = i - np.mod(i + offset, um)
+        end    = start + um - 1
+
+        # A block that is not aligned (wrong offset or levels) has cells of
+        # different upscale inside one true cell; refuse rather than guess.
+        for edge in (start, end):
+            inside = (edge >= 0) & (edge <= n - 1)
+            u_edge = np.take_along_axis(um, np.clip(edge, 0, n - 1), axis=-1)
+            if np.any(inside & (u_edge != um)):
+                raise ValueError("Refinement blocks are not aligned with the " +
+                                 "levels and offset supplied to gradient_amr.")
+
+        hasL, hasR = start - 1 >= 0, end + 1 <= n - 1
+        iL = np.clip(start - 1, 0, n - 1)
+        iR = np.clip(end   + 1, 0, n - 1)
+
+        # Center-to-center distances to the neighbouring true cells.
+        dL = 0.5 * (um + np.take_along_axis(um, iL, axis=-1))
+        dR = 0.5 * (um + np.take_along_axis(um, iR, axis=-1))
+        qL = np.take_along_axis(qm, iL, axis=-1)
+        qR = np.take_along_axis(qm, iR, axis=-1)
+
+        central = ((dL * dL * qR - dR * dR * qL + (dR * dR - dL * dL) * qm) / 
+                   (dL * dR * (dL + dR)))
+        right   = (qR - qm) / dR
+        left    = (qm - qL) / dL
+        dq = np.where(hasL & hasR, central, np.where(hasR, right, left))
+        return np.moveaxis(dq / dx, -1, axis).astype(q.dtype)
     
     @staticmethod
     def dot_cpp(a, b, gcov, **kwargs):
         """Compute dot product g_{mu nu} a^nu b^mu with C++ acceleration.""" 
-        dims = a.shape
+        dtype = np.float32 # C++ layer expects float
+        dims  = a.shape
         if len(dims) != 5 or dims[0] != 4:
             raise ValueError(f"This 4-vector with shape {dims} " + 
                              "cannot be passed to C++.")
@@ -1464,7 +1779,7 @@ class Tools():
         axisym = 1 if gcov.shape[-1] == 1 else 0
         
         # Allocate raw uninitialized buffer
-        a_cov = np.empty(dims, dtype=np.float32)
+        a_cov = hr.Tools.zeroNd(a.shape, 1, dtype=dtype)
         
         # Lower index in C++
         Toolsc.lower_index(a_c, a_cov, gcov, nb, nx1, nx2, nx3, axisym)
@@ -1475,7 +1790,8 @@ class Tools():
     @staticmethod
     def contract_vector_cpp(a, gcov, **kwargs):
         """Contract 4-vector with gcov using C++ acceleration."""
-        dims   = a.shape
+        dtype = np.float32 # C++ layer expects float
+        dims  = a.shape
         if len(dims) != 5 or dims[0] != 4:
             raise ValueError(f"This 4-vector with shape {dims} " + 
                              "cannot be passed to C++.")
@@ -1489,17 +1805,54 @@ class Tools():
         axisym = 1 if gcov.shape[-1] == 1 else 0
         
         # Allocate raw uninitialized buffer
-        a_cov = np.empty(dims, dtype=np.float32)
+        a_cov = hr.Tools.zeroNd(a.shape, 1, dtype=dtype)
 
         # Lower index in C++
         Toolsc.lower_index(a_c, a_cov, gcov, nb, nx1, nx2, nx3, axisym)
 
         return a_cov
-        
+
+    @staticmethod
+    def contract_tensor_cpp(tnsr, M, **kwargs):
+        """Contract rank-2 tensor with M twice (tnsr_out_ij = M_ik M_jl
+        tnsr_kl) using C++ acceleration. tnsr and M may independently be
+        phi-axisymmetric (phi axis collapsed to size 1) -- e.g. an
+        axisymmetric metric contracted with a genuinely phi-dependent
+        transform matrix, or vice versa. The output takes the larger
+        (broadcast) phi resolution of the two."""
+        dtype = np.float32 # C++ layer expects float
+        dims  = tnsr.shape
+        if len(dims) != 6 or dims[0] != 4 or dims[1] != 4:
+            raise ValueError(f"This rank-2 tensor with shape {dims} " +
+                             "cannot be passed to C++.")
+        if M.ndim != 6 or M.shape[0] != 4 or M.shape[1] != 4:
+            raise ValueError(f"M with shape {M.shape} cannot be passed to C++.")
+
+        Toolsc = Tools._get_cpp_tools()
+
+        # Zero-allocation view/cast check
+        tnsr_c = np.asarray(tnsr, dtype=np.float32)
+
+        _, _, nb, nx1, nx2, nx3_tnsr = dims
+        nx3_M = M.shape[-1]
+        nx3   = max(nx3_tnsr, nx3_M)
+        axisym_tnsr = 1 if nx3_tnsr == 1 else 0
+        axisym_M    = 1 if nx3_M    == 1 else 0
+
+        # Allocate raw uninitialized buffer at the broadcast (output) shape
+        tnsr_out = hr.Tools.zeroNd([4, 4, nb, nx1, nx2, nx3], 1, dtype=dtype)
+
+        # Contract tensor in C++
+        Toolsc.contract_tensor(tnsr_c, tnsr_out, M, nb, nx1, nx2, nx3,
+                                axisym_tnsr, axisym_M)
+
+        return tnsr_out
+
     @staticmethod
     def construct_dyadic_cpp(u, gcov, **kwargs):
         """Construct dyadic tensor uu with C++ acceleration."""
-        dims = u.shape
+        dtype = np.float32 # C++ layer expects float
+        dims  = u.shape
         if len(dims) != 5 or dims[0] != 4:
             raise ValueError(f"This 4-vector with shape {dims} " + 
                              "cannot be passed to C++.")
@@ -1519,13 +1872,13 @@ class Tools():
         if 'index' in kwargs:
             mu, nu = kwargs.get('index')
             if upper_lower:
-                u_nu = np.empty(dims[1:], dtype=np.float32)
+                u_nu = hr.Tools.zeroNd(u[nu].shape, 1, dtype=dtype)
                 Toolsc.lower_index_mu(u_c, u_nu, gcov, nu, 
                                       nb, nx1, nx2, nx3, axisym)
                 return u_c[mu] * u_nu
             elif lower_lower:
-                u_mu = np.empty(dims[1:], dtype=np.float32)
-                u_nu = np.empty(dims[1:], dtype=np.float32)
+                u_mu = hr.Tools.zeroNd(u[mu].shape, 1, dtype=dtype)
+                u_nu = hr.Tools.zeroNd(u[nu].shape, 1, dtype=dtype)
                 Toolsc.lower_index_mu(u_c, u_mu, gcov, mu, 
                                       nb, nx1, nx2, nx3, axisym)
                 Toolsc.lower_index_mu(u_c, u_nu, gcov, nu, 
@@ -1535,7 +1888,8 @@ class Tools():
                 return u_c[mu] * u_c[nu]
                 
         if upper_lower or lower_lower:
-            u_cov = np.empty(dims, dtype=np.float32)
+            u_cov =  hr.Tools.zeroNd(u.shape, 1, dtype=dtype)
+            np.empty(dims, dtype=np.float32)
             Toolsc.lower_index(u_c, u_cov, gcov, nb, nx1, nx2, nx3, axisym)
             
             if upper_lower:
@@ -1546,7 +1900,7 @@ class Tools():
                                  optimize='greedy')
         else:
             return np.einsum('i...,j...->ij...', u_c, u_c, optimize='greedy')
-
+    
     # Smooth out function using convolution
     def smooth(y, Lsmth, Lx, **kwargs): 
         Nsmth = Lx/Lsmth
