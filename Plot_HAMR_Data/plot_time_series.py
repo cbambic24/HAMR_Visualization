@@ -21,7 +21,6 @@ style.use('seaborn-v0_8-bright')
 matplotlib.rcParams['figure.dpi'] = 300
 
 figsize = [20.0, 26.0]
-FS      = 48
 FS      = 28
 plt.rcParams['xtick.labelsize'] = FS
 plt.rcParams['ytick.labelsize'] = FS
@@ -72,7 +71,7 @@ def main(**kwargs):
 
     plot_info = dict.fromkeys(plot_keys)
     for key in plot_keys:
-        plot_info[key] = dict.fromkeys(['quant', 'colors', 'axis_id', 'labels', 'title', 'log'])
+        plot_info[key] = dict.fromkeys(['colors', 'axis_id', 'labels', 'log'])
 
     # Limits for each figure
     user_limits = {
@@ -83,16 +82,10 @@ def main(**kwargs):
         'scaleheight' : [0.01, 2],
         'rho0'        : None
     }
+    #user_limits['PhiBH'] = [0, 100]
+    user_limits['Edot'] = [1.e-3, 2.]
 
     # Quantities for each figure
-    plot_info['Mdot'][ 'quant'] = 'Mdot_sigma'
-    plot_info['PhiBH']['quant'] = 'Phi_BH'
-    plot_info['Edot'][ 'quant'] = ['Edot_jet', 'Edot_Rad'] if radiation else ['Edot_jet']
-    if show_HoR:
-        plot_info['scaleheight']['quant'] = 'Dtheta2'
-    if show_rho0:
-        plot_info['rho0']['quant']        = 'rho0'
-
     # Log-scale
     for key in plot_keys: plot_info[key]['log'] = True
     plot_info['PhiBH']['log'] = False
@@ -129,7 +122,7 @@ def main(**kwargs):
     prof_args = {
         'averages_dir' : file_info['averages_dir'],
         'fnums'        : fnums,
-        'keys'         : data_keys + ['t', 'r', 'a', 'Vol', 'k_max', 'rho0'],
+        'keys'         : data_keys + ['t', 'r', 'a', 'Vol', 'rho0'],
         'reduced'      : reduced
     }
 
@@ -184,7 +177,7 @@ def main(**kwargs):
         axes[id_eta].plot( time/1.e4, -Edot_Rad/Mdotc2, **plt_args)
     
     if show_HoR and not show_rho0:
-        id = plot_info['HoR']['axis_id']
+        id = plot_info['scaleheight']['axis_id']
         axes[id].plot(time/1.e4, HoR, color=plot_info['scaleheight']['colors'], lw=2)
     
     if show_rho0 and not show_HoR:
@@ -192,7 +185,7 @@ def main(**kwargs):
         axes[id].plot(time/1.e4, rho0, color=plot_info['rho0']['colors'], lw=2)
     
     if show_HoR and show_rho0:
-        id_HoR  = plot_info['HoR'][ 'axis_id']
+        id_HoR  = plot_info['scaleheight'][ 'axis_id']
         id_rho0 = plot_info['rho0']['axis_id']
         axes[id_HoR].plot(time/1.e4, HoR,  color=plot_info['scaleheight']['colors'], lw=2)
         axes[id_rho0].plot(time/1.e4, rho0, color=plot_info['rho0']['colors'], lw=2)
@@ -227,7 +220,7 @@ def main(**kwargs):
     for key in plot_keys:
         id = int(plot_info[key]['axis_id'])
         axes[id].set_ylabel(get_plot_title(key, cgs), fontsize=FS)
-        limits = get_limits(key, user_limits, plotted_data, plot_info)
+        limits = cv.get_limits(key, user_limits, plotted_data[key], plot_info)
         axes[id].set_ylim(limits)
         if plot_info[key]['log']:
             axes[id].set_yscale('log')
@@ -251,19 +244,6 @@ def get_plot_title(key, cgs):
         'rho0'       : r'$\rho_0 \: (\rm{g/cm}^3)$'
     }
     return plot_titles[key]
-
-def get_limits(key, user_limits, plotted_data, plot_info):
-    if user_limits[key] == None:
-        all_data = np.concatenate(plotted_data[key])
-        if plot_info[key]['log']:
-            pos_data = all_data[all_data > 0]
-            log_min = np.floor(np.amin(np.log10(np.abs(pos_data))))
-            log_max = np.floor(np.amax(np.log10(np.abs(pos_data))))
-            return [10 ** log_min, 10 ** (log_max + 1)]
-        else:
-            return [np.amin(all_data), np.amax(all_data)]
-    else:
-        return user_limits[key]
 
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(

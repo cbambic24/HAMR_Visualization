@@ -39,7 +39,7 @@ def main(**kwargs):
     matplotlib.rcParams['text.usetex'] = False if disable_TeX else True
 
     cgs = True if (two_temp or radiation) else False
-    Analytic = theory.Analytic(hr.CONSTANTS, cgs=cgs)
+    Theory = theory.Analytic(hr.CONSTANTS, cgs=cgs)
 
     Msun = hr.CONSTANTS['Msun']     if cgs else 1.
     c    = hr.CONSTANTS['c']        if cgs else 1.
@@ -132,10 +132,10 @@ def main(**kwargs):
 
     # Load in data
     data_keys = [
-        'Mdot_sigma', 'rho', 'Ti', 'Pthm', 'Pmag', 
-        'Edot_jet', 'Edot_Poyt', 'Edot_Fluid', 'Dtheta2', 
-        'Phi_BH', 'Phi_mid', 'Phi_sph_upp', 'Phi_sph_low',
-        'vR', 'vphi', 'vz', 'bphi', 'bz'
+        'Mdot_sigma', 'rho',       'Ti',          'Pthm',        'Pmag',
+        'Edot_jet',   'Edot_Poyt', 'Edot_Fluid',  'Dtheta2',
+        'Phi_BH',     'Phi_mid',   'Phi_sph_upp', 'Phi_sph_low',
+        'vR',         'vphi',      'vz',          'bphi',        'bz'
     ]
     if two_temp:
         data_keys += ['Te']
@@ -178,51 +178,28 @@ def main(**kwargs):
         plotted_data = []
 
         # Normalizations
-        norm = 1.
-        if key == 'Mdot':
-            if (cgs):
-                Mdot_Edd = Analytic.calc_Mdot_Edd(MBH=MBH, eta=0.179)
-                norm = (1. / Mdot_Edd)
-        if key == 'Edot':
-            if (cgs):
-                L_Edd = Analytic.calc_LEdd(MBH=MBH)
-                norm = -(1. / L_Edd)
-            else:
-                norm = -1.
-        if key == 'PhiBH':
-            norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
-        if key == 'vphi':
-            a  = profiles[fnums0]['a']
-            OmegaK = Analytic.calc_OmegaK(MBH, a, r)
-            norm = (1. / OmegaK) * (c / (r * Rg)) # This is now Omega/OmegaK
+        a    = profiles[fnums0]['a']
+        norm = get_norm(key, MBH, a, Theory, Mdot_avg=Mdot_avg, r=r)
 
         # Calculate profile
-        if key == 'Mdot' or key == 'Edot' or key == 'PhiBH':
-            vol = False
+        vol = False if key == 'Mdot' or key == 'Edot' or key == 'PhiBH' else True
+
+        if single_file:
+            def fetch(quant, _vol=vol):
+                return profiles[fnums0][quant] / profiles[fnums0]['Vol'] if _vol else profiles[fnums0][quant]
         else:
-            vol = True
+            def fetch(quant, _vol=vol):
+                return Profs.time_avg(quant, profiles, vol=_vol)
 
         if isinstance(plot_info[key]['quant'], list):
             for quant, color, label in zip(plot_info[key]['quant'], plot_info[key]['colors'], plot_info[key]['labels']):
-                if single_file:
-                    q = profiles[fnums0][quant] / profiles[fnums0]['Vol'] if vol else profiles[fnums0][quant]
-                else:
-                    q = Profs.time_avg(quant, profiles, vol=vol)
+                q = fetch(quant)
                 q_norm = norm * q
-                if quant == 'Phi_mid':
-                    q_norm *= -1
-                if quant == 'Phi_sph_upp' or quant == 'Phi_sph_low':
-                    a  = profiles[fnums0]['a']
-                    rH = Analytic.calc_R_Horizon(a)
-                    rH_idx = np.argmin(np.abs(r - rH))
-                    phi_BH = norm * profiles[fnums0]['Phi_BH'][rH_idx]
-                    q_diff = q_norm - phi_BH
-                    linestyle  = '--' if quant == 'Phi_sph_low' else '-'
-                    alpha      = 0.5  if quant == 'Phi_sph_low' else 1.
-                    flux_label = r'$\rm{sph} - \rm{BH}$' if quant == 'Phi_sph_upp' else None
-                    axes[id].plot(r, q_diff, lw=2., color='crimson', linestyle=linestyle, alpha=alpha, label=flux_label)
+                if quant == 'Phi_mid': q_norm *= -1
+                if quant in ('Phi_sph_upp', 'Phi_sph_low'):
+                    plot_phi_sph_disk(axes, id, r, quant, q_norm, norm, a, profiles, fnums0, Theory)
 
-                axes[id].plot(r, q_norm, lw=2., color=color, linestyle='-', label=label) 
+                axes[id].plot(r, q_norm, lw=2., color=color, linestyle='-', label=label)
                 plotted_data.append(q_norm)
 
                 if key == 'Edot':
@@ -230,11 +207,8 @@ def main(**kwargs):
              
         else:
             quant = plot_info[key]['quant']
-            if single_file:
-                q = profiles[fnums0][quant] / profiles[fnums0]['Vol'] if vol else profiles[fnums0][quant]
-            else:
-                q = Profs.time_avg(quant, profiles, vol=vol)
-            q_norm = norm * q
+            q     = fetch(quant)
+            q_norm= norm * q
             if key == 'scaleheight':
                 q_norm = np.sqrt(q_norm) # Apply square root to the scale height
             axes[id].plot(r, q_norm, lw=2., color=plot_info[key]['colors'], linestyle='-', label=plot_info[key]['labels'])
@@ -246,10 +220,7 @@ def main(**kwargs):
         # Plot radiation temperature if radiation = True 
         if key == 'Temp':
             if radiation:
-                if single_file:
-                    Prad = profiles[fnums0]['Prad'] / profiles[fnums0]['Vol']
-                else:
-                    Prad = Profs.time_avg('Prad', profiles, vol=True)
+                Prad = fetch('Prad')
                 Trad = (3. * Prad / hr.CONSTANTS['aRAD']) ** (1./4.)
                 axes[id].plot(r, Trad, color='crimson', lw=2., label=r'$\rm{Radiation}$')
 
@@ -267,7 +238,7 @@ def main(**kwargs):
             linthresh = get_linthresh(plot_info[key]['linthresh'], plotted_data)
             axes[id].set_yscale('symlog', linthresh=linthresh)
 
-        limits = get_limits(key, user_limits, plotted_data, plot_info)
+        limits = cv.get_limits(key, user_limits, plotted_data, plot_info)
         axes[id].set_ylim(limits)
         
         axes[id].set_xlabel(r'$r/R_g$', fontsize=FS)
@@ -282,7 +253,7 @@ def main(**kwargs):
 
     opt = dict(ha='left', va='center', color='black', bbox=dict(facecolor='none', edgecolor='none'))
     tstring = get_tstring(profiles, fnums, single_file, ndec=3)
-    axes[0].text(0.05, 0.10, r'$t = $' + tstring + r' $R_g/c$', fontsize=FS-2, transform=axes[0].transAxes, **opt)  
+    axes[0].text(0.05, 0.90, r'$t = $' + tstring + r' $R_g/c$', fontsize=FS-2, transform=axes[0].transAxes, **opt)  
     
     os.makedirs(save_dir, exist_ok=True)
     print("Saving figure ...", flush=True)
@@ -307,28 +278,43 @@ def get_plot_title(key, cgs):
     }
     return plot_titles[key]
 
-def get_limits(key, user_limits, quants, plot_info):
-    if user_limits[key] == None:
-        all_data = np.concatenate(quants)
-        if plot_info[key]['log']:
-            pos_data = all_data[all_data > 0]
-            neg_data = all_data[all_data < 0]
-            if plot_info[key]['linthresh']:
-                return get_sym_log_lims(pos_data, neg_data)
-            log_min = np.floor(np.amin(np.log10(np.abs(pos_data))))
-            log_max = np.floor(np.amax(np.log10(np.abs(pos_data))))
-            return [10 ** log_min, 10 ** (log_max + 1)]
-        else:
-            return [np.amin(all_data), np.amax(all_data)]
-    else:
-        return user_limits[key]
-              
-def get_sym_log_lims(pos_data, neg_data):
-    log_pos = np.log10(np.amax(pos_data)) if len(pos_data) > 0 else -6
-    log_neg = np.log10(np.abs(np.amin(neg_data))) if len(neg_data) > 0 else -6
-    sym_log = np.floor(max(log_pos, log_neg)) + 1
-    return [-10 ** sym_log, 10 ** sym_log]
- 
+def plot_phi_sph_disk(axes, id, r, quant, q_norm, norm, a, profiles, fnums0, Theory):
+    rH     = Theory.calc_R_Horizon(a)
+    rH_idx = np.argmin(np.abs(r - rH))
+    phi_BH = norm * profiles[fnums0]['Phi_BH'][rH_idx]
+    q_diff = q_norm - phi_BH
+    linestyle  = '--' if quant == 'Phi_sph_low' else '-'
+    alpha      = 0.5  if quant == 'Phi_sph_low' else 1.
+    flux_label = r'$\rm{sph} - \rm{BH}$' if quant == 'Phi_sph_upp' else None
+    axes[id].plot(r, q_diff, lw=2., color='crimson', linestyle=linestyle, alpha=alpha, label=flux_label)
+
+def get_norm(key, MBH, a, Theory, **kwargs):
+    Msun = hr.CONSTANTS['Msun']     if Theory.cgs else 1.
+    c    = hr.CONSTANTS['c']        if Theory.cgs else 1.
+    G    = hr.CONSTANTS['G']        if Theory.cgs else 1.
+    Rg   = G * MBH * Msun / (c * c) if Theory.cgs else 1.
+
+    norm = 1.
+    if key == 'Mdot':
+        if Theory.cgs:
+            Mdot_Edd = Theory.calc_Mdot_Edd(MBH=MBH, eta=0.179)
+            norm = 1. / Mdot_Edd
+    if key == 'Edot':
+        L_Edd = Theory.calc_LEdd(MBH=MBH) if Theory.cgs else 1.
+        norm  = -1. / L_Edd
+    if key == 'PhiBH':
+        Mdot_avg = kwargs.get('Mdot_avg')
+        if Mdot_avg is None:
+            raise ValueError("Must supply Mdot_avg for phi normalization.")
+        norm = 1. / np.sqrt(Mdot_avg * Rg * Rg * c)
+    if key == 'vphi':
+        r = kwargs.get('r')
+        if r is None:
+            raise ValueError("Must supply r for Omega normalization.")
+        OmegaK = Theory.calc_OmegaK(MBH, a, r)
+        norm = (1. / OmegaK) * (c / (r * Rg)) # This is now Omega/OmegaK
+    return norm
+
 def get_linthresh(linthresh, quants):
     if linthresh == 'infer':
         all_data    = np.concatenate(quants)
@@ -339,29 +325,16 @@ def get_linthresh(linthresh, quants):
 def get_tstring(profiles, fnums, single_file, ndec=2):
     if single_file:
         time = profiles[f'{fnums[0]}']['t']
-        oom  = int(np.floor(np.log10(time)))
-        dec_str = time / (10 ** oom)
-        return (rf'$%.{ndec}f$' %dec_str + r'$\times 10^{%d}$' %oom)
-    else:
-        tstrt = profiles[f'{fnums[0]}']['t']
-        tend  = profiles[f'{fnums[-1]}']['t']
+        return cv.get_nice_time(time, prec=ndec)
 
-        oom_strt = int(np.floor(np.log10(tstrt)))
-        oom_end  = int(np.floor(np.log10(tend)))
+    tstrt = profiles[f'{fnums[0]}']['t']
+    tend  = profiles[f'{fnums[-1]}']['t']
+    coeff_strt, oom_strt = cv.get_time_coeff_expon(tstrt)
+    coeff_end,  oom_end  = cv.get_time_coeff_expon(tend)
 
-        if (oom_strt == oom_end):
-            strt_str = tstrt / (10 ** oom_end)
-            end_str  = tend / (10 ** oom_end)
-            tstr = (rf'$%.{ndec}f-%.{ndec}f$' %(strt_str, end_str) + 
-                r'$\times$' + r'$10^{%d}$' %oom_end)
-        else:
-            strt_str = tstrt / (10 ** oom_strt)
-            end_str  = tend / (10 ** oom_end)
-            tstr = (rf'$%.{ndec}f$' %(strt_str) + 
-                r'$\times$' + r'$10^{%d}$' %oom_strt + '-' +
-                rf'$%.{ndec}f$' %(end_str) +
-                r'$\times$' + r'$10^{%d}$' %oom_end)
-        return tstr
+    if oom_strt == oom_end:
+        return (rf'$%.{ndec}f-%.{ndec}f$' % (coeff_strt, coeff_end) + r'$\times$' + r'$10^{%d}$' % oom_end)
+    return cv.get_nice_time(tstrt, prec=ndec) + '-' + cv.get_nice_time(tend, prec=ndec)
     
 if __name__ == '__main__':
     parser  = argparse.ArgumentParser(
