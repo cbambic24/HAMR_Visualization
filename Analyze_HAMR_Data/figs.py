@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.interpolate import griddata
+from scipy.ndimage import map_coordinates, distance_transform_edt
 from matplotlib import patches
 
 class Cartesian():
@@ -26,7 +27,8 @@ class Cartesian():
                            fix_pole=kwargs.get('fix_pole', 'constant'))
 
         im['r'] = ax.pcolormesh(X['r'], Y['r'], D['r'],
-                                norm = norm, cmap = cmap, shading = 'gouraud')
+                                norm = norm, cmap = cmap, 
+                                shading = kwargs.get('shading', 'gouraud'))
         cax = self.get_cax(fig, ax, im, FS, **kwargs)
 
         if 'fix_pole' in kwargs:
@@ -85,9 +87,18 @@ class Cartesian():
             FP.fix_cart_xz(X, Z, D, r, theta, phi, phi0 = phi0, 
                            fix_pole=kwargs.get('fix_pole', 'constant'))
 
-        im['l'] = ax.pcolormesh(X['l'], Z['l'], D['l'],
+        # alpha is applied where alpha_mask is True; pad masks like the poles
+        alphas = {'l' : None, 'r' : None}
+        if kwargs.get('alpha_mask') is not None:
+            for key in ['l', 'r']:
+                mask = kwargs['alpha_mask'][key]
+                if 'fix_pole' in kwargs:
+                    mask = FP.concatenate(mask, mask[:, 0], mask[:, -1])
+                alphas[key] = np.where(mask, kwargs.get('alpha', 0.25), 1.)
+
+        im['l'] = ax.pcolormesh(X['l'], Z['l'], D['l'], alpha = alphas['l'],
                                 norm = norm, cmap = cmap, shading = 'gouraud')
-        im['r'] = ax.pcolormesh(X['r'], Z['r'], D['r'],
+        im['r'] = ax.pcolormesh(X['r'], Z['r'], D['r'], alpha = alphas['r'],
                                 norm = norm, cmap = cmap, shading = 'gouraud')
         cax = self.get_cax(fig, ax, im, FS, **kwargs)
 
@@ -155,6 +166,71 @@ class Cartesian():
 
         return im, cax_l, cax_r
 
+    def plot_xy_mirror(self, fig, ax, X, Y, Dl, Dr, cmaps, FS, **kwargs):
+        # Equatorial analogue of plot_xz_mirror: the x < 0 half of the plane
+        # shows Dl['r'] and the x > 0 half shows Dr['r']. Each quantity is
+        # drawn over the full disk and clipped at x = 0, so the two halves
+        # meet exactly on the y axis.
+        im   = {}
+        vmin_l, vmax_l = self.get_vmin_vmax(Dl,
+            lim=kwargs.get('lim_left', False),
+            sym=kwargs.get('sym_left', False))
+        norm_l         = self.get_norm(vmin_l, vmax_l,
+            log=kwargs.get('log_left', False),
+            sym=kwargs.get('sym_left', False),
+            linthresh=kwargs.get('linthresh_left', False))
+        extend_l       = kwargs.get('extend_left', 'neither')
+
+        vmin_r, vmax_r = self.get_vmin_vmax(Dr,
+            lim=kwargs.get('lim_right', False),
+            sym=kwargs.get('sym_right', False))
+        norm_r         = self.get_norm(vmin_r, vmax_r,
+            log=kwargs.get('log_right', False),
+            sym=kwargs.get('sym_right', False),
+            linthresh=kwargs.get('linthresh_right', False))
+        extend_r       = kwargs.get('extend_right', 'neither')
+
+        # Local copies so that padding at the phi seam (fix_pole) does not
+        # alter the caller's arrays
+        Xl, Yl, Xr, Yr = {'r' : X['r']}, {'r' : Y['r']}, {'r' : X['r']}, {'r' : Y['r']}
+        Dl, Dr = {'r' : Dl['r']}, {'r' : Dr['r']}
+        if 'fix_pole' in kwargs:
+            self.check_fix_pole(**kwargs)
+            th0   = kwargs.get('theta0', np.pi/2.)
+            r     = kwargs.get('r')
+            theta = kwargs.get('theta')
+            phi   = kwargs.get('phi')
+
+            FP = Fix_Pole()
+            fix_pole = kwargs.get('fix_pole', 'constant')
+            FP.fix_cart_xy(Xl, Yl, Dl, r, theta, phi, theta0 = th0,
+                           fix_pole=fix_pole)
+            FP.fix_cart_xy(Xr, Yr, Dr, r, theta, phi, theta0 = th0,
+                           fix_pole=fix_pole)
+
+        im['l'] = ax.pcolormesh(Xl['r'], Yl['r'], Dl['r'],
+                                norm = norm_l, cmap = cmaps[0],
+                                shading = 'gouraud')
+        im['r'] = ax.pcolormesh(Xr['r'], Yr['r'], Dr['r'],
+                                norm = norm_r, cmap = cmaps[1],
+                                shading = 'gouraud')
+
+        # Clip each half at x = 0
+        big = 2. * max(np.amax(np.abs(Xl['r'])), np.amax(np.abs(Yl['r'])))
+        # (a Polygon, not a Rectangle: matplotlib turns a Rectangle clip path
+        # into a clip box, which the axes box below would then overwrite)
+        for key, (x0, x1) in {'l' : (-big, 0.), 'r' : (0., big)}.items():
+            clip = patches.Polygon([(x0, -big), (x1, -big), (x1, big),
+                                    (x0, big)], transform=ax.transData)
+            im[key].set_clip_path(clip)
+            im[key].set_clip_box(ax.bbox) # set_clip_path drops the axes clip
+
+        cax_r = self.get_cax(fig, ax, im, FS, extend=extend_r, **kwargs)
+        cax_l = self.get_cax(fig, ax, im, FS, extend=extend_l,
+                             cbar_loc='top', **kwargs)
+
+        return im, cax_l, cax_r
+
     def plot_contours(self, ax, im, X, Y, contours):
         if 'linestyles' not in contours:
             contours['linestyles'] = len(contours['quantities']) * ['-']
@@ -170,60 +246,187 @@ class Cartesian():
                 linewidths=linewidth, linestyles=linestyle, colors=color)
         return None
 
+    def get_grid_indices(self, X, Y, X_uni, Y_uni, tol=0.05):
+        """
+        Fractional array indices of the uniform points (X_uni, Y_uni) in the
+        native 2D coordinate arrays X, Y, for interpolation in index space.
+
+        The native grid must be polar in the plotting plane: radius
+        sqrt(X^2 + Y^2) uniform in log along axis 0, and the angle
+        arctan2(X, Y) (measured from the +Y axis) uniform along axis 1.
+        This holds for H-AMR poloidal slices (radius r, angle theta, as
+        x1 = log r and theta = (x2 + 1) pi/2) and midplane slices (radius r,
+        angle pi/2 - phi). Both are checked to within tol of a cell.
+
+        Returns (indices, periodic), where indices has shape
+        (2,) + X_uni.shape and periodic is True when the angle axis spans
+        the full circle, or None if the grid does not qualify.
+        """
+        X = np.asarray(X, dtype=np.float64)
+        Y = np.asarray(Y, dtype=np.float64)
+        if X.ndim != 2 or X.shape != Y.shape or min(X.shape) < 2:
+            return None
+
+        rad = np.sqrt(X * X + Y * Y)
+        if not np.all(rad > 0.):
+            return None
+        logr = np.log(rad)
+        ang  = np.unwrap(np.arctan2(X, Y), axis=1)
+
+        nr, nang = X.shape
+        logr0, ang0 = logr[0, 0], ang[0, 0]
+        dlogr = (logr[-1, 0] - logr0) / (nr   - 1)
+        dang  = (ang[0, -1]  - ang0)  / (nang - 1)
+        if dlogr == 0. or dang == 0.:
+            return None
+
+        # Radius depends only on axis 0 and angle only on axis 1, and both
+        # are uniformly spaced
+        logr_fit = logr0 + dlogr * np.arange(nr)[:, None]
+        ang_fit  = ang0  + dang  * np.arange(nang)[None, :]
+        if (np.max(np.abs(logr - logr_fit)) > tol * abs(dlogr) or
+            np.max(np.abs(ang  - ang_fit))  > tol * abs(dang)):
+            return None
+
+        # Angle axis covers the full circle (e.g. a full midplane slice)
+        periodic = abs(abs(dang) * nang - 2. * np.pi) < tol * abs(dang)
+
+        with np.errstate(divide='ignore'):
+            i = (np.log(np.sqrt(X_uni * X_uni + Y_uni * Y_uni)) - logr0) / dlogr
+
+        # Put target angles on the same branch as the native angles,
+        # measured from ang0 in the direction of increasing index
+        s = np.sign(dang)
+        ang_uni = ang0 + s * np.mod(s * (np.arctan2(X_uni, Y_uni) - ang0),
+                                    2. * np.pi)
+        j = (ang_uni - ang0) / dang
+
+        return np.array([i, j]), periodic
+
+    def get_interp_to_uni(self, X, Y, X_uni, Y_uni, method):
+        """
+        Return a function that interpolates a 2D quantity on the native grid
+        (X, Y) to the uniform grid (X_uni, Y_uni). Uses map_coordinates in
+        index space when the native grid qualifies (see get_grid_indices);
+        otherwise falls back to griddata. Points outside the native grid are
+        NaN. interp_to_uni(q, nearest=True) uses nearest-neighbor
+        interpolation regardless of method.
+        """
+        grid = self.get_grid_indices(X, Y, X_uni, Y_uni)
+
+        if grid is not None:
+            indices, periodic = grid
+            order = {'nearest' : 0, 'linear' : 1, 'cubic' : 3}[method]
+            nr, nang = np.shape(X)
+
+            # Only points between the first and last native cell centers
+            # are interpolated; everything else is NaN, as with griddata
+            i, j  = indices
+            valid = (i >= 0.) & (i <= nr - 1.)
+            if not periodic:
+                valid &= (j >= 0.) & (j <= nang - 1.)
+
+            # Pad both axes so the cubic spline has no edge artifacts:
+            # linear continuation (odd reflection) at the radial edges and
+            # at the angular edges of a partial slice, periodic wrap for a
+            # full circle. The pad cells are only used inside the stencil.
+            npad = 3
+            pad_r, pad_ang = ((npad, npad), (0, 0)), ((0, 0), (npad, npad))
+            ang_pad_args = ({'mode' : 'wrap'} if periodic else
+                            {'mode' : 'reflect', 'reflect_type' : 'odd'})
+            indices_pad = indices + npad
+
+            def interp_to_uni(q, nearest=False):
+                q      = np.asarray(q, dtype=np.float64)
+                finite = np.isfinite(q)
+                if not np.any(finite):
+                    return np.full(np.shape(X_uni), np.nan)
+                # Fill non-finite cells with their nearest finite neighbor so
+                # they do not ring through the spline; they are set back to
+                # NaN below wherever they enter the stencil
+                if not np.all(finite):
+                    near = distance_transform_edt(~finite,
+                        return_distances=False, return_indices=True)
+                    q = q[tuple(near)]
+                q = np.pad(q, pad_r, mode='reflect', reflect_type='odd')
+                q = np.pad(q, pad_ang, **ang_pad_args)
+
+                q_order = 0 if nearest else order
+                q_uni   = map_coordinates(q, indices_pad, order=q_order,
+                                          mode='constant', cval=np.nan)
+                q_uni[~valid] = np.nan
+
+                # Non-finite native cells stay NaN wherever they enter the
+                # (nearest or bilinear) stencil
+                if not np.all(finite):
+                    bad = np.pad(~finite, pad_r, mode='edge')
+                    bad = np.pad(bad, pad_ang,
+                                 mode='wrap' if periodic else 'edge')
+                    bad_uni = map_coordinates(bad.astype(np.float64),
+                        indices_pad, order=min(q_order, 1),
+                        mode='constant', cval=0.)
+                    q_uni[bad_uni > 0.] = np.nan
+                return q_uni
+        else:
+            xlim  = 1.1 * np.amax(np.abs(X_uni))
+            ylim  = 1.1 * np.amax(np.abs(Y_uni))
+            x_dat = X.ravel()
+            y_dat = Y.ravel()
+            selec = (np.abs(x_dat) <= xlim) & (np.abs(y_dat) <= ylim)
+            x_data, y_data = x_dat[selec], y_dat[selec]
+
+            def interp_to_uni(q, nearest=False):
+                return griddata((x_data, y_data), q.ravel()[selec],
+                    (X_uni, Y_uni), method='nearest' if nearest else method)
+
+        return interp_to_uni
+
     def plot_xy_vec(self, fig, ax, X, Y, X_uni, Y_uni, VX, VY, **kwargs):
-        method= kwargs.get('interp_method', 'cubic')
-        xlim  = 1.1 * np.amax(np.abs(X_uni))
-        ylim  = 1.1 * np.amax(np.abs(Y_uni))
+        method = kwargs.get('interp_method', 'cubic')
+        interp_to_uni = self.get_interp_to_uni(X['r'], Y['r'], X_uni, Y_uni,
+                                               method)
 
-        x_dat  = X['r'].ravel()
-        y_dat  = Y['r'].ravel()
-        VX_dat = VX['r'].ravel()
-        VY_dat = VY['r'].ravel()
-
-        selec   = (np.abs(x_dat) <= xlim) & (np.abs(y_dat) <= ylim)
-        x_data  = x_dat[selec]
-        y_data  = y_dat[selec]
-        VX_data = VX_dat[selec]
-        VY_data = VY_dat[selec]
-
-        VX_uni = griddata((x_data, y_data), VX_data, 
-                          (X_uni, Y_uni), method=method)
-        VY_uni = griddata((x_data, y_data), VY_data, 
-                          (X_uni, Y_uni), method=method)
+        VX_uni = interp_to_uni(VX['r'])
+        VY_uni = interp_to_uni(VY['r'])
 
         if 'mask' in kwargs:
-            mask      = kwargs.get('mask')
-            mask_dat  = (mask['r'].astype(int)).ravel()
-            mask_data = mask_dat[selec]
-            mask_uni  = griddata((x_data, y_data), mask_data, 
-                                 (X_uni, Y_uni), method='nearest')
+            mask     = kwargs.get('mask')
+            # Points outside the native grid (NaN) are masked
+            mask_uni = np.nan_to_num(interp_to_uni(mask['r'].astype(int),
+                nearest=True), nan=1.) != 0.
             VX_uni = np.ma.array(VX_uni, mask=mask_uni)
             VY_uni = np.ma.array(VY_uni, mask=mask_uni)
-        
+
+        stream_norm = None
         if 'color_streamlines' in kwargs:
             color_streamlines = kwargs.get('color_streamlines')
             values            = color_streamlines['values']
             cmap              = color_streamlines['cmap']
+            # Optional: nearest-neighbor interpolation of the values (keeps a
+            # +-1 sign field at exactly +-1 instead of cubic overshoot) and a
+            # fixed color range (vmin, vmax) instead of autoscaling
+            values_uni        = interp_to_uni(
+                values['r'], nearest=color_streamlines.get('nearest', False))
+            if 'vmin' in color_streamlines and 'vmax' in color_streamlines:
+                stream_norm = colors.Normalize(vmin=color_streamlines['vmin'],
+                                               vmax=color_streamlines['vmax'])
 
-            values_dat  = values['r'].ravel()
-            values_data = values_dat[selec]
-            values_uni  = griddata((x_data, y_data), values_data, 
-                                   (X_uni, Y_uni), method=method)
-        
         dens = kwargs.get('dens', 1.0)
 
-        streams = ax.streamplot(X_uni, Y_uni, VX_uni, VY_uni, 
+        streams = ax.streamplot(X_uni, Y_uni, VX_uni, VY_uni,
             density = (dens, dens),
             broken_streamlines = kwargs.get('broken_streamlines', True),
             linewidth = kwargs.get('linewidth', 1.0), 
             color = (kwargs.get('color', 'white') 
                      if 'color_streamlines' not in kwargs else values_uni), 
             cmap = None if 'color_streamlines' not in kwargs else cmap,
+            norm = (None if 'color_streamlines' not in kwargs
+                    else stream_norm),
             arrowsize = kwargs.get('arrowsize', 1.0))
 
         if kwargs.get('return_streamlines', False):
             return streams
-        
+
     def plot_Rz_vec(self, fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs):
         return self.plot_xy_vec(fig, ax, R, Z, R_uni, Z_uni, VR, VZ, **kwargs)
 
@@ -309,46 +512,28 @@ class Cartesian():
             arrowsize = kwargs.get('arrowsize', 1.0))      
                    
     def plot_xz_mirror_vec(self, fig, ax, X, Z, 
-                           X_uni, Z_uni, VX, VZ, **kwargs): 
-        method= kwargs.get('interp_method', 'cubic')
-        xlim  = 1.1 * np.amax(np.abs(X_uni))
-        zlim  = 1.1 * np.amax(np.abs(Z_uni))
+                           X_uni, Z_uni, VX, VZ, **kwargs):
+        method = kwargs.get('interp_method', 'cubic')
+        interp_to_uni = self.get_interp_to_uni(X['r'], Z['r'], X_uni, Z_uni,
+                                               method)
 
-        x_dat  = X['r'].ravel()
-        z_dat  = Z['r'].ravel()
-        VX_dat = VX['r'].ravel()
-        VZ_dat = VZ['r'].ravel()
-
-        selec   = (np.abs(x_dat) <= xlim) & (np.abs(z_dat) <= zlim)
-        x_data  = x_dat[selec]
-        z_data  = z_dat[selec]
-        VX_data = VX_dat[selec]
-        VZ_data = VZ_dat[selec]
-
-        VX_uni = griddata((x_data, z_data), VX_data, 
-                          (X_uni, Z_uni), method=method)
-        VZ_uni = griddata((x_data, z_data), VZ_data, 
-                          (X_uni, Z_uni), method=method)
+        VX_uni = interp_to_uni(VX['r'])
+        VZ_uni = interp_to_uni(VZ['r'])
 
         if 'mask' in kwargs:
-            mask      = kwargs.get('mask')
-            mask_dat  = (mask['r'].astype(int)).ravel()
-            mask_data = mask_dat[selec]
-            mask_uni  = griddata((x_data, z_data), mask_data, 
-                                 (X_uni, Z_uni), method='nearest')
+            mask     = kwargs.get('mask')
+            # Points outside the native grid (NaN) are masked
+            mask_uni = np.nan_to_num(interp_to_uni(mask['r'].astype(int),
+                nearest=True), nan=1.) != 0.
             VX_uni = np.ma.array(VX_uni, mask=mask_uni)
             VZ_uni = np.ma.array(VZ_uni, mask=mask_uni)
-        
+
         if 'color_streamlines' in kwargs:
             color_streamlines = kwargs.get('color_streamlines')
             values            = color_streamlines['values']
             cmap              = color_streamlines['cmap']
+            values_uni        = interp_to_uni(values['r'])
 
-            values_dat  = values['r'].ravel()
-            values_data = values_dat[selec]
-            values_uni  = griddata((x_data, z_data), values_data, 
-                                   (X_uni, Z_uni), method=method)
-        
         dens = kwargs.get('dens', 1.0)
 
         ax.streamplot(X_uni, Z_uni, VX_uni, VZ_uni, 
